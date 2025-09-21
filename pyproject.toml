@@ -1,0 +1,55 @@
+[project]
+name = "duron"
+version = "0.1.0"
+description = ""
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.11.7",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.19,<0.9.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "basedmypy>=2.10.0",
+    "basedpyright>=1.31.2",
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "ruff>=0.12.8",
+]
+docs = [
+    "mkdocs>=1.6.1",
+    "mkdocs-material>=9.6.18",
+    "mkdocs-mermaid2-plugin>=1.2.1",
+    "mkdocstrings[python]>=0.30.0",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "UP",
+    "B",
+    "SIM",
+    "I",
+    "TC",
+]
+extend-safe-fixes = ["TC"]
+preview = true
+future-annotations = true
+
+[tool.mypy]
+disable_error_code = [
+    "decorated-any",
+    "explicit-any",
+    "any",
+]
+
+[tool.pyright]
+venv = ".venv"
+venvPath = "."
+reportAny = false
+reportExplicitAny = false

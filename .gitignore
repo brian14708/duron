@@ -1,0 +1,4 @@
+/dist
+/site
+/.venv
+__pycache__
