@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "pydantic>=2.11.7",
+    "typing-extensions>=4.15.0",
 ]
 
 [build-system]
@@ -14,10 +15,15 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "basedmypy>=2.10.0",
-    "basedpyright>=1.31.2",
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
+]
+type-checking = [
+    "basedmypy>=2.10.0",
+    "basedpyright>=1.31.2",
+    "nox>=2025.5.1",
+]
+lint = [
     "ruff>=0.12.8",
 ]
 docs = [
@@ -49,7 +55,8 @@ disable_error_code = [
 ]
 
 [tool.pyright]
-venv = ".venv"
-venvPath = "."
+venv = "."
+venvPath = ".venv"
 reportAny = false
 reportExplicitAny = false
+reportUnreachable = false

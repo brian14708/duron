@@ -29,13 +29,16 @@
           devShells = {
             default = pkgs.mkShell {
               buildInputs = with pkgs; [
-                gnumake
-                (python313.withPackages (
+                (python3.withPackages (
                   p: with p; [
+                    nox
                     uv
                   ]
                 ))
               ];
+              env = {
+                UV_PYTHON = pkgs.python310.interpreter;
+              };
             };
           };
 
