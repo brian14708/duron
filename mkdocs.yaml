@@ -1,6 +1,10 @@
 site_name: Duron
+site_url: "https://brian14708.github.io/duron"
+repo_url: "https://github.com/brian14708/duron"
+repo_name: "brian14708/duron"
 nav:
   - index.md
+  - reference.md
 
 theme:
   name: material

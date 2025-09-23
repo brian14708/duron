@@ -7,6 +7,7 @@ on:
     paths:
       - "docs/**"
       - mkdocs.yaml
+  workflow_dispatch:
 
 concurrency:
   group: github-pages
