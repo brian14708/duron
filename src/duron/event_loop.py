@@ -63,9 +63,8 @@ class WaitSet:
             return
         with contextlib.suppress(asyncio.TimeoutError):
             t = self.timer - (now_ns / 1e9)
-            if t <= 0:
-                return
-            _ = await asyncio.wait_for(self.event.wait(), timeout=t)
+            if t > 0:
+                _ = await asyncio.wait_for(self.event.wait(), timeout=t)
 
 
 @dataclass(slots=True)
@@ -260,12 +259,12 @@ class EventLoop(AbstractEventLoop):
         result: object = None,
         exception: BaseException | None = None,
     ) -> None:
-        op = self._ops.pop(id)
-        tid = _mix_id(op.id, -1)
-        if exception is not None:
-            _ = self.call_soon_threadsafe(op.set_exception, exception, task_id=tid)
-        else:
-            _ = self.call_soon_threadsafe(op.set_result, result, task_id=tid)
+        if op := self._ops.pop(id, None):
+            tid = _mix_id(op.id, -1)
+            if exception is not None:
+                _ = self.call_soon_threadsafe(op.set_exception, exception, task_id=tid)
+            else:
+                _ = self.call_soon_threadsafe(op.set_result, result, task_id=tid)
 
     @override
     def is_closed(self) -> bool:

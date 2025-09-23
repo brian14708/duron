@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import threading
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -14,24 +13,26 @@ from .base import BaseLogStorage, Lease, Offset
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    from duron.log.entry import UnknownEntry
+
     from ..entry import Entry
 
 
 class FileLogStorage(BaseLogStorage):
     _log_file: Path
     _leases: Lease | None
-    _lock: threading.Lock
+    _lock: asyncio.Lock
 
     def __init__(self, log_file: str | Path):
         self._log_file = Path(log_file)
         self._log_file.parent.mkdir(parents=True, exist_ok=True)
         self._leases = None
-        self._lock = threading.Lock()
+        self._lock = asyncio.Lock()
 
     @override
     async def stream(
         self, start: Offset | None, live: bool
-    ) -> AsyncGenerator[tuple[Offset, Entry], None]:
+    ) -> AsyncGenerator[tuple[Offset, Entry | UnknownEntry], None]:
         if not self._log_file.exists():
             return
 
@@ -39,7 +40,7 @@ class FileLogStorage(BaseLogStorage):
 
         with open(self._log_file, "rb") as f:
             # Seek to start offset
-            f.seek(start_offset)
+            _ = f.seek(start_offset)
 
             # Read existing lines from start offset
             while True:
@@ -51,7 +52,7 @@ class FileLogStorage(BaseLogStorage):
                         if isinstance(entry, dict):
                             yield (
                                 Offset(line_start_offset.to_bytes(8, "little")),
-                                cast("Entry", cast("object", entry)),
+                                cast("UnknownEntry", cast("object", entry)),
                             )
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         pass
@@ -70,7 +71,7 @@ class FileLogStorage(BaseLogStorage):
                             if isinstance(entry, dict):
                                 yield (
                                     Offset(line_start_offset.to_bytes(8, "little")),
-                                    cast("Entry", cast("object", entry)),
+                                    cast("UnknownEntry", cast("object", entry)),
                                 )
                         except (json.JSONDecodeError, UnicodeDecodeError):
                             pass
@@ -80,19 +81,19 @@ class FileLogStorage(BaseLogStorage):
     @override
     async def acquire_lease(self) -> Lease:
         lease_id = Lease(uuid.uuid4().bytes)
-        with self._lock:
+        async with self._lock:
             self._leases = lease_id
         return lease_id
 
     @override
     async def release_lease(self, token: Lease) -> None:
-        with self._lock:
+        async with self._lock:
             if token == self._leases:
                 self._leases = None
 
     @override
     async def append(self, token: Lease, entry: Entry) -> Offset:
-        with self._lock:
+        async with self._lock:
             if token != self._leases:
                 raise ValueError("Invalid lease token")
 
@@ -102,3 +103,79 @@ class FileLogStorage(BaseLogStorage):
                 _ = f.write("\n")
 
             return Offset(entry_offset.to_bytes(8, "little"))
+
+
+class MemoryLogStorage(BaseLogStorage):
+    _entries: list[Entry]
+    _leases: Lease | None
+    _lock: asyncio.Lock
+    _condition: asyncio.Condition
+
+    def __init__(self, entries: list[Entry] | None = None):
+        self._entries = entries or []
+        self._leases = None
+        self._lock = asyncio.Lock()
+        self._condition = asyncio.Condition(self._lock)
+
+    @override
+    async def stream(
+        self, start: Offset | None, live: bool
+    ) -> AsyncGenerator[tuple[Offset, Entry | UnknownEntry], None]:
+        start_index: int = int.from_bytes(start, "little") if start is not None else 0
+
+        # Yield existing entries
+        async with self._lock:
+            entries_snapshot = self._entries.copy()
+
+        for index in range(start_index, len(entries_snapshot)):
+            yield (
+                Offset(index.to_bytes(8, "little")),
+                entries_snapshot[index],
+            )
+
+        # If live mode, continue monitoring for new entries
+        if live:
+            last_seen_index = len(entries_snapshot) - 1
+            while True:
+                async with self._condition:
+                    # Wait for new entries or timeout
+                    while len(self._entries) <= last_seen_index + 1:
+                        _ = await self._condition.wait()
+
+                    current_length = len(self._entries)
+
+                for index in range(last_seen_index + 1, current_length):
+                    yield (
+                        Offset(index.to_bytes(8, "little")),
+                        self._entries[index],
+                    )
+                    last_seen_index = index
+
+    @override
+    async def acquire_lease(self) -> Lease:
+        lease_id = Lease(uuid.uuid4().bytes)
+        async with self._lock:
+            self._leases = lease_id
+        return lease_id
+
+    @override
+    async def release_lease(self, token: Lease) -> None:
+        async with self._lock:
+            if token == self._leases:
+                self._leases = None
+
+    @override
+    async def append(self, token: Lease, entry: Entry) -> Offset:
+        async with self._condition:
+            if token != self._leases:
+                raise ValueError("Invalid lease token")
+
+            index = len(self._entries)
+            self._entries.append(entry)
+            self._condition.notify_all()
+
+            return Offset(index.to_bytes(8, "little"))
+
+    async def entries(self) -> list[Entry]:
+        async with self._lock:
+            return self._entries.copy()

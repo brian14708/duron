@@ -1,18 +1,19 @@
-from typing import Literal
+from typing import Literal, TypeGuard
 
 from typing_extensions import NotRequired, TypedDict
 
 
 class BaseEntry(TypedDict):
     id: str
-    timestamp: int
-    metadata: NotRequired[dict[str, str]]
+    # Unix timestamp in microseconds
+    ts: int
+    meta: NotRequired[dict[str, str]]
 
 
 class ErrorInfo(TypedDict):
     code: int
     message: str
-    data: object
+    data: NotRequired[object]
 
 
 class PromiseCreateEntry(BaseEntry):
@@ -22,8 +23,8 @@ class PromiseCreateEntry(BaseEntry):
 class PromiseCompleteEntry(BaseEntry):
     type: Literal["promise/complete"]
     promise_id: str
-    result: object
-    error: ErrorInfo | None
+    result: NotRequired[object]
+    error: NotRequired[ErrorInfo]
 
 
 class StreamCreateEntry(BaseEntry):
@@ -33,14 +34,14 @@ class StreamCreateEntry(BaseEntry):
 class StreamEmitEntry(BaseEntry):
     type: Literal["stream/emit"]
     stream_id: str
-    value: object
-    state: object
+    value: NotRequired[object]
+    state: NotRequired[object]
 
 
 class StreamCloseEntry(BaseEntry):
     type: Literal["stream/close"]
     stream_id: str
-    error: ErrorInfo | None
+    error: NotRequired[ErrorInfo]
 
 
 class UnknownEntry(BaseEntry):
@@ -53,5 +54,14 @@ Entry = (
     | StreamCreateEntry
     | StreamEmitEntry
     | StreamCloseEntry
-    | UnknownEntry
 )
+
+
+def is_entry(entry: Entry | UnknownEntry) -> TypeGuard[Entry]:
+    return entry["type"] in {
+        "promise/create",
+        "promise/complete",
+        "stream/create",
+        "stream/emit",
+        "stream/close",
+    }
