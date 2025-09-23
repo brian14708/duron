@@ -5,7 +5,6 @@ description = ""
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "pydantic>=2.11.7",
     "typing-extensions>=4.15.0",
 ]
 
