@@ -14,6 +14,7 @@ from typing import (
 )
 
 from duron.event_loop import create_loop
+from duron.log.codec import default_codec
 from duron.log.entry import is_entry
 from duron.ops import FnCall
 
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
 
     from duron.event_loop import WaitSet
+    from duron.log.codec import BaseCodec
     from duron.log.entry import Entry, ErrorInfo, UnknownEntry
     from duron.log.storage import BaseLogStorage, Lease, Offset
     from duron.mark import DurableFn
@@ -30,8 +32,8 @@ _T = TypeVar("_T")
 
 
 class TaskRunner:
-    def __init__(self):
-        pass
+    def __init__(self, codec: BaseCodec | None = None) -> None:
+        self._codec: BaseCodec = codec or default_codec
 
     async def run(
         self,
@@ -39,18 +41,23 @@ class TaskRunner:
         task_co: DurableFn[[], Coroutine[Any, Any, _T]],
         log: BaseLogStorage,
     ) -> _T:
-        return await _Task[_T](task_id, task_co(), log).run()
+        return await _Task[_T](task_id, task_co(), log, self._codec).run()
 
 
 @final
 class _Task(Generic[_T]):
     def __init__(
-        self, id: bytes, task_co: Coroutine[Any, Any, _T], log: BaseLogStorage
+        self,
+        id: bytes,
+        task_co: Coroutine[Any, Any, _T],
+        log: BaseLogStorage,
+        codec: BaseCodec,
     ) -> None:
         self._id = id
         self._loop = create_loop(id)
         self._task = self._loop.create_task(task_co)
         self._log = log
+        self._codec = codec
         self._running: Lease | None = None
         self._pending_msg: list[Entry] = []
         self._pending_task: dict[str, Callable[[], Coroutine[Any, Any, object]]] = {}
@@ -110,7 +117,7 @@ class _Task(Generic[_T]):
                     "id": _encode_id(self._id, True),
                     "ts": _encode_timestamp(self.now()),
                     "promise_id": _encode_id(self._id, False),
-                    "result": res,
+                    "result": self._codec.encode_json(res),
                 },
             )
             return res
@@ -121,7 +128,7 @@ class _Task(Generic[_T]):
                     "id": _encode_id(self._id, True),
                     "ts": _encode_timestamp(self.now()),
                     "promise_id": _encode_id(self._id, False),
-                    "error": exception_to_error_info(e),
+                    "error": _encode_error(e, self._codec),
                 },
             )
             raise
@@ -157,13 +164,13 @@ class _Task(Generic[_T]):
             if "error" in e:
                 self._loop.post_completion_threadsafe(
                     id,
-                    exception=error_info_to_exception(e["error"]),
+                    exception=_decode_error(e["error"], self._codec),
                 )
                 self._pending_ops.discard(id)
             elif "result" in e:
                 self._loop.post_completion_threadsafe(
                     id,
-                    result=e["result"],
+                    result=self._codec.decode_json(e["result"]),
                 )
                 self._pending_ops.discard(id)
             else:
@@ -200,17 +207,17 @@ class _Task(Generic[_T]):
                                 "id": _encode_id(id, True),
                                 "type": "promise/complete",
                                 "promise_id": _encode_id(id, False),
-                                "result": result,
+                                "result": self._codec.encode_json(result),
                             }
                         )
                     except BaseException as e:
                         await self.enqueue_log(
                             {
+                                "type": "promise/complete",
                                 "ts": _encode_timestamp(self.now()),
                                 "id": _encode_id(id, True),
-                                "type": "promise/complete",
                                 "promise_id": _encode_id(id, False),
-                                "error": exception_to_error_info(e),
+                                "error": _encode_error(e, self._codec),
                             }
                         )
 
@@ -223,20 +230,20 @@ class _Task(Generic[_T]):
                 raise NotImplementedError(f"Unsupported op: {op!r}")
 
 
-def _encode_id(id: bytes, end: bool) -> str:
-    if end:
+def _encode_id(id: bytes, is_end: bool) -> str:
+    if is_end:
         return base64.b64encode(id).decode() + "-"
     else:
         return base64.b64encode(id).decode() + "+"
 
 
-def _decode_id(s: str) -> tuple[bytes, bool]:
-    if s.endswith("-"):
-        return base64.b64decode(s[:-1]), True
-    elif s.endswith("+"):
-        return base64.b64decode(s[:-1]), False
+def _decode_id(encoded: str) -> tuple[bytes, bool]:
+    if encoded.endswith("-"):
+        return base64.b64decode(encoded[:-1]), True
+    elif encoded.endswith("+"):
+        return base64.b64decode(encoded[:-1]), False
     else:
-        raise ValueError(f"Invalid encoded id: {s!r}")
+        raise ValueError(f"Invalid encoded id: {encoded!r}")
 
 
 def _encode_timestamp(ts_ns: int) -> int:
@@ -247,12 +254,20 @@ def _decode_timestamp(ts: int) -> int:
     return ts * 1_000
 
 
-def exception_to_error_info(e: BaseException) -> ErrorInfo:
+def _encode_error(error: BaseException, codec: BaseCodec) -> ErrorInfo:
+    """Convert exception to ErrorInfo dict."""
     return {
-        "code": 1,
-        "message": str(e),
+        "code": -1,
+        "message": str(error),
+        "state": codec.encode_state(error),
     }
 
 
-def error_info_to_exception(e: ErrorInfo) -> Exception:
-    return Exception(f"[{e['code']}] {e['message']}")
+def _decode_error(error_info: ErrorInfo, codec: BaseCodec) -> BaseException:
+    """Convert ErrorInfo dict to exception."""
+    try:
+        if "state" not in error_info:
+            return Exception(f"[{error_info['code']}] {error_info['message']}")
+        return cast("BaseException", codec.decode_state(error_info["state"]))
+    except Exception:
+        return Exception(f"[{error_info['code']}] {error_info['message']}")

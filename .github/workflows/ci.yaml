@@ -27,7 +27,7 @@ jobs:
         with:
           enable-cache: true
       - name: Sync dependencies
-        run: uv sync --group type-checking --group lint
+        run: uv sync --group type-checking --group lint --extra full
       - name: Run tests
         run: uv run pytest
       - name: Run linter

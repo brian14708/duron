@@ -8,6 +8,11 @@ dependencies = [
     "typing-extensions>=4.15.0",
 ]
 
+[project.optional-dependencies]
+full = [
+    "pydantic>=2.11.9",
+]
+
 [build-system]
 requires = ["uv_build>=0.8.19,<0.9.0"]
 build-backend = "uv_build"
@@ -20,7 +25,7 @@ dev = [
 type-checking = [
     "basedmypy>=2.10.0",
     "basedpyright>=1.31.2",
-    "nox>=2025.5.1",
+    "pydantic>=2.11.9",
 ]
 lint = [
     "ruff>=0.12.8",

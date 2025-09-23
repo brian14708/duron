@@ -2,6 +2,8 @@ from typing import Literal, TypeGuard
 
 from typing_extensions import NotRequired, TypedDict
 
+JSONValue = dict[str, "JSONValue"] | list["JSONValue"] | str | int | float | bool | None
+
 
 class BaseEntry(TypedDict):
     id: str
@@ -13,7 +15,7 @@ class BaseEntry(TypedDict):
 class ErrorInfo(TypedDict):
     code: int
     message: str
-    data: NotRequired[object]
+    state: NotRequired[str]  # opaque
 
 
 class PromiseCreateEntry(BaseEntry):
@@ -23,7 +25,7 @@ class PromiseCreateEntry(BaseEntry):
 class PromiseCompleteEntry(BaseEntry):
     type: Literal["promise/complete"]
     promise_id: str
-    result: NotRequired[object]
+    result: NotRequired[JSONValue]
     error: NotRequired[ErrorInfo]
 
 
@@ -34,8 +36,8 @@ class StreamCreateEntry(BaseEntry):
 class StreamEmitEntry(BaseEntry):
     type: Literal["stream/emit"]
     stream_id: str
-    value: NotRequired[object]
-    state: NotRequired[object]
+    value: NotRequired[JSONValue]
+    state: NotRequired[str]  # opaque
 
 
 class StreamCloseEntry(BaseEntry):
