@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from typing import ClassVar
 
 import pytest
 
@@ -10,7 +11,7 @@ from duron.mark import durable
 
 
 @pytest.mark.asyncio
-async def test_task_runner():
+async def test_task():
     @durable()
     async def activity() -> str:
         ctx = duron.context.Context()
@@ -50,3 +51,31 @@ async def test_task_error():
         _ = await tr.run(b"1", activity, log)
     with pytest.raises(check=lambda v: "test error" in str(v)):
         _ = await tr.run(b"1", activity, log)
+
+
+try:
+    import pydantic
+
+    class Point(pydantic.BaseModel):
+        model_config: ClassVar[pydantic.ConfigDict] = pydantic.ConfigDict(
+            extra="forbid"
+        )
+
+        x: int
+        y: int
+
+    @pytest.mark.asyncio
+    async def test_pydantic():
+        @durable()
+        async def activity() -> Point:
+            ctx = duron.context.Context()
+            pt = await ctx.run(lambda: Point(x=1, y=2))
+            return Point(x=pt.x + 5, y=pt.y + 10)
+
+        tr = duron.task_runner.TaskRunner()
+        log = MemoryLogStorage()
+        a = await tr.run(b"1", activity, log)
+        assert type(a) is Point
+        assert a.x == 6 and a.y == 12
+except ImportError:
+    pass

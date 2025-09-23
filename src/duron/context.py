@@ -21,3 +21,10 @@ class Context:
 
     async def run(self, fn: Callable[..., Coroutine[Any, Any, _T] | _T]) -> _T:
         return cast("_T", await self._loop.create_op(FnCall(callable=fn)))
+
+
+def get_context() -> Context:
+    """
+    Get the current duron execution context.
+    """
+    return Context()
