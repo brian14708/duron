@@ -19,23 +19,23 @@ from typing import (
 
 from duron.context import get_context
 from duron.event_loop import create_loop
-from duron.log.entry import is_entry
+from duron.log import is_entry
 from duron.ops import FnCall, TaskRun
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
     from types import TracebackType
 
+    from duron.codec import Codec
     from duron.event_loop import WaitSet
-    from duron.log.codec import Codec
-    from duron.log.entry import (
+    from duron.fn import DurableFn
+    from duron.log import (
         Entry,
         ErrorInfo,
         JSONValue,
+        LogStorage,
         PromiseCompleteEntry,
     )
-    from duron.log.storage import LogStorage
-    from duron.mark import DurableFn
     from duron.ops import Op
 
     _TOffset = TypeVar("_TOffset")
@@ -83,7 +83,7 @@ class Task(Generic[_P, _T]):
         self._run: _TaskRun | None = None
 
     async def start(self, *args: _P.args, **kwargs: _P.kwargs) -> None:
-        codec = self._task_fn.__durable__.codec
+        codec = self._task_fn.codec
         init: TaskInitParams = {
             "version": _CURRENT_VERSION,
             "args": [codec.encode_json(arg) for arg in args],
@@ -104,7 +104,7 @@ class Task(Generic[_P, _T]):
         self._run = _TaskRun(
             task,
             cast("LogStorage[object, object]", self._log),
-            self._task_fn.__durable__.codec,
+            self._task_fn.codec,
         )
         await self._run.resume()
 
@@ -128,10 +128,10 @@ async def _task_prelude(
     init_params = await ctx.run(init)
     if init_params["version"] != _CURRENT_VERSION:
         raise Exception("version mismatch")
-    codec = task_fn.__durable__.codec
+    codec = task_fn.codec
     args = (codec.decode_json(arg) for arg in init_params["args"])
     kwargs = {k: codec.decode_json(v) for k, v in init_params["kwargs"].items()}
-    return await task_fn(*args, **kwargs)
+    return await task_fn.fn(*args, **kwargs)
 
 
 @final

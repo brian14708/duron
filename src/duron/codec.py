@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, cast, final
 
 from typing_extensions import Protocol, override
 
+from duron.log import is_json_value
+
 BaseModel: type[_pydantic.BaseModel] | None = None
 try:
     import pydantic as _pydantic
@@ -16,7 +18,7 @@ except ImportError:
     pass
 
 if TYPE_CHECKING:
-    from duron.log.entry import JSONValue
+    from duron.log import JSONValue
 
 __all__ = ["Codec", "DEFAULT_CODEC"]
 
@@ -56,7 +58,9 @@ class _DefaultCodec(Codec):
             model = result.model_dump(mode="json")
             model["_duron.pydantic"] = f"{cls.__module__}:{cls.__qualname__}"
             return model
-        return cast("JSONValue", result)
+        if is_json_value(result):
+            return result
+        raise TypeError(f"Result is not JSON-serializable: {result!r}")
 
     @override
     def decode_json(self, encoded: JSONValue) -> object:

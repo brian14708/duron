@@ -6,7 +6,7 @@ from typing import ClassVar
 import pytest
 
 from duron import durable, get_context, task
-from duron.log.storage.simple import MemoryLogStorage
+from duron.log.storage import MemoryLogStorage
 
 
 @pytest.mark.asyncio

@@ -8,11 +8,10 @@ from typing import TYPE_CHECKING
 import pytest
 from typing_extensions import TypeVar
 
-from duron.log.storage.simple import FileLogStorage, MemoryLogStorage
+from duron.log.storage import FileLogStorage, MemoryLogStorage
 
 if TYPE_CHECKING:
-    from duron.log.entry import Entry
-    from duron.log.storage import LogStorage
+    from duron.log import Entry, LogStorage
 
     _TOffset = TypeVar("_TOffset")
     _TLease = TypeVar("_TLease")
