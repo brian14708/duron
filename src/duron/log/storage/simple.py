@@ -92,17 +92,18 @@ class FileLogStorage(LogStorage[int, str]):
                 self._leases = None
 
     @override
-    async def append(self, token: str, entry: Entry) -> int:
+    async def append(self, token: str, entry: Entry):
         async with self._lock:
             if token != self._leases:
                 raise ValueError("Invalid lease token")
 
             with open(self._log_file, "a") as f:
-                entry_offset = f.tell()
                 json.dump(entry, f, separators=(",", ":"))
                 _ = f.write("\n")
 
-            return entry_offset
+    @override
+    async def flush(self, token: str):
+        pass
 
 
 class MemoryLogStorage(LogStorage[int, str]):
@@ -165,16 +166,17 @@ class MemoryLogStorage(LogStorage[int, str]):
                 self._leases = None
 
     @override
-    async def append(self, token: str, entry: Entry) -> int:
+    async def append(self, token: str, entry: Entry):
         async with self._condition:
             if token != self._leases:
                 raise ValueError("Invalid lease token")
 
-            index = len(self._entries)
             self._entries.append(cast("AnyEntry", cast("object", entry)))
             self._condition.notify_all()
 
-            return index
+    @override
+    async def flush(self, token: str):
+        pass
 
     async def entries(self) -> list[AnyEntry]:
         async with self._lock:

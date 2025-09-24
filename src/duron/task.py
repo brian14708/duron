@@ -256,12 +256,14 @@ class _TaskRun:
         else:
             pass
 
-    async def enqueue_log(self, entry: Entry) -> None:
+    async def enqueue_log(self, entry: Entry, flush: bool = False) -> None:
         if not self._running:
             self._pending_msg.append(entry)
         else:
-            _ = await self._log.append(self._running, entry)
+            await self._log.append(self._running, entry)
             await self.handle_message(entry)
+            if flush:
+                await self._log.flush(self._running)
 
     async def enqueue_op(self, id: bytes, op: Op | object) -> None:
         match op:
@@ -313,7 +315,7 @@ class _TaskRun:
                     except BaseException as e:
                         entry["error"] = _encode_error(e, self._codec)
 
-                    await self.enqueue_log(entry)
+                    await self.enqueue_log(entry, True)
 
                 _ = self._loop.create_task(cb())
 

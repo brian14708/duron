@@ -26,12 +26,12 @@ async def impl_test_log_storage(storage: LogStorage[_TOffset, _TLease]):
     lease = await storage.acquire_lease()
 
     for i in range(3):
-        _ = await storage.append(lease, make_entry(str(i)))
+        await storage.append(lease, make_entry(str(i)))
 
     lease2 = await storage.acquire_lease()
     try:
-        _ = await storage.append(lease2, make_entry("4"))
-        _ = await storage.append(lease, make_entry("5"))
+        await storage.append(lease2, make_entry("4"))
+        await storage.append(lease, make_entry("5"))
         raise AssertionError("Expected exception for invalid lease")
     except Exception:
         pass
