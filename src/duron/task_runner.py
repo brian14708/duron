@@ -4,7 +4,14 @@ import asyncio
 import base64
 import time
 from collections.abc import Coroutine
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, final
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Generic,
+    TypeVar,
+    cast,
+    final,
+)
 
 from duron.event_loop import create_loop
 from duron.log.entry import is_entry
@@ -16,6 +23,7 @@ if TYPE_CHECKING:
     from duron.event_loop import WaitSet
     from duron.log.entry import Entry, ErrorInfo, UnknownEntry
     from duron.log.storage import BaseLogStorage, Lease, Offset
+    from duron.mark import DurableFn
     from duron.ops import Op
 
 _T = TypeVar("_T")
@@ -26,9 +34,12 @@ class TaskRunner:
         pass
 
     async def run(
-        self, task_id: bytes, task_co: Coroutine[Any, Any, _T], log: BaseLogStorage
+        self,
+        task_id: bytes,
+        task_co: DurableFn[[], Coroutine[Any, Any, _T]],
+        log: BaseLogStorage,
     ) -> _T:
-        return await _Task[_T](task_id, task_co, log).run()
+        return await _Task[_T](task_id, task_co(), log).run()
 
 
 @final
