@@ -1,5 +1,1 @@
-# Duron
-
-## Overview
-
 Duron allows you to run async Python functions with persistence and fault tolerance. Tasks can be paused, resumed, and replayed deterministically from any point, making it ideal for long-running workflows and AI agents that need to survive failures.

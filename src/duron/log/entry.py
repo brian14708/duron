@@ -5,7 +5,7 @@ from typing_extensions import NotRequired, TypedDict
 JSONValue = dict[str, "JSONValue"] | list["JSONValue"] | str | int | float | bool | None
 
 
-class BaseEntry(TypedDict):
+class _BaseEntry(TypedDict):
     id: str
     # Unix timestamp in microseconds
     ts: int
@@ -18,35 +18,35 @@ class ErrorInfo(TypedDict):
     state: NotRequired[str]  # opaque
 
 
-class PromiseCreateEntry(BaseEntry):
+class PromiseCreateEntry(_BaseEntry):
     type: Literal["promise/create"]
 
 
-class PromiseCompleteEntry(BaseEntry):
+class PromiseCompleteEntry(_BaseEntry):
     type: Literal["promise/complete"]
     promise_id: str
     result: NotRequired[JSONValue]
     error: NotRequired[ErrorInfo]
 
 
-class StreamCreateEntry(BaseEntry):
+class StreamCreateEntry(_BaseEntry):
     type: Literal["stream/create"]
 
 
-class StreamEmitEntry(BaseEntry):
+class StreamEmitEntry(_BaseEntry):
     type: Literal["stream/emit"]
     stream_id: str
     value: NotRequired[JSONValue]
     state: NotRequired[str]  # opaque
 
 
-class StreamCloseEntry(BaseEntry):
-    type: Literal["stream/close"]
+class StreamCompleteEntry(_BaseEntry):
+    type: Literal["stream/complete"]
     stream_id: str
     error: NotRequired[ErrorInfo]
 
 
-class AnyEntry(BaseEntry):
+class AnyEntry(_BaseEntry):
     type: str
 
 
@@ -55,7 +55,7 @@ Entry = (
     | PromiseCompleteEntry
     | StreamCreateEntry
     | StreamEmitEntry
-    | StreamCloseEntry
+    | StreamCompleteEntry
 )
 
 
@@ -65,5 +65,5 @@ def is_entry(entry: Entry | AnyEntry) -> TypeGuard[Entry]:
         "promise/complete",
         "stream/create",
         "stream/emit",
-        "stream/close",
+        "stream/complete",
     }

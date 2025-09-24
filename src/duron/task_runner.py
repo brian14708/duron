@@ -105,7 +105,7 @@ class _Task:
 
             _ = asyncio.create_task(self._follow_log(self._log.stream(offset, True)))
             while (waitset := await self._step()) is not None:
-                await waitset.wait(self.now())
+                await waitset.block(self.now())
 
             return self._task.result()
         finally:

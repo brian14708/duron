@@ -64,9 +64,9 @@ class _DefaultCodec(Codec):
             model = self._lookup_model(cast("str", encoded["_duron.pydantic"]))
             if not BaseModel or not issubclass(model, BaseModel):
                 raise TypeError(f"Decoded class is not a BaseModel subclass: {model}")
-            return model.model_validate(
-                {k: v for k, v in encoded.items() if not k.startswith("_duron.")}
-            )
+            return model.model_validate({
+                k: v for k, v in encoded.items() if not k.startswith("_duron.")
+            })
         return encoded
 
     @override

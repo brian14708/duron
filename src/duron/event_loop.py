@@ -57,7 +57,7 @@ class WaitSet:
     timer: float | None
     event: asyncio.Event
 
-    async def wait(self, now_ns: int) -> None:
+    async def block(self, now_ns: int) -> None:
         if self.timer is None:
             _ = await self.event.wait()
             return
@@ -214,13 +214,11 @@ class EventLoop(AbstractEventLoop):
                     try:
                         h._run()
                     except BaseException as exc:
-                        self.call_exception_handler(
-                            {
-                                "message": "exception in callback",
-                                "exception": exc,
-                                "handle": h,
-                            }
-                        )
+                        self.call_exception_handler({
+                            "message": "exception in callback",
+                            "exception": exc,
+                            "handle": h,
+                        })
 
             if task.done():
                 return None

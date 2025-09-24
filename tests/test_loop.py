@@ -23,7 +23,7 @@ async def test_timer():
     loop.tick(time.time_ns())
     tsk = loop.create_task(timer())
     while (waitset := loop.poll_completion(tsk)) is not None:
-        await waitset.wait(time.time_ns())
+        await waitset.block(time.time_ns())
         loop.tick(time.time_ns())
     assert tsk.result() == 0
 

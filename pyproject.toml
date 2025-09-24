@@ -1,6 +1,6 @@
 [project]
 name = "duron"
-version = "0.1.0"
+version = "0.0.1"
 description = ""
 readme = "README.md"
 requires-python = ">=3.10"
@@ -50,6 +50,9 @@ select = [
 extend-safe-fixes = ["TC"]
 preview = true
 future-annotations = true
+
+[tool.ruff.format]
+preview = true
 
 [tool.mypy]
 disable_error_code = [
