@@ -1,30 +1,30 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, NewType
+from typing import TYPE_CHECKING, Generic, Protocol
+
+from typing_extensions import TypeVar
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from duron.log.entry import UnknownEntry
+    from duron.log.entry import AnyEntry
 
     from ..entry import Entry
 
-Offset = NewType("Offset", bytes)
-Lease = NewType("Lease", bytes)
+
+__all__ = ["LogStorage"]
+
+_TOffset = TypeVar("_TOffset")
+_TLease = TypeVar("_TLease")
 
 
-class BaseLogStorage(ABC):
-    @abstractmethod
+class LogStorage(Protocol, Generic[_TOffset, _TLease]):
     def stream(
-        self, start: Offset | None, live: bool
-    ) -> AsyncGenerator[tuple[Offset, Entry | UnknownEntry], None]: ...
+        self, start: _TOffset | None, live: bool
+    ) -> AsyncGenerator[tuple[_TOffset, AnyEntry], None]: ...
 
-    @abstractmethod
-    async def acquire_lease(self) -> Lease: ...
+    async def acquire_lease(self) -> _TLease: ...
 
-    @abstractmethod
-    async def release_lease(self, token: Lease): ...
+    async def release_lease(self, token: _TLease): ...
 
-    @abstractmethod
-    async def append(self, token: Lease, entry: Entry) -> Offset: ...
+    async def append(self, token: _TLease, entry: Entry) -> _TOffset: ...

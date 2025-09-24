@@ -46,7 +46,7 @@ class StreamCloseEntry(BaseEntry):
     error: NotRequired[ErrorInfo]
 
 
-class UnknownEntry(BaseEntry):
+class AnyEntry(BaseEntry):
     type: str
 
 
@@ -59,7 +59,7 @@ Entry = (
 )
 
 
-def is_entry(entry: Entry | UnknownEntry) -> TypeGuard[Entry]:
+def is_entry(entry: Entry | AnyEntry) -> TypeGuard[Entry]:
     return entry["type"] in {
         "promise/create",
         "promise/complete",

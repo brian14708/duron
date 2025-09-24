@@ -5,7 +5,7 @@ import importlib
 import pickle
 from typing import TYPE_CHECKING, cast, final
 
-from typing_extensions import Protocol
+from typing_extensions import Protocol, override
 
 BaseModel: type[_pydantic.BaseModel] | None = None
 try:
@@ -18,10 +18,10 @@ except ImportError:
 if TYPE_CHECKING:
     from duron.log.entry import JSONValue
 
-__all__ = ["BaseCodec", "default_codec"]
+__all__ = ["Codec", "DEFAULT_CODEC"]
 
 
-class BaseCodec(Protocol):
+class Codec(Protocol):
     def encode_json(self, result: object) -> JSONValue: ...
     def decode_json(self, encoded: JSONValue) -> object: ...
 
@@ -30,7 +30,7 @@ class BaseCodec(Protocol):
 
 
 @final
-class _DefaultCodec:
+class _DefaultCodec(Codec):
     def __init__(self) -> None:
         self._type_cache: dict[str, type] = {}
 
@@ -49,6 +49,7 @@ class _DefaultCodec:
         else:
             raise TypeError(f"Imported object is not a type: {obj!r}")
 
+    @override
     def encode_json(self, result: object) -> JSONValue:
         if BaseModel and isinstance(result, BaseModel):
             cls = result.__class__
@@ -57,6 +58,7 @@ class _DefaultCodec:
             return model
         return cast("JSONValue", result)
 
+    @override
     def decode_json(self, encoded: JSONValue) -> object:
         if isinstance(encoded, dict) and "_duron.pydantic" in encoded:
             model = self._lookup_model(cast("str", encoded["_duron.pydantic"]))
@@ -67,11 +69,13 @@ class _DefaultCodec:
             )
         return encoded
 
+    @override
     def encode_state(self, obj: object) -> str:
         return base64.b64encode(pickle.dumps(obj, protocol=5)).decode("ascii")
 
+    @override
     def decode_state(self, state: str) -> object:
         return pickle.loads(base64.b64decode(state.encode()))
 
 
-default_codec = _DefaultCodec()
+DEFAULT_CODEC = _DefaultCodec()

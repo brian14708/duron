@@ -1,4 +1,5 @@
 import asyncio
+import random
 import uuid
 from typing import ClassVar
 
@@ -12,25 +13,42 @@ from duron.mark import durable
 
 @pytest.mark.asyncio
 async def test_task():
+    async def u() -> str:
+        for _ in range(random.randint(1, 10)):
+            await asyncio.sleep(0.001)
+        return str(uuid.uuid4())
+
     @durable()
     async def activity() -> str:
         ctx = duron.context.Context()
         x = await asyncio.gather(
-            ctx.run(lambda: str(uuid.uuid4())),
-            ctx.run(lambda: str(uuid.uuid4())),
+            ctx.run(u),
+            ctx.run(u),
         )
         _ = await ctx.run(lambda: asyncio.sleep(0.1))
         return ":".join(x)
 
+    IDS = {
+        "7evDQ22rsIP/UYdw",
+        "mIH0bXAyM4oPgKm+",
+        "7KUhMsBawSVc+MPu",
+        "DKAqXHcJF+qW4GaI",
+        "BVl/eYXx4b7qmIvo",
+        "dKNNCb6Im+ms3aI7",
+        "W3z2PXIiVl6oap5/",
+        "C9BcE55l4Maj1X/1",
+    }
+
     tr = duron.task_runner.TaskRunner()
     log = MemoryLogStorage()
     a = await tr.run(b"1", activity, log)
+    assert set(e["id"] for e in await log.entries()) == IDS
     b = await tr.run(b"1", activity, log)
     assert a == b
     log2 = MemoryLogStorage((await log.entries())[:-2])
     c = await tr.run(b"1", activity, log2)
     assert a == c
-    assert len(await log.entries()) == len(await log2.entries())
+    assert set(e["id"] for e in await log2.entries()) == IDS
 
 
 @pytest.mark.asyncio
