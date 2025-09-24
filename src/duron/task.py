@@ -2,66 +2,148 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import time
 from collections.abc import Awaitable
 from hashlib import blake2b
 from typing import (
     TYPE_CHECKING,
     Any,
+    Generic,
+    ParamSpec,
+    TypedDict,
     TypeVar,
     cast,
     final,
 )
 
+from duron.context import get_context
 from duron.event_loop import create_loop
-from duron.log.codec import DEFAULT_CODEC
 from duron.log.entry import is_entry
 from duron.ops import FnCall, TaskRun
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Callable, Coroutine
+    from collections.abc import Callable, Coroutine
+    from types import TracebackType
 
     from duron.event_loop import WaitSet
     from duron.log.codec import Codec
-    from duron.log.entry import AnyEntry, Entry, ErrorInfo, PromiseCompleteEntry
+    from duron.log.entry import (
+        Entry,
+        ErrorInfo,
+        JSONValue,
+        PromiseCompleteEntry,
+    )
     from duron.log.storage import LogStorage
     from duron.mark import DurableFn
     from duron.ops import Op
 
     _TOffset = TypeVar("_TOffset")
     _TLease = TypeVar("_TLease")
-    _T = TypeVar("_T")
+
+_T = TypeVar("_T")
+_P = ParamSpec("_P")
+
+_CURRENT_VERSION = 0
 
 
-class TaskRunner:
-    def __init__(self, codec: Codec | None = None) -> None:
-        self._codec: Codec = codec or DEFAULT_CODEC
-
-    async def run(
-        self,
-        task_id: bytes,
-        task_co: DurableFn[[], Coroutine[Any, Any, _T]],
-        log: LogStorage[_TOffset, _TLease],
-    ) -> _T:
-        return cast(
-            "_T",
-            await _Task(
-                task_id, task_co(), cast("LogStorage[object, object]", log), self._codec
-            ).run(),
-        )
+def task(
+    task_co: DurableFn[_P, Coroutine[Any, Any, _T]],
+    log: LogStorage[_TOffset, _TLease],
+) -> TaskGuard[_P, _T]:
+    return TaskGuard(Task(task_co, log))
 
 
 @final
-class _Task:
+class TaskGuard(Generic[_P, _T]):
+    def __init__(self, task: Task[_P, _T]) -> None:
+        self._task = task
+
+    async def __aenter__(self) -> Task[_P, _T]:
+        return self._task
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None: ...
+
+
+@final
+class Task(Generic[_P, _T]):
     def __init__(
         self,
-        id: bytes,
-        task_co: Coroutine[Any, Any, object],
+        task_fn: DurableFn[_P, Coroutine[Any, Any, _T]],
+        log: LogStorage[_TOffset, _TLease],
+        codec: Codec | None = None,
+    ) -> None:
+        self._task_fn = task_fn
+        self._log = log
+        self._run: _TaskRun | None = None
+
+    async def start(self, *args: _P.args, **kwargs: _P.kwargs) -> None:
+        codec = self._task_fn.__durable__.codec
+        init: TaskInitParams = {
+            "version": _CURRENT_VERSION,
+            "args": [codec.encode_json(arg) for arg in args],
+            "kwargs": {k: codec.encode_json(v) for k, v in kwargs.items()},
+        }
+        self._run = _TaskRun(
+            _task_prelude(self._task_fn, lambda: init),
+            cast("LogStorage[object, object]", self._log),
+            codec,
+        )
+        await self._run.resume()
+
+    async def resume(self) -> None:
+        def cb() -> TaskInitParams:
+            raise Exception("not started")
+
+        task = _task_prelude(self._task_fn, cb)
+        self._run = _TaskRun(
+            task,
+            cast("LogStorage[object, object]", self._log),
+            self._task_fn.__durable__.codec,
+        )
+        await self._run.resume()
+
+    async def wait(self) -> _T:
+        if self._run is None:
+            raise RuntimeError("Task not started")
+        return cast("_T", await self._run.run())
+
+
+class TaskInitParams(TypedDict):
+    version: int
+    args: list[JSONValue]
+    kwargs: dict[str, JSONValue]
+
+
+async def _task_prelude(
+    task_fn: DurableFn[..., Coroutine[Any, Any, object]],
+    init: Callable[[], TaskInitParams],
+) -> object:
+    ctx = get_context()
+    init_params = await ctx.run(init)
+    if init_params["version"] != _CURRENT_VERSION:
+        raise Exception("version mismatch")
+    codec = task_fn.__durable__.codec
+    args = (codec.decode_json(arg) for arg in init_params["args"])
+    kwargs = {k: codec.decode_json(v) for k, v in init_params["kwargs"].items()}
+    return await task_fn(*args, **kwargs)
+
+
+@final
+class _TaskRun:
+    def __init__(
+        self,
+        task: Coroutine[Any, Any, object],
         log: LogStorage[object, object],
         codec: Codec,
     ) -> None:
-        self._loop = create_loop(id)
-        self._task = self._loop.create_op(TaskRun(task=task_co))
+        self._loop = create_loop(b"")
+        self._task = self._loop.create_op(TaskRun(task=task))
         self._log = log
         self._codec = codec
         self._running: object | None = None
@@ -69,6 +151,7 @@ class _Task:
         self._pending_task: dict[str, Callable[[], Coroutine[Any, Any, object]]] = {}
         self._pending_ops: set[bytes] = set()
         self._now = 0
+        self._offset: object | None = None
 
     def now(self) -> int:
         if self._running:
@@ -77,11 +160,10 @@ class _Task:
             self._now = max(self._now, t)
         return self._now
 
-    async def run(self) -> object:
-        offset: object | None = None
+    async def resume(self) -> None:
         recvd_msgs: set[str] = set()
         async for o, entry in self._log.stream(None, False):
-            offset = o
+            self._offset = o
             ts = _decode_timestamp(entry["ts"])
             self._now = max(self._now, ts)
             _ = await self._step()
@@ -90,35 +172,55 @@ class _Task:
                 _ = await self._step()
             recvd_msgs.add(entry["id"])
 
+        msgs: list[Entry] = []
+        for msg in self._pending_msg:
+            if msg["id"] not in recvd_msgs:
+                msgs.append(msg)
+        self._pending_msg = msgs
+
+    async def run(self) -> object:
         if self._task.done():
             return self._task.result()
 
         self._running = await self._log.acquire_lease()
         try:
             for msg in self._pending_msg:
-                if msg["id"] not in recvd_msgs:
-                    await self.enqueue_log(msg)
+                await self.enqueue_log(msg)
             self._pending_msg.clear()
             for task in self._pending_task.values():
                 _ = asyncio.create_task(task())
             self._pending_task.clear()
 
-            _ = asyncio.create_task(self._follow_log(self._log.stream(offset, True)))
-            while (waitset := await self._step()) is not None:
-                await waitset.block(self.now())
+            t1 = asyncio.create_task(self._follow_log())
+            t2 = asyncio.create_task(self._step_loop())
+
+            done, pending = await asyncio.wait(
+                [t1, t2], return_when=asyncio.FIRST_COMPLETED
+            )
+
+            for t in pending:
+                _ = t.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await t
+
+            for t in done:
+                if exc := t.exception():
+                    raise exc
 
             return self._task.result()
         finally:
             await self._log.release_lease(self._running)
             self._running = None
 
-    async def _follow_log(
-        self, g: AsyncGenerator[tuple[object, Entry | AnyEntry], None]
-    ) -> None:
-        async for _, entry in g:
+    async def _follow_log(self) -> None:
+        async for _, entry in self._log.stream(self._offset, True):
+            self._now = max(self._now, _decode_timestamp(entry["ts"]))
             if is_entry(entry):
-                self._now = max(self._now, _decode_timestamp(entry["ts"]))
                 await self.handle_message(entry)
+
+    async def _step_loop(self):
+        while waitset := await self._step():
+            await waitset.block(self.now())
 
     async def _step(self) -> WaitSet | None:
         while True:
@@ -164,13 +266,11 @@ class _Task:
     async def enqueue_op(self, id: bytes, op: Op | object) -> None:
         match op:
             case FnCall():
-                await self.enqueue_log(
-                    {
-                        "ts": _encode_timestamp(self.now()),
-                        "id": _encode_id(id),
-                        "type": "promise/create",
-                    }
-                )
+                await self.enqueue_log({
+                    "ts": _encode_timestamp(self.now()),
+                    "id": _encode_id(id),
+                    "type": "promise/create",
+                })
 
                 async def cb() -> None:
                     entry: PromiseCompleteEntry = {
@@ -194,13 +294,11 @@ class _Task:
                     self._pending_task[_encode_id(id)] = cb
 
             case TaskRun():
-                await self.enqueue_log(
-                    {
-                        "ts": _encode_timestamp(self.now()),
-                        "id": _encode_id(id),
-                        "type": "promise/create",
-                    }
-                )
+                await self.enqueue_log({
+                    "ts": _encode_timestamp(self.now()),
+                    "id": _encode_id(id),
+                    "type": "promise/create",
+                })
 
                 async def cb() -> None:
                     entry: PromiseCompleteEntry = {

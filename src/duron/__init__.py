@@ -1,5 +1,5 @@
 from duron.context import get_context
 from duron.mark import durable
-from duron.task_runner import TaskRunner
+from duron.task import task
 
-__all__ = ["durable", "TaskRunner", "get_context"]
+__all__ = ["durable", "task", "get_context"]

@@ -78,4 +78,4 @@ class _DefaultCodec(Codec):
         return pickle.loads(base64.b64decode(state.encode()))
 
 
-DEFAULT_CODEC = _DefaultCodec()
+DEFAULT_CODEC: Codec = _DefaultCodec()
