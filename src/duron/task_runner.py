@@ -3,62 +3,68 @@ from __future__ import annotations
 import asyncio
 import base64
 import time
-from collections.abc import Coroutine
+from collections.abc import Awaitable
+from hashlib import blake2b
 from typing import (
     TYPE_CHECKING,
     Any,
-    Generic,
     TypeVar,
     cast,
     final,
 )
 
 from duron.event_loop import create_loop
-from duron.log.codec import default_codec
+from duron.log.codec import DEFAULT_CODEC
 from duron.log.entry import is_entry
-from duron.ops import FnCall
+from duron.ops import FnCall, TaskRun
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Callable
+    from collections.abc import AsyncGenerator, Callable, Coroutine
 
     from duron.event_loop import WaitSet
-    from duron.log.codec import BaseCodec
-    from duron.log.entry import Entry, ErrorInfo, UnknownEntry
-    from duron.log.storage import BaseLogStorage, Lease, Offset
+    from duron.log.codec import Codec
+    from duron.log.entry import AnyEntry, Entry, ErrorInfo, PromiseCompleteEntry
+    from duron.log.storage import LogStorage
     from duron.mark import DurableFn
     from duron.ops import Op
 
-_T = TypeVar("_T")
+    _TOffset = TypeVar("_TOffset")
+    _TLease = TypeVar("_TLease")
+    _T = TypeVar("_T")
 
 
 class TaskRunner:
-    def __init__(self, codec: BaseCodec | None = None) -> None:
-        self._codec: BaseCodec = codec or default_codec
+    def __init__(self, codec: Codec | None = None) -> None:
+        self._codec: Codec = codec or DEFAULT_CODEC
 
     async def run(
         self,
         task_id: bytes,
         task_co: DurableFn[[], Coroutine[Any, Any, _T]],
-        log: BaseLogStorage,
+        log: LogStorage[_TOffset, _TLease],
     ) -> _T:
-        return await _Task[_T](task_id, task_co(), log, self._codec).run()
+        return cast(
+            "_T",
+            await _Task(
+                task_id, task_co(), cast("LogStorage[object, object]", log), self._codec
+            ).run(),
+        )
 
 
 @final
-class _Task(Generic[_T]):
+class _Task:
     def __init__(
         self,
         id: bytes,
-        task_co: Coroutine[Any, Any, _T],
-        log: BaseLogStorage,
-        codec: BaseCodec,
+        task_co: Coroutine[Any, Any, object],
+        log: LogStorage[object, object],
+        codec: Codec,
     ) -> None:
-        self._id = id
         self._loop = create_loop(id)
-        self._task = self._loop.create_task(task_co)
+        self._task = self._loop.create_op(TaskRun(task=task_co))
         self._log = log
         self._codec = codec
-        self._running: Lease | None = None
+        self._running: object | None = None
         self._pending_msg: list[Entry] = []
         self._pending_task: dict[str, Callable[[], Coroutine[Any, Any, object]]] = {}
         self._pending_ops: set[bytes] = set()
@@ -71,8 +77,8 @@ class _Task(Generic[_T]):
             self._now = max(self._now, t)
         return self._now
 
-    async def run(self) -> _T:
-        offset: Offset | None = None
+    async def run(self) -> object:
+        offset: object | None = None
         recvd_msgs: set[str] = set()
         async for o, entry in self._log.stream(None, False):
             offset = o
@@ -89,15 +95,6 @@ class _Task(Generic[_T]):
 
         self._running = await self._log.acquire_lease()
         try:
-            if not offset:
-                await self.enqueue_log(
-                    {
-                        "type": "promise/create",
-                        "id": _encode_id(self._id, False),
-                        "ts": _encode_timestamp(self.now()),
-                        "meta": {"duron.root": "true"},
-                    },
-                )
             for msg in self._pending_msg:
                 if msg["id"] not in recvd_msgs:
                     await self.enqueue_log(msg)
@@ -110,34 +107,13 @@ class _Task(Generic[_T]):
             while (waitset := await self._step()) is not None:
                 await waitset.wait(self.now())
 
-            res = self._task.result()
-            await self.enqueue_log(
-                {
-                    "type": "promise/complete",
-                    "id": _encode_id(self._id, True),
-                    "ts": _encode_timestamp(self.now()),
-                    "promise_id": _encode_id(self._id, False),
-                    "result": self._codec.encode_json(res),
-                },
-            )
-            return res
-        except BaseException as e:
-            await self.enqueue_log(
-                {
-                    "type": "promise/complete",
-                    "id": _encode_id(self._id, True),
-                    "ts": _encode_timestamp(self.now()),
-                    "promise_id": _encode_id(self._id, False),
-                    "error": _encode_error(e, self._codec),
-                },
-            )
-            raise
+            return self._task.result()
         finally:
             await self._log.release_lease(self._running)
             self._running = None
 
     async def _follow_log(
-        self, g: AsyncGenerator[tuple[Offset, Entry | UnknownEntry], None]
+        self, g: AsyncGenerator[tuple[object, Entry | AnyEntry], None]
     ) -> None:
         async for _, entry in g:
             if is_entry(entry):
@@ -160,7 +136,7 @@ class _Task(Generic[_T]):
     async def handle_message(self, e: Entry) -> None:
         if e["type"] == "promise/complete":
             _ = self._pending_task.pop(e["promise_id"], None)
-            id, _ = _decode_id(e["id"])
+            id = _decode_id(e["promise_id"])
             if "error" in e:
                 self._loop.post_completion_threadsafe(
                     id,
@@ -191,59 +167,72 @@ class _Task(Generic[_T]):
                 await self.enqueue_log(
                     {
                         "ts": _encode_timestamp(self.now()),
-                        "id": _encode_id(id, False),
+                        "id": _encode_id(id),
                         "type": "promise/create",
                     }
                 )
 
                 async def cb() -> None:
+                    entry: PromiseCompleteEntry = {
+                        "ts": _encode_timestamp(self.now()),
+                        "id": _encode_id(id, 1),
+                        "type": "promise/complete",
+                        "promise_id": _encode_id(id),
+                    }
                     try:
                         result = op.callable()
-                        if isinstance(result, Coroutine):
-                            result = await cast("Coroutine[Any, Any, object]", result)
-                        await self.enqueue_log(
-                            {
-                                "ts": _encode_timestamp(self.now()),
-                                "id": _encode_id(id, True),
-                                "type": "promise/complete",
-                                "promise_id": _encode_id(id, False),
-                                "result": self._codec.encode_json(result),
-                            }
-                        )
+                        if isinstance(result, Awaitable):
+                            result = await cast("Awaitable[object]", result)
+                        entry["result"] = self._codec.encode_json(result)
                     except BaseException as e:
-                        await self.enqueue_log(
-                            {
-                                "type": "promise/complete",
-                                "ts": _encode_timestamp(self.now()),
-                                "id": _encode_id(id, True),
-                                "promise_id": _encode_id(id, False),
-                                "error": _encode_error(e, self._codec),
-                            }
-                        )
+                        entry["error"] = _encode_error(e, self._codec)
+                    await self.enqueue_log(entry)
 
                 if self._running:
                     _ = asyncio.create_task(cb())
                 else:
-                    self._pending_task[_encode_id(id, False)] = cb
+                    self._pending_task[_encode_id(id)] = cb
+
+            case TaskRun():
+                await self.enqueue_log(
+                    {
+                        "ts": _encode_timestamp(self.now()),
+                        "id": _encode_id(id),
+                        "type": "promise/create",
+                    }
+                )
+
+                async def cb() -> None:
+                    entry: PromiseCompleteEntry = {
+                        "ts": _encode_timestamp(self.now()),
+                        "id": _encode_id(id, 1),
+                        "type": "promise/complete",
+                        "promise_id": _encode_id(id),
+                    }
+                    try:
+                        result = await op.task
+                        entry["result"] = self._codec.encode_json(result)
+                    except BaseException as e:
+                        entry["error"] = _encode_error(e, self._codec)
+
+                    await self.enqueue_log(entry)
+
+                _ = self._loop.create_task(cb())
 
             case _:
                 raise NotImplementedError(f"Unsupported op: {op!r}")
 
 
-def _encode_id(id: bytes, is_end: bool) -> str:
-    if is_end:
-        return base64.b64encode(id).decode() + "-"
-    else:
-        return base64.b64encode(id).decode() + "+"
+def _encode_id(id: bytes, flag: int = 0) -> str:
+    if flag != 0:
+        id = blake2b(
+            flag.to_bytes(4, "little", signed=True) + id, digest_size=12
+        ).digest()
+    return base64.b64encode(id).decode()
 
 
-def _decode_id(encoded: str) -> tuple[bytes, bool]:
-    if encoded.endswith("-"):
-        return base64.b64decode(encoded[:-1]), True
-    elif encoded.endswith("+"):
-        return base64.b64decode(encoded[:-1]), False
-    else:
-        raise ValueError(f"Invalid encoded id: {encoded!r}")
+def _decode_id(encoded: str) -> bytes:
+    return base64.b64decode(encoded)
 
 
 def _encode_timestamp(ts_ns: int) -> int:
@@ -254,7 +243,7 @@ def _decode_timestamp(ts: int) -> int:
     return ts * 1_000
 
 
-def _encode_error(error: BaseException, codec: BaseCodec) -> ErrorInfo:
+def _encode_error(error: BaseException, codec: Codec) -> ErrorInfo:
     """Convert exception to ErrorInfo dict."""
     return {
         "code": -1,
@@ -263,7 +252,7 @@ def _encode_error(error: BaseException, codec: BaseCodec) -> ErrorInfo:
     }
 
 
-def _decode_error(error_info: ErrorInfo, codec: BaseCodec) -> BaseException:
+def _decode_error(error_info: ErrorInfo, codec: Codec) -> BaseException:
     """Convert ErrorInfo dict to exception."""
     try:
         if "state" not in error_info:

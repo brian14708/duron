@@ -4,12 +4,17 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    from collections.abc import Awaitable, Callable, Coroutine
 
 
 @dataclass(slots=True)
 class FnCall:
-    callable: Callable[..., Coroutine[Any, Any, object] | object]
+    callable: Callable[[], Awaitable[object] | object]
 
 
-Op = FnCall
+@dataclass(slots=True)
+class TaskRun:
+    task: Coroutine[Any, Any, object]
+
+
+Op = FnCall | TaskRun
