@@ -242,7 +242,7 @@ class _TaskRun:
             if "error" in e:
                 self._loop.post_completion_threadsafe(
                     id,
-                    exception=_decode_error(e["error"], self._codec),
+                    exception=_decode_error(e["error"]),
                 )
                 self._pending_ops.discard(id)
             elif "result" in e:
@@ -287,7 +287,7 @@ class _TaskRun:
                             result = await cast("Awaitable[object]", result)
                         entry["result"] = self._codec.encode_json(result)
                     except BaseException as e:
-                        entry["error"] = _encode_error(e, self._codec)
+                        entry["error"] = _encode_error(e)
                     await self.enqueue_log(entry)
 
                 if self._running:
@@ -313,7 +313,7 @@ class _TaskRun:
                         result = await op.task
                         entry["result"] = self._codec.encode_json(result)
                     except BaseException as e:
-                        entry["error"] = _encode_error(e, self._codec)
+                        entry["error"] = _encode_error(e)
 
                     await self.enqueue_log(entry, True)
 
@@ -343,20 +343,12 @@ def _decode_timestamp(ts: int) -> int:
     return ts * 1_000
 
 
-def _encode_error(error: BaseException, codec: Codec) -> ErrorInfo:
-    """Convert exception to ErrorInfo dict."""
+def _encode_error(error: BaseException) -> ErrorInfo:
     return {
         "code": -1,
         "message": str(error),
-        "state": codec.encode_state(error),
     }
 
 
-def _decode_error(error_info: ErrorInfo, codec: Codec) -> BaseException:
-    """Convert ErrorInfo dict to exception."""
-    try:
-        if "state" not in error_info:
-            return Exception(f"[{error_info['code']}] {error_info['message']}")
-        return cast("BaseException", codec.decode_state(error_info["state"]))
-    except Exception:
-        return Exception(f"[{error_info['code']}] {error_info['message']}")
+def _decode_error(error_info: ErrorInfo) -> BaseException:
+    return Exception(f"[{error_info['code']}] {error_info['message']}")

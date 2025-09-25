@@ -27,7 +27,6 @@ class _BaseEntry(TypedDict):
 class ErrorInfo(TypedDict):
     code: int
     message: str
-    state: NotRequired[str]  # opaque
 
 
 class PromiseCreateEntry(_BaseEntry):
@@ -49,7 +48,7 @@ class StreamEmitEntry(_BaseEntry):
     type: Literal["stream/emit"]
     stream_id: str
     value: NotRequired[JSONValue]
-    state: NotRequired[str]  # opaque
+    state: NotRequired[JSONValue]
 
 
 class StreamCompleteEntry(_BaseEntry):

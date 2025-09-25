@@ -8,7 +8,7 @@ from typing import (
     TypeVar,
 )
 
-from duron.codec import DEFAULT_CODEC
+from duron.codec import DefaultCodec
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -30,7 +30,7 @@ class DurableFn(Generic[_P, _T_co]):
 
 
 def durable(
-    *, codec: Codec = DEFAULT_CODEC
+    *, codec: Codec | None = None
 ) -> Callable[[Callable[_P, _T_co]], DurableFn[_P, _T_co]]:
     """
     Mark a function as durable, meaning its execution can be recorded and
@@ -38,6 +38,6 @@ def durable(
     """
 
     def decorate(fn: Callable[_P, _T_co]) -> DurableFn[_P, _T_co]:
-        return DurableFn(codec=codec, fn=fn)
+        return DurableFn(codec=codec or DefaultCodec(), fn=fn)
 
     return decorate

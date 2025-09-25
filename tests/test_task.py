@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 import asyncio
+import base64
+import pickle
 import random
 import uuid
-from typing import ClassVar
+from dataclasses import dataclass
 
 import pytest
 
@@ -104,31 +108,33 @@ async def test_resume():
     assert x == "hello"
 
 
-try:
-    import pydantic
+@dataclass
+class CustomPoint:
+    x: int
+    y: int
 
-    class Point(pydantic.BaseModel):
-        model_config: ClassVar[pydantic.ConfigDict] = pydantic.ConfigDict(
-            extra="forbid"
-        )
 
-        x: int
-        y: int
+class PickleCodec:
+    def encode_json(self, result: object) -> str:
+        return base64.b64encode(pickle.dumps(result)).decode()
 
-    @pytest.mark.asyncio
-    async def test_pydantic():
-        @durable()
-        async def activity() -> Point:
-            ctx = get_context()
-            pt = await ctx.run(lambda: Point(x=1, y=2))
-            return Point(x=pt.x + 5, y=pt.y + 10)
+    def decode_json(self, encoded: object) -> object:
+        if not isinstance(encoded, str):
+            raise TypeError(f"Expected a string, got {type(encoded).__name__}")
+        return pickle.loads(base64.b64decode(encoded.encode()))
 
-        log = MemoryLogStorage()
-        async with task(activity, log) as t:
-            await t.start()
-            a = await t.wait()
-            assert type(a) is Point
-            assert a.x == 6 and a.y == 12
 
-except ImportError:
-    pass
+@pytest.mark.asyncio
+async def test_serialize():
+    @durable(codec=PickleCodec())
+    async def activity() -> CustomPoint:
+        ctx = get_context()
+        pt = await ctx.run(lambda: CustomPoint(x=1, y=2))
+        return CustomPoint(x=pt.x + 5, y=pt.y + 10)
+
+    log = MemoryLogStorage()
+    async with task(activity, log) as t:
+        await t.start()
+        a = await t.wait()
+        assert type(a) is CustomPoint
+        assert a.x == 6 and a.y == 12
