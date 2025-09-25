@@ -34,9 +34,11 @@ class DurableFn(Generic[_P, _T_co]):
     fn: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]]
 
     def __call__(
-        self,
-        log: LogStorage[_TOffset, _TLease],
-    ) -> TaskGuard[_P, _T_co]:
+        self, ctx: Context, *args: _P.args, **kwargs: _P.kwargs
+    ) -> Coroutine[Any, Any, _T_co]:
+        return self.fn(ctx, *args, **kwargs)
+
+    def create_task(self, log: LogStorage[_TOffset, _TLease]) -> TaskGuard[_P, _T_co]:
         return TaskGuard(Task(self, cast("LogStorage[object, object]", log)))
 
 

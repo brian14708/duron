@@ -6,11 +6,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-from typing_extensions import TypeVar
 
 from duron.contrib.storage import FileLogStorage, MemoryLogStorage
 
 if TYPE_CHECKING:
+    from typing_extensions import TypeVar
+
     from duron.log import Entry, LogStorage
 
     _TOffset = TypeVar("_TOffset")

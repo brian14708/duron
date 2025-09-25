@@ -5,16 +5,13 @@ import contextlib
 import random
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import pytest
 
 from duron import durable
+from duron.context import Context
 from duron.contrib.codecs import PickleCodec
 from duron.contrib.storage import MemoryLogStorage
-
-if TYPE_CHECKING:
-    from duron.context import Context
 
 
 @pytest.mark.asyncio
@@ -47,18 +44,18 @@ async def test_task():
     }
 
     log = MemoryLogStorage()
-    async with activity(log) as t:
+    async with activity.create_task(log) as t:
         await t.start("test")
         a = await t.wait()
     assert set(e["id"] for e in await log.entries()) == IDS
 
-    async with activity(log) as t:
+    async with activity.create_task(log) as t:
         await t.start("test")
         b = await t.wait()
     assert a == b
 
     log2 = MemoryLogStorage((await log.entries())[:-2])
-    async with activity(log2) as t:
+    async with activity.create_task(log2) as t:
         await t.start("test")
         c = await t.wait()
     assert a == c
@@ -78,11 +75,11 @@ async def test_task_error():
 
     log = MemoryLogStorage()
     with pytest.raises(check=lambda v: "test error" in str(v)):
-        async with activity(log) as t:
+        async with activity.create_task(log) as t:
             await t.start()
             await t.wait()
     with pytest.raises(check=lambda v: "test error" in str(v)):
-        async with activity(log) as t:
+        async with activity.create_task(log) as t:
             await t.start()
             await t.wait()
 
@@ -97,12 +94,12 @@ async def test_resume():
         return s
 
     log = MemoryLogStorage()
-    async with activity(log) as t:
+    async with activity.create_task(log) as t:
         await t.start("hello")
         with pytest.raises(asyncio.TimeoutError):
             _ = await asyncio.wait_for(t.wait(), 0.1)
 
-    async with activity(log) as t:
+    async with activity.create_task(log) as t:
         sleep = 0
         await t.resume()
         x = await t.wait()
@@ -119,7 +116,7 @@ async def test_cancel():
         return s
 
     log = MemoryLogStorage()
-    async with activity(log) as t:
+    async with activity.create_task(log) as t:
         await t.start("hello")
         try:
             _ = await t.wait()
@@ -143,8 +140,28 @@ async def test_serialize():
         return CustomPoint(x=pt.x + 5, y=pt.y + 10)
 
     log = MemoryLogStorage()
-    async with activity(log) as t:
+    async with activity.create_task(log) as t:
         await t.start()
         a = await t.wait()
         assert type(a) is CustomPoint
         assert a.x == 6 and a.y == 12
+
+
+@pytest.mark.asyncio
+async def test_random():
+    @durable()
+    async def activity(ctx: Context) -> int:
+        assert ctx.time_ns() == ctx.time_ns()
+        return ctx.random().randint(1, 100)
+
+    log = MemoryLogStorage()
+    async with activity.create_task(log) as t:
+        await t.start()
+        a = await t.wait()
+
+    log = MemoryLogStorage()
+    async with activity.create_task(log) as t:
+        await t.start()
+        b = await t.wait()
+
+    assert a == b

@@ -9,7 +9,9 @@ if TYPE_CHECKING:
 
 @dataclass(slots=True)
 class FnCall:
-    callable: Callable[[], Awaitable[object] | object]
+    callable: Callable[..., Awaitable[object] | object]
+    args: tuple[object, ...]
+    kwargs: dict[str, object]
 
 
 @dataclass(slots=True)
