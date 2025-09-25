@@ -45,6 +45,9 @@ extend-safe-fixes = ["TC"]
 preview = true
 future-annotations = true
 
+[tool.ruff.lint.flake8-type-checking]
+runtime-evaluated-decorators = ["duron.durable"]
+
 [tool.ruff.format]
 preview = true
 

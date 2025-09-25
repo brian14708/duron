@@ -17,8 +17,8 @@ from typing import (
     final,
 )
 
-from duron.context import get_context
-from duron.event_loop import create_loop
+from duron.context import Context
+from duron.event_loop import EventLoop, create_loop
 from duron.log import is_entry
 from duron.ops import FnCall, TaskRun
 
@@ -113,14 +113,16 @@ async def _task_prelude(
     task_fn: DurableFn[..., object],
     init: Callable[[], TaskInitParams],
 ) -> object:
-    ctx = get_context()
-    init_params = await ctx.run(init)
-    if init_params["version"] != _CURRENT_VERSION:
-        raise Exception("version mismatch")
-    codec = task_fn.codec
-    args = (codec.decode_json(arg) for arg in init_params["args"])
-    kwargs = {k: codec.decode_json(v) for k, v in init_params["kwargs"].items()}
-    return await task_fn.fn(get_context(), *args, **kwargs)
+    loop = asyncio.get_event_loop()
+    assert isinstance(loop, EventLoop)
+    with Context(loop) as ctx:
+        init_params = await ctx.run(init)
+        if init_params["version"] != _CURRENT_VERSION:
+            raise Exception("version mismatch")
+        codec = task_fn.codec
+        args = (codec.decode_json(arg) for arg in init_params["args"])
+        kwargs = {k: codec.decode_json(v) for k, v in init_params["kwargs"].items()}
+        return await task_fn.fn(ctx, *args, **kwargs)
 
 
 @final
@@ -278,7 +280,7 @@ class _TaskRun:
                         "promise_id": _encode_id(id),
                     }
                     try:
-                        result = op.callable()
+                        result = op.callable(*op.args, **op.kwargs)
                         if isinstance(result, Awaitable):
                             result = await cast("Awaitable[object]", result)
                         entry["result"] = self._codec.encode_json(result)

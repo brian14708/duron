@@ -12,10 +12,6 @@ from hashlib import blake2b
 from typing import TYPE_CHECKING, cast, overload
 
 from typing_extensions import (
-    Any,
-    TypeVar,
-    TypeVarTuple,
-    Unpack,
     override,
 )
 
@@ -24,6 +20,13 @@ if TYPE_CHECKING:
     from asyncio.futures import Future
     from collections.abc import Callable, Coroutine, Generator
     from contextvars import Context
+
+    from typing_extensions import (
+        Any,
+        TypeVar,
+        TypeVarTuple,
+        Unpack,
+    )
 
     _T = TypeVar("_T")
     _Ts = TypeVarTuple("_Ts")
@@ -87,7 +90,7 @@ class EventLoop(AbstractEventLoop):
 
         self._timers: list[TimerHandle] = []
 
-    def _generate_id(self) -> bytes:
+    def generate_op_id(self) -> bytes:
         ctx = _task_ctx.get(self._ctx)
         ctx.seq += 1
         return _mix_id(ctx.parent_id, ctx.seq - 1)
@@ -150,6 +153,9 @@ class EventLoop(AbstractEventLoop):
     def time(self) -> float:
         return self._now_ns / 1e9
 
+    def time_ns(self) -> int:
+        return self._now_ns
+
     def tick(self, time: int) -> None:
         self._now_ns = time
 
@@ -166,7 +172,7 @@ class EventLoop(AbstractEventLoop):
         context: Context | None = None,
         **kwargs: Any,
     ) -> Task[_T]:
-        ctx = self._context_new_task(context, self._generate_id())
+        ctx = self._context_new_task(context, self.generate_op_id())
         return ctx.run(
             cast("type[Task[_T]]", Task), coro, name=name, loop=self, **kwargs
         )
@@ -217,7 +223,7 @@ class EventLoop(AbstractEventLoop):
             events._set_running_loop(old)
 
     def create_op(self, params: object) -> OpFuture:
-        id = self._generate_id()
+        id = self.generate_op_id()
         s = OpFuture(id, params, self)
         self._ops[id] = s
         return s
