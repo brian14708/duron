@@ -9,8 +9,6 @@ from duron.log import is_json_value
 if TYPE_CHECKING:
     from duron.log import JSONValue
 
-__all__ = ["Codec", "DefaultCodec"]
-
 
 class Codec(Protocol):
     def encode_json(self, result: object) -> JSONValue: ...

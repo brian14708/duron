@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import pickle
 import random
 import uuid
 from dataclasses import dataclass
@@ -11,7 +9,8 @@ from typing import TYPE_CHECKING
 import pytest
 
 from duron import durable
-from duron.log.storage import MemoryLogStorage
+from duron.contrib.codecs import PickleCodec
+from duron.contrib.storage import MemoryLogStorage
 
 if TYPE_CHECKING:
     from duron.context import Context
@@ -113,16 +112,6 @@ async def test_resume():
 class CustomPoint:
     x: int
     y: int
-
-
-class PickleCodec:
-    def encode_json(self, result: object) -> str:
-        return base64.b64encode(pickle.dumps(result)).decode()
-
-    def decode_json(self, encoded: object) -> object:
-        if not isinstance(encoded, str):
-            raise TypeError(f"Expected a string, got {type(encoded).__name__}")
-        return pickle.loads(base64.b64decode(encoded.encode()))
 
 
 @pytest.mark.asyncio

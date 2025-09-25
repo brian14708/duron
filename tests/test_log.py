@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 from typing_extensions import TypeVar
 
-from duron.log.storage import FileLogStorage, MemoryLogStorage
+from duron.contrib.storage import FileLogStorage, MemoryLogStorage
 
 if TYPE_CHECKING:
     from duron.log import Entry, LogStorage

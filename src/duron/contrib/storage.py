@@ -8,12 +8,12 @@ from typing import TYPE_CHECKING, cast
 
 from typing_extensions import override
 
-from . import LogStorage
+from duron.log import LogStorage
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from . import AnyEntry, Entry
+    from duron.log import AnyEntry, Entry
 
 
 class FileLogStorage(LogStorage[int, str]):
