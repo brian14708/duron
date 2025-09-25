@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from duron.codec import Codec
-    from duron.event_loop import WaitSet
+    from duron.event_loop import OpFuture, WaitSet
     from duron.fn import DurableFn
     from duron.log import (
         Entry,
@@ -36,7 +36,6 @@ if TYPE_CHECKING:
         LogStorage,
         PromiseCompleteEntry,
     )
-    from duron.ops import Op
 
 
 _T = TypeVar("_T")
@@ -138,16 +137,17 @@ class _TaskRun:
         self._codec = codec
         self._running: object | None = None
         self._pending_msg: list[Entry] = []
-        self._pending_task: dict[str, Callable[[], Coroutine[Any, Any, object]]] = {}
+        self._pending_task: dict[str, Callable[[], Coroutine[Any, Any, None]]] = {}
         self._pending_ops: set[bytes] = set()
         self._now = 0
         self._offset: object | None = None
+        self._tasks: dict[str, asyncio.Task[None]] = {}
 
     def now(self) -> int:
         if self._running:
             t = time.time_ns()
             t -= t % 1_000
-            self._now = max(self._now, t)
+            self._now = max(self._now + 1_000, t)
         return self._now
 
     async def resume(self) -> None:
@@ -177,8 +177,8 @@ class _TaskRun:
             for msg in self._pending_msg:
                 await self.enqueue_log(msg)
             self._pending_msg.clear()
-            for task in self._pending_task.values():
-                _ = asyncio.create_task(task())
+            for key, task in self._pending_task.items():
+                self._tasks[key] = asyncio.create_task(task())
             self._pending_task.clear()
 
             t1 = asyncio.create_task(self._follow_log())
@@ -189,6 +189,11 @@ class _TaskRun:
             )
 
             for t in pending:
+                _ = t.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await t
+
+            for t in self._tasks.values():
                 _ = t.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await t
@@ -223,20 +228,20 @@ class _TaskRun:
                 sid = s.id
                 if sid not in self._pending_ops:
                     self._pending_ops.add(sid)
-                    await self.enqueue_op(sid, s.params)
+                    await self.enqueue_op(sid, s)
 
     async def handle_message(self, e: Entry) -> None:
         if e["type"] == "promise/complete":
             _ = self._pending_task.pop(e["promise_id"], None)
             id = _decode_id(e["promise_id"])
             if "error" in e:
-                self._loop.post_completion_threadsafe(
+                self._loop.post_completion(
                     id,
                     exception=_decode_error(e["error"]),
                 )
                 self._pending_ops.discard(id)
             elif "result" in e:
-                self._loop.post_completion_threadsafe(
+                self._loop.post_completion(
                     id,
                     result=self._codec.decode_json(e["result"]),
                 )
@@ -251,11 +256,12 @@ class _TaskRun:
             self._pending_msg.append(entry)
         else:
             await self._log.append(self._running, entry)
-            await self.handle_message(entry)
             if flush:
                 await self._log.flush(self._running)
+            await self.handle_message(entry)
 
-    async def enqueue_op(self, id: bytes, op: Op | object) -> None:
+    async def enqueue_op(self, id: bytes, fut: OpFuture) -> None:
+        op = fut.params
         match op:
             case FnCall():
                 await self.enqueue_log({
@@ -278,12 +284,22 @@ class _TaskRun:
                         entry["result"] = self._codec.encode_json(result)
                     except BaseException as e:
                         entry["error"] = _encode_error(e)
-                    await self.enqueue_log(entry)
+                    finally:
+                        await self.enqueue_log(entry)
 
+                def done(f: OpFuture) -> None:
+                    if f.cancelled():
+                        sid = _encode_id(f.id)
+                        _ = self._pending_task.pop(sid, None)
+                        if tsk := self._tasks.get(sid, None):
+                            _ = tsk.cancel()
+
+                fut.add_done_callback(done)
+                sid = _encode_id(id)
                 if self._running:
-                    _ = asyncio.create_task(cb())
+                    self._tasks[sid] = asyncio.create_task(cb())
                 else:
-                    self._pending_task[_encode_id(id)] = cb
+                    self._pending_task[sid] = cb
 
             case TaskRun():
                 await self.enqueue_log({
@@ -304,8 +320,8 @@ class _TaskRun:
                         entry["result"] = self._codec.encode_json(result)
                     except BaseException as e:
                         entry["error"] = _encode_error(e)
-
-                    await self.enqueue_log(entry, True)
+                    finally:
+                        await self.enqueue_log(entry, True)
 
                 _ = self._loop.create_task(cb())
 
@@ -336,7 +352,7 @@ def _decode_timestamp(ts: int) -> int:
 def _encode_error(error: BaseException) -> ErrorInfo:
     return {
         "code": -1,
-        "message": str(error),
+        "message": repr(error),
     }
 
 

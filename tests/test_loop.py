@@ -68,9 +68,9 @@ def op_single() -> set[bytes]:
 
     for i in range(5, 0, -1):
         ws = tick(i, {1, 2, 3, 4, 5})
-        loop.post_completion_threadsafe(ws[random.randint(0, i - 1)], result=i - 1)
+        loop.post_completion(ws[random.randint(0, i - 1)], result=i - 1)
     ws = tick(1, {6})
-    loop.post_completion_threadsafe(ws[0], result=6)
+    loop.post_completion(ws[0], result=6)
     tick(0, None)
 
     return ids

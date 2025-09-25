@@ -5,7 +5,6 @@ import contextlib
 import contextvars
 import heapq
 import logging
-import threading
 from asyncio import AbstractEventLoop, Handle, Task, TimerHandle, events
 from collections import deque
 from dataclasses import dataclass
@@ -86,7 +85,6 @@ class EventLoop(AbstractEventLoop):
         self._closed: bool = False
         self._event: asyncio.Event = asyncio.Event()
 
-        self._lock: threading.Lock = threading.Lock()
         self._timers: list[TimerHandle] = []
 
     def _generate_id(self) -> bytes:
@@ -116,19 +114,9 @@ class EventLoop(AbstractEventLoop):
         callback: Callable[[Unpack[_Ts]], object],
         *args: Unpack[_Ts],
         context: Context | None = None,
-        task_id: bytes | None = None,
     ) -> Handle:
-        self._event.set()
-        h = TimerHandle(
-            0,
-            callback,
-            args,
-            self,
-            context=self._context_with_task_id(context, task_id=task_id),
-        )
-        with self._lock:
-            heapq.heappush(self._timers, h)
-        return h
+        # the loop is not thread-safe, so we just call call_soon
+        return self.call_soon(callback, *args, context=context)
 
     @override
     def call_at(
@@ -143,10 +131,9 @@ class EventLoop(AbstractEventLoop):
             callback,
             args,
             loop=self,
-            context=self._context_with_task_id(context),
+            context=context,
         )
-        with self._lock:
-            heapq.heappush(self._timers, th)
+        heapq.heappush(self._timers, th)
         return th
 
     @override
@@ -179,7 +166,7 @@ class EventLoop(AbstractEventLoop):
         context: Context | None = None,
         **kwargs: Any,
     ) -> Task[_T]:
-        ctx = self._context_with_task_id(context)
+        ctx = self._context_new_task(context, self._generate_id())
         return ctx.run(
             cast("type[Task[_T]]", Task), coro, name=name, loop=self, **kwargs
         )
@@ -193,17 +180,16 @@ class EventLoop(AbstractEventLoop):
             deadline: float | None = None
             while True:
                 deadline = None
-                with self._lock:
-                    while self._timers:
-                        ht = self._timers[0]
-                        if ht.cancelled():
-                            _ = heapq.heappop(self._timers)
-                        elif ht.when() <= now:
-                            _ = heapq.heappop(self._timers)
-                            self._ready.append(ht)
-                        else:
-                            deadline = ht.when()
-                            break
+                while self._timers:
+                    ht = self._timers[0]
+                    if ht.cancelled():
+                        _ = heapq.heappop(self._timers)
+                    elif ht.when() <= now:
+                        _ = heapq.heappop(self._timers)
+                        self._ready.append(ht)
+                    else:
+                        deadline = ht.when()
+                        break
 
                 if not self._ready:
                     break
@@ -213,7 +199,7 @@ class EventLoop(AbstractEventLoop):
                         continue
                     try:
                         h._run()
-                    except BaseException as exc:
+                    except Exception as exc:
                         self.call_exception_handler({
                             "message": "exception in callback",
                             "exception": exc,
@@ -237,20 +223,20 @@ class EventLoop(AbstractEventLoop):
         return s
 
     @overload
-    def post_completion_threadsafe(
+    def post_completion(
         self,
         id: bytes,
         *,
         result: object,
     ) -> None: ...
     @overload
-    def post_completion_threadsafe(
+    def post_completion(
         self,
         id: bytes,
         *,
         exception: BaseException,
     ) -> None: ...
-    def post_completion_threadsafe(
+    def post_completion(
         self,
         id: bytes,
         *,
@@ -259,10 +245,15 @@ class EventLoop(AbstractEventLoop):
     ) -> None:
         if op := self._ops.pop(id, None):
             tid = _mix_id(op.id, -1)
-            if exception is not None:
-                _ = self.call_soon_threadsafe(op.set_exception, exception, task_id=tid)
-            else:
-                _ = self.call_soon_threadsafe(op.set_result, result, task_id=tid)
+            self._event.set()
+            self._ready.append(
+                Handle(
+                    op.set_result if exception is None else op.set_exception,
+                    [(result if exception is None else exception)],
+                    self,
+                    context=self._context_new_task(None, tid),
+                )
+            )
 
     @override
     def is_closed(self) -> bool:
@@ -319,12 +310,8 @@ class EventLoop(AbstractEventLoop):
     def _timer_handle_cancelled(self, _th: TimerHandle) -> None:
         pass
 
-    def _context_with_task_id(
-        self, context: Context | None, task_id: bytes | None = None
-    ) -> Context:
+    def _context_new_task(self, context: Context | None, task_id: bytes) -> Context:
         base = context.copy() if context is not None else contextvars.copy_context()
-        if task_id is None:
-            task_id = self._generate_id()
         _ = base.run(_task_ctx.set, _TaskCtx(parent_id=task_id))
         return base
 

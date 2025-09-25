@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import random
 import uuid
 from dataclasses import dataclass
@@ -106,6 +107,26 @@ async def test_resume():
         await t.resume()
         x = await t.wait()
     assert x == "hello"
+
+
+@pytest.mark.asyncio
+async def test_cancel():
+    @durable()
+    async def activity(ctx: Context, s: str) -> str:
+        with contextlib.suppress(BaseException):
+            _ = await asyncio.wait_for(ctx.run(lambda: asyncio.sleep(9999)), 0.1)
+        _ = await asyncio.wait_for(ctx.run(lambda: asyncio.sleep(9999)), 0.1)
+        return s
+
+    log = MemoryLogStorage()
+    async with activity(log) as t:
+        await t.start("hello")
+        try:
+            _ = await t.wait()
+        except Exception as e:
+            assert "Timeout" in repr(e)
+
+    assert len(await log.entries()) == 8
 
 
 @dataclass
