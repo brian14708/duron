@@ -3,18 +3,26 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
+    Any,
+    Concatenate,
     Generic,
     ParamSpec,
     TypeVar,
+    cast,
 )
 
 from duron.codec import DefaultCodec
+from duron.task import Task, TaskGuard
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Coroutine
 
     from duron.codec import Codec
+    from duron.context import Context
+    from duron.log import LogStorage
 
+    _TOffset = TypeVar("_TOffset")
+    _TLease = TypeVar("_TLease")
 
 _T_co = TypeVar("_T_co", covariant=True)
 _P = ParamSpec("_P")
@@ -23,21 +31,29 @@ _P = ParamSpec("_P")
 @dataclass(slots=True)
 class DurableFn(Generic[_P, _T_co]):
     codec: Codec
-    fn: Callable[_P, _T_co]
+    fn: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]]
 
-    def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> _T_co:
-        return self.fn(*args, **kwargs)
+    def __call__(
+        self,
+        log: LogStorage[_TOffset, _TLease],
+    ) -> TaskGuard[_P, _T_co]:
+        return TaskGuard(Task(self, cast("LogStorage[object, object]", log)))
 
 
 def durable(
     *, codec: Codec | None = None
-) -> Callable[[Callable[_P, _T_co]], DurableFn[_P, _T_co]]:
+) -> Callable[
+    [Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]]],
+    DurableFn[_P, _T_co],
+]:
     """
     Mark a function as durable, meaning its execution can be recorded and
     replayed.
     """
 
-    def decorate(fn: Callable[_P, _T_co]) -> DurableFn[_P, _T_co]:
+    def decorate(
+        fn: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]],
+    ) -> DurableFn[_P, _T_co]:
         return DurableFn(codec=codec or DefaultCodec(), fn=fn)
 
     return decorate

@@ -38,20 +38,11 @@ if TYPE_CHECKING:
     )
     from duron.ops import Op
 
-    _TOffset = TypeVar("_TOffset")
-    _TLease = TypeVar("_TLease")
 
 _T = TypeVar("_T")
 _P = ParamSpec("_P")
 
 _CURRENT_VERSION = 0
-
-
-def task(
-    task_co: DurableFn[_P, Coroutine[Any, Any, _T]],
-    log: LogStorage[_TOffset, _TLease],
-) -> TaskGuard[_P, _T]:
-    return TaskGuard(Task(task_co, log))
 
 
 @final
@@ -74,9 +65,8 @@ class TaskGuard(Generic[_P, _T]):
 class Task(Generic[_P, _T]):
     def __init__(
         self,
-        task_fn: DurableFn[_P, Coroutine[Any, Any, _T]],
-        log: LogStorage[_TOffset, _TLease],
-        codec: Codec | None = None,
+        task_fn: DurableFn[_P, _T],
+        log: LogStorage[object, object],
     ) -> None:
         self._task_fn = task_fn
         self._log = log
@@ -91,7 +81,7 @@ class Task(Generic[_P, _T]):
         }
         self._run = _TaskRun(
             _task_prelude(self._task_fn, lambda: init),
-            cast("LogStorage[object, object]", self._log),
+            self._log,
             codec,
         )
         await self._run.resume()
@@ -103,7 +93,7 @@ class Task(Generic[_P, _T]):
         task = _task_prelude(self._task_fn, cb)
         self._run = _TaskRun(
             task,
-            cast("LogStorage[object, object]", self._log),
+            self._log,
             self._task_fn.codec,
         )
         await self._run.resume()
@@ -121,7 +111,7 @@ class TaskInitParams(TypedDict):
 
 
 async def _task_prelude(
-    task_fn: DurableFn[..., Coroutine[Any, Any, object]],
+    task_fn: DurableFn[..., object],
     init: Callable[[], TaskInitParams],
 ) -> object:
     ctx = get_context()
@@ -131,7 +121,7 @@ async def _task_prelude(
     codec = task_fn.codec
     args = (codec.decode_json(arg) for arg in init_params["args"])
     kwargs = {k: codec.decode_json(v) for k, v in init_params["kwargs"].items()}
-    return await task_fn.fn(*args, **kwargs)
+    return await task_fn.fn(get_context(), *args, **kwargs)
 
 
 @final

@@ -1,5 +1,4 @@
-from duron.context import get_context
+from duron.context import Context, get_context
 from duron.fn import durable
-from duron.task import task
 
-__all__ = ["durable", "task", "get_context"]
+__all__ = ["durable", "get_context", "Context"]
