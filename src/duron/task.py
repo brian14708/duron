@@ -11,13 +11,14 @@ from typing import (
     Any,
     Generic,
     ParamSpec,
-    TypedDict,
     TypeVar,
     cast,
     final,
 )
 
-from duron.codec import Codec
+from typing_extensions import TypedDict
+
+from duron.codec import Codec, JSONValue
 from duron.context import Context
 from duron.event_loop import EventLoop, create_loop
 from duron.log import is_entry
@@ -33,7 +34,6 @@ if TYPE_CHECKING:
     from duron.log import (
         Entry,
         ErrorInfo,
-        JSONValue,
         LogStorage,
         PromiseCompleteEntry,
     )
@@ -73,14 +73,16 @@ class Task(Generic[_P, _T]):
         self._run: _TaskRun | None = None
 
     async def start(self, *args: _P.args, **kwargs: _P.kwargs) -> None:
+        def get_init() -> TaskInitParams:
+            return {
+                "version": _CURRENT_VERSION,
+                "args": [codec.encode_json(arg) for arg in args],
+                "kwargs": {k: codec.encode_json(v) for k, v in kwargs.items()},
+            }
+
         codec = self._task_fn.codec
-        init: TaskInitParams = {
-            "version": _CURRENT_VERSION,
-            "args": [codec.encode_json(arg) for arg in args],
-            "kwargs": {k: codec.encode_json(v) for k, v in kwargs.items()},
-        }
         type_info = codec.inspect_function(self._task_fn.fn)
-        task_prelude = _task_prelude(self._task_fn, type_info, lambda: init)
+        task_prelude = _task_prelude(self._task_fn, type_info, get_init)
         self._run = _TaskRun(
             TaskRun(task=task_prelude, return_type=type_info.return_type),
             self._log,
@@ -162,7 +164,7 @@ class _TaskRun:
         self._pending_ops: set[bytes] = set()
         self._now = 0
         self._offset: object | None = None
-        self._tasks: dict[str, tuple[asyncio.Task[None], type | None]] = {}
+        self._tasks: dict[str, tuple[asyncio.Future[None], type | None]] = {}
 
     def now(self) -> int:
         if self._running:
@@ -214,6 +216,11 @@ class _TaskRun:
                 with contextlib.suppress(asyncio.CancelledError):
                     await t
 
+            if len(pending) == 0:
+                # success
+                assert self._task.done()
+                assert len(self._tasks) == 0
+
             for task, _ in self._tasks.values():
                 _ = task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -256,14 +263,23 @@ class _TaskRun:
             pending_info = self._pending_task.pop(e["promise_id"], None)
             task_info = self._tasks.pop(e["promise_id"], None)
 
-            # Get return type from either pending or running task
+            id = _decode_id(e["promise_id"])
+            if id not in self._pending_ops:
+                return
+
+            if task_info is not None:
+                _ = task_info[0].cancel()
+                await task_info[0]
+
             return_type = None
             if pending_info is not None:
                 _, return_type = pending_info
             elif task_info is not None:
                 _, return_type = task_info
+            else:
+                print(e)
+                raise AssertionError("unreachable")
 
-            id = _decode_id(e["promise_id"])
             if "error" in e:
                 self._loop.post_completion(
                     id,
@@ -271,10 +287,14 @@ class _TaskRun:
                 )
                 self._pending_ops.discard(id)
             elif "result" in e:
-                self._loop.post_completion(
-                    id,
-                    result=self._codec.decode_json(e["result"], return_type),
-                )
+                try:
+                    result = self._codec.decode_json(e["result"], return_type)
+                    self._loop.post_completion(id, result=result)
+                except BaseException as exc:
+                    self._loop.post_completion(
+                        id,
+                        exception=exc,
+                    )
                 self._pending_ops.discard(id)
             else:
                 raise ValueError(f"Invalid promise/complete entry: {e!r}")
@@ -315,7 +335,7 @@ class _TaskRun:
                     except BaseException as e:
                         entry["error"] = _encode_error(e)
                     finally:
-                        await self.enqueue_log(entry)
+                        _ = asyncio.create_task(self.enqueue_log(entry))
 
                 def done(f: OpFuture) -> None:
                     if f.cancelled():
@@ -339,6 +359,8 @@ class _TaskRun:
                     "type": "promise/create",
                 })
 
+                fut_host: asyncio.Future[None] = asyncio.Future()
+
                 async def cb() -> None:
                     entry: PromiseCompleteEntry = {
                         "ts": _encode_timestamp(self.now()),
@@ -352,9 +374,15 @@ class _TaskRun:
                     except BaseException as e:
                         entry["error"] = _encode_error(e)
                     finally:
-                        await self.enqueue_log(entry, True)
+                        fut_host.set_result(None)
+                        _ = asyncio.create_task(self.enqueue_log(entry, True))
 
                 _ = self._loop.create_task(cb())
+
+                self._tasks[_encode_id(id)] = (
+                    fut_host,
+                    op.return_type,
+                )
 
             case _:
                 raise NotImplementedError(f"Unsupported op: {op!r}")
