@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
     from duron.codec import Codec, FunctionType
     from duron.event_loop import OpFuture, WaitSet
-    from duron.fn import DurableFn
+    from duron.fn import Fn
     from duron.log import (
         Entry,
         ErrorInfo,
@@ -65,7 +65,7 @@ class TaskGuard(Generic[_P, _T]):
 class Task(Generic[_P, _T]):
     def __init__(
         self,
-        task_fn: DurableFn[_P, _T],
+        task_fn: Fn[_P, _T],
         log: LogStorage[object, object],
     ) -> None:
         self._task_fn = task_fn
@@ -114,7 +114,7 @@ class TaskInitParams(TypedDict):
 
 
 async def _task_prelude(
-    task_fn: DurableFn[..., _T],
+    task_fn: Fn[..., _T],
     type_info: FunctionType,
     init: Callable[[], TaskInitParams],
 ) -> _T:

@@ -46,7 +46,7 @@ preview = true
 future-annotations = true
 
 [tool.ruff.lint.flake8-type-checking]
-runtime-evaluated-decorators = ["duron.durable"]
+runtime-evaluated-decorators = ["duron.fn"]
 
 [tool.ruff.format]
 preview = true
