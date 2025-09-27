@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Generic, Protocol, cast
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, Generic, Literal
 
-from typing_extensions import TypedDict, TypeVar
+from typing_extensions import NotRequired, TypedDict, TypeVar
+
+from duron.codec import JSONValue
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
-    from typing import Literal, TypeGuard
-
-    from typing_extensions import NotRequired
+    from typing import TypeGuard
 
 
 _TOffset = TypeVar("_TOffset")
@@ -78,31 +79,20 @@ def is_entry(entry: Entry | AnyEntry) -> TypeGuard[Entry]:
     }
 
 
-JSONValue = dict[str, "JSONValue"] | list["JSONValue"] | str | int | float | bool | None
-
-
-def is_json_value(x: object) -> TypeGuard[JSONValue]:
-    if x is None or isinstance(x, (bool, int, float, str)):
-        return True
-    if isinstance(x, list):
-        return all(is_json_value(item) for item in cast("list[object]", x))
-    if isinstance(x, dict):
-        return all(
-            isinstance(k, str) and is_json_value(v)
-            for k, v in cast("dict[object, object]", x).items()
-        )
-    return False
-
-
-class LogStorage(Protocol, Generic[_TOffset, _TLease]):
+class LogStorage(ABC, Generic[_TOffset, _TLease]):
+    @abstractmethod
     def stream(
         self, start: _TOffset | None, live: bool, /
     ) -> AsyncGenerator[tuple[_TOffset, AnyEntry], None]: ...
 
+    @abstractmethod
     async def acquire_lease(self) -> _TLease: ...
 
+    @abstractmethod
     async def release_lease(self, token: _TLease, /): ...
 
+    @abstractmethod
     async def append(self, token: _TLease, entry: Entry, /): ...
 
+    @abstractmethod
     async def flush(self, token: _TLease, /): ...
