@@ -112,16 +112,6 @@ class EventLoop(AbstractEventLoop):
         return h
 
     @override
-    def call_soon_threadsafe(
-        self,
-        callback: Callable[[Unpack[_Ts]], object],
-        *args: Unpack[_Ts],
-        context: Context | None = None,
-    ) -> Handle:
-        # the loop is not thread-safe, so we just call call_soon
-        return self.call_soon(callback, *args, context=context)
-
-    @override
     def call_at(
         self,
         when: float,

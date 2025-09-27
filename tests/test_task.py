@@ -136,7 +136,10 @@ class CustomPoint:
 async def test_serialize():
     @durable(codec=PickleCodec())
     async def activity(ctx: Context) -> CustomPoint:
-        pt = await ctx.run(lambda: CustomPoint(x=1, y=2))
+        def new_pt() -> CustomPoint:
+            return CustomPoint(x=1, y=2)
+
+        pt = await ctx.run(new_pt)
         return CustomPoint(x=pt.x + 5, y=pt.y + 10)
 
     log = MemoryLogStorage()

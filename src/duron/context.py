@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from duron.event_loop import EventLoop
+    from duron.fn import DurableFn
 
     _T = TypeVar("_T")
     _P = ParamSpec("_P")
@@ -23,8 +24,9 @@ _context: ContextVar[Context | None] = ContextVar("duron_context", default=None)
 
 @final
 class Context:
-    def __init__(self, loop: EventLoop) -> None:
+    def __init__(self, task: DurableFn[..., object], loop: EventLoop) -> None:
         self._loop: EventLoop = loop
+        self._task = task
         self._token: Token[Context | None] | None = None
 
     def __enter__(self) -> Context:
@@ -72,9 +74,17 @@ class Context:
         *args: _P.args,
         **kwargs: _P.kwargs,
     ) -> _T:
+        type_info = self._task.codec.inspect_function(fn)
         return cast(
             "_T",
-            await self._loop.create_op(FnCall(callable=fn, args=args, kwargs=kwargs)),
+            await self._loop.create_op(
+                FnCall(
+                    callable=fn,
+                    args=args,
+                    kwargs=kwargs,
+                    return_type=type_info.return_type,
+                )
+            ),
         )
 
     def time(self) -> float:
