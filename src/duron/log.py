@@ -46,8 +46,7 @@ class StreamCreateEntry(_BaseEntry):
 class StreamEmitEntry(_BaseEntry):
     type: Literal["stream/emit"]
     stream_id: str
-    value: NotRequired[JSONValue]
-    state: NotRequired[JSONValue]
+    value: JSONValue
 
 
 class StreamCompleteEntry(_BaseEntry):

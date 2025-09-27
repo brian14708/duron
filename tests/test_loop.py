@@ -19,7 +19,7 @@ async def test_timer():
             )
         return 0
 
-    loop = duron.event_loop.create_loop(b"")
+    loop = duron.event_loop.create_loop(asyncio.get_event_loop(), b"")
     loop.tick(time.time_ns())
     tsk = loop.create_task(timer())
     while (waitset := loop.poll_completion(tsk)) is not None:
@@ -44,7 +44,7 @@ def op_single() -> set[bytes]:
         _ = await duron.event_loop.create_op(6)
 
     ids: set[bytes] = set()
-    loop = duron.event_loop.create_loop(b"tsk")
+    loop = duron.event_loop.create_loop(asyncio.get_event_loop(), b"tsk")
     loop.tick(time.time_ns())
     tsk = loop.create_task(op())
 

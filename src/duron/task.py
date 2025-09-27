@@ -16,13 +16,14 @@ from typing import (
     final,
 )
 
-from typing_extensions import TypedDict
+from typing_extensions import TypedDict, assert_never
 
 from duron.codec import Codec, JSONValue
 from duron.context import Context
 from duron.event_loop import EventLoop, create_loop
 from duron.log import is_entry
-from duron.ops import FnCall, TaskRun
+from duron.ops import FnCall, StreamClose, StreamCreate, StreamEmit, TaskRun
+from duron.stream import RawStream
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -37,6 +38,8 @@ if TYPE_CHECKING:
         LogStorage,
         PromiseCompleteEntry,
     )
+    from duron.ops import Op
+    from duron.stream import Observer
 
 
 _T = TypeVar("_T")
@@ -152,7 +155,7 @@ class _TaskRun:
         log: LogStorage[object, object],
         codec: Codec,
     ) -> None:
-        self._loop = create_loop(b"")
+        self._loop = create_loop(asyncio.get_running_loop(), b"")
         self._task = self._loop.create_op(task)
         self._log = log
         self._codec = codec
@@ -165,6 +168,15 @@ class _TaskRun:
         self._now = 0
         self._offset: object | None = None
         self._tasks: dict[str, tuple[asyncio.Future[None], type | None]] = {}
+        self._streams: dict[
+            str,
+            tuple[
+                RawStream[object],
+                Observer[object] | None,
+                type | None,
+            ],
+        ] = {}
+        self._preflight_msg: set[str] = set()
 
     def now(self) -> int:
         if self._running:
@@ -219,6 +231,7 @@ class _TaskRun:
             if len(pending) == 0:
                 # success
                 assert self._task.done()
+                assert len(self._pending_ops) == 0
                 assert len(self._tasks) == 0
 
             for task, _ in self._tasks.values():
@@ -258,14 +271,17 @@ class _TaskRun:
                     self._pending_ops.add(sid)
                     await self.enqueue_op(sid, s)
 
-    async def handle_message(self, e: Entry) -> None:
+    async def handle_message(self, e: Entry, preflight: bool = False) -> None:
+        if not preflight and e["id"] in self._preflight_msg:
+            self._preflight_msg.discard(e["id"])
+            return
+        if preflight:
+            self._preflight_msg.add(e["id"])
         if e["type"] == "promise/complete":
             pending_info = self._pending_task.pop(e["promise_id"], None)
             task_info = self._tasks.pop(e["promise_id"], None)
 
             id = _decode_id(e["promise_id"])
-            if id not in self._pending_ops:
-                return
 
             if task_info is not None:
                 _ = task_info[0].cancel()
@@ -298,8 +314,42 @@ class _TaskRun:
                 self._pending_ops.discard(id)
             else:
                 raise ValueError(f"Invalid promise/complete entry: {e!r}")
+        elif e["type"] == "stream/create":
+            id = _decode_id(e["id"])
+            if e["id"] not in self._streams:
+                self._loop.post_completion(id, exception=ValueError("Stream not found"))
+            else:
+                self._loop.post_completion(id, result=self._streams[e["id"]][0])
+            self._pending_ops.discard(id)
+        elif e["type"] == "stream/emit":
+            id = _decode_id(e["id"])
+            if e["stream_id"] not in self._streams:
+                self._loop.post_completion(id, exception=ValueError("Stream not found"))
+            else:
+                _, ob, tv = self._streams[e["stream_id"]]
+                self._loop.post_completion(id, result=None)
+                if ob:
+                    ob.on_next(
+                        self._codec.decode_json(e["value"], tv),
+                    )
+            self._pending_ops.discard(id)
+        elif e["type"] == "stream/complete":
+            id = _decode_id(e["id"])
+            if e["stream_id"] not in self._streams:
+                self._loop.post_completion(id, exception=ValueError("Stream not found"))
+            else:
+                _, ob, _ = self._streams[e["stream_id"]]
+                self._loop.post_completion(id, result=None)
+                if ob:
+                    if "error" in e:
+                        ob.on_close(_decode_error(e["error"]))
+                    else:
+                        ob.on_close(None)
+
+                _ = self._streams.pop(e["stream_id"], None)
+            self._pending_ops.discard(id)
         else:
-            pass
+            assert e["type"] == "promise/create"
 
     async def enqueue_log(self, entry: Entry, flush: bool = False) -> None:
         if not self._running:
@@ -308,10 +358,10 @@ class _TaskRun:
             await self._log.append(self._running, entry)
             if flush:
                 await self._log.flush(self._running)
-            await self.handle_message(entry)
+            await self.handle_message(entry, preflight=True)
 
     async def enqueue_op(self, id: bytes, fut: OpFuture) -> None:
-        op = fut.params
+        op = cast("Op", fut.params)
         match op:
             case FnCall():
                 await self.enqueue_log({
@@ -384,8 +434,50 @@ class _TaskRun:
                     op.return_type,
                 )
 
+            case StreamCreate():
+                stream: RawStream[object] = RawStream(_encode_id(id), self._loop)
+                if op.observer:
+                    o = op.observer
+                    ty = self._codec.inspect_function(o.on_next)
+                    self._streams[_encode_id(id)] = (
+                        stream,
+                        o,
+                        ty.parameter_types[ty.parameters[0]],
+                    )
+                else:
+                    self._streams[_encode_id(id)] = (stream, None, None)
+                await self.enqueue_log({
+                    "ts": _encode_timestamp(self.now()),
+                    "id": _encode_id(id),
+                    "type": "stream/create",
+                })
+
+            case StreamEmit():
+                await self.enqueue_log({
+                    "ts": _encode_timestamp(self.now()),
+                    "id": _encode_id(id),
+                    "stream_id": op.stream_id,
+                    "type": "stream/emit",
+                    "value": self._codec.encode_json(op.value),
+                })
+            case StreamClose():
+                if op.exception:
+                    await self.enqueue_log({
+                        "ts": _encode_timestamp(self.now()),
+                        "id": _encode_id(id),
+                        "stream_id": op.stream_id,
+                        "type": "stream/complete",
+                        "error": _encode_error(op.exception),
+                    })
+                else:
+                    await self.enqueue_log({
+                        "ts": _encode_timestamp(self.now()),
+                        "id": _encode_id(id),
+                        "stream_id": op.stream_id,
+                        "type": "stream/complete",
+                    })
             case _:
-                raise NotImplementedError(f"Unsupported op: {op!r}")
+                assert_never(op)
 
 
 def _encode_id(id: bytes, flag: int = 0) -> str:

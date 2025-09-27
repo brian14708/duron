@@ -1,23 +1,28 @@
 from __future__ import annotations
 
+import asyncio
 from contextvars import ContextVar
 from random import Random
-from typing import TYPE_CHECKING, ParamSpec, TypeVar, cast, final
+from typing import TYPE_CHECKING, Concatenate, ParamSpec, TypeVar, cast, final
 
 from typing_extensions import overload
 
-from duron.ops import FnCall
+from duron.ops import FnCall, StreamCreate
+from duron.stream import StreamTask
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import AsyncGenerator, Awaitable, Callable
     from contextvars import Token
     from types import TracebackType
 
     from duron.event_loop import EventLoop
     from duron.fn import Fn
+    from duron.stream import Observer, RawStream
 
     _T = TypeVar("_T")
+    _S = TypeVar("_S")
     _P = ParamSpec("_P")
+
 
 _context: ContextVar[Context | None] = ContextVar("duron_context", default=None)
 
@@ -74,6 +79,8 @@ class Context:
         *args: _P.args,
         **kwargs: _P.kwargs,
     ) -> _T:
+        if asyncio.get_event_loop() is not self._loop:
+            raise RuntimeError("Context time can only be used in the context loop")
         type_info = self._task.codec.inspect_function(fn)
         return cast(
             "_T",
@@ -87,11 +94,46 @@ class Context:
             ),
         )
 
+    def run_stream(
+        self,
+        initial: _T,
+        reducer: Callable[[_T, _S], _T],
+        fn: Callable[Concatenate[_T, _P], AsyncGenerator[_S, _T]],
+        /,
+        *args: _P.args,
+        **kwargs: _P.kwargs,
+    ) -> StreamTask[_S, _T]:
+        if asyncio.get_event_loop() is not self._loop:
+            raise RuntimeError("Context time can only be used in the context loop")
+        return StreamTask(
+            self._loop,
+            initial,
+            reducer,
+            fn,
+            *args,
+            **kwargs,
+        )
+
+    async def create_stream(self, observer: Observer[_T] | None) -> RawStream[_T]:
+        if asyncio.get_event_loop() is not self._loop:
+            raise RuntimeError("Context time can only be used in the context loop")
+        o = cast("Observer[object]", observer) if observer else None
+        return cast(
+            "RawStream[_T]",
+            await self._loop.create_op(StreamCreate(observer=o)),
+        )
+
     def time(self) -> float:
+        if asyncio.get_event_loop() is not self._loop:
+            raise RuntimeError("Context time can only be used in the context loop")
         return self._loop.time()
 
     def time_ns(self) -> int:
+        if asyncio.get_event_loop() is not self._loop:
+            raise RuntimeError("Context time can only be used in the context loop")
         return self._loop.time_ns()
 
     def random(self) -> Random:
+        if asyncio.get_event_loop() is not self._loop:
+            raise RuntimeError("Context random can only be used in the context loop")
         return Random(self._loop.generate_op_id())

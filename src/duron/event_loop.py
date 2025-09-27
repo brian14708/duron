@@ -5,6 +5,7 @@ import contextlib
 import contextvars
 import heapq
 import logging
+import os
 from asyncio import AbstractEventLoop, Handle, Task, TimerHandle, events
 from collections import deque
 from dataclasses import dataclass
@@ -47,7 +48,7 @@ class OpFuture(asyncio.Future[object]):
     id: bytes
     params: object
 
-    def __init__(self, id: bytes, params: object, loop: EventLoop) -> None:
+    def __init__(self, id: bytes, params: object, loop: AbstractEventLoop) -> None:
         super().__init__(loop=loop)
         self.id = id
         self.params = params
@@ -76,9 +77,10 @@ class _TaskCtx:
 
 
 class EventLoop(AbstractEventLoop):
-    def __init__(self, seed: bytes) -> None:
+    def __init__(self, ambient: asyncio.AbstractEventLoop, seed: bytes) -> None:
         self._ready: deque[Handle] = deque()
         self._debug: bool = False
+        self._ambient: asyncio.AbstractEventLoop = ambient
         self._exc_handler: (
             Callable[[AbstractEventLoop, dict[str, object]], object] | None
         ) = None
@@ -94,6 +96,9 @@ class EventLoop(AbstractEventLoop):
         ctx = _task_ctx.get(self._ctx)
         ctx.seq += 1
         return _mix_id(ctx.parent_id, ctx.seq - 1)
+
+    def ambient_loop(self) -> asyncio.AbstractEventLoop:
+        return self._ambient
 
     @override
     def call_soon(
@@ -212,11 +217,36 @@ class EventLoop(AbstractEventLoop):
         finally:
             events._set_running_loop(old)
 
-    def create_op(self, params: object) -> OpFuture:
-        id = self.generate_op_id()
-        s = OpFuture(id, params, self)
-        self._ops[id] = s
-        return s
+    def create_op(
+        self, params: object, /, *, loop: AbstractEventLoop | None = None
+    ) -> OpFuture:
+        if loop is not None and loop is not self:
+            id = os.urandom(12)
+            host_fut: asyncio.Future[object] = OpFuture(id, params, loop)
+            op_fut = OpFuture(id, params, self)
+            self._ops[id] = op_fut
+
+            def op_to_host(f: asyncio.Future[object]):
+                if f.cancelled():
+                    _ = loop.call_soon(host_fut.cancel)
+                elif e := f.exception():
+                    _ = loop.call_soon(host_fut.set_exception, e)
+                else:
+                    _ = loop.call_soon(host_fut.set_result, f.result())
+
+            def host_to_op(f: asyncio.Future[object]):
+                if f.cancelled() and not op_fut.done():
+                    _ = self.call_soon(op_fut.cancel)
+
+            op_fut.add_done_callback(op_to_host)
+            host_fut.add_done_callback(host_to_op)
+            self._event.set()
+            return host_fut
+        else:
+            id = self.generate_op_id()
+            op_fut = OpFuture(id, params, self)
+            self._ops[id] = op_fut
+            return op_fut
 
     @overload
     def post_completion(
@@ -316,8 +346,11 @@ def _mix_id(a: bytes, b: int) -> bytes:
     return blake2b(b.to_bytes(4, "little", signed=True) + a, digest_size=12).digest()
 
 
-def create_loop(seed: bytes) -> EventLoop:
-    return EventLoop(seed)  # type: ignore[abstract]
+def create_loop(
+    parent_loop: asyncio.AbstractEventLoop,
+    seed: bytes,
+) -> EventLoop:
+    return EventLoop(parent_loop, seed)  # type: ignore[abstract]
 
 
 def create_op(params: object) -> OpFuture:

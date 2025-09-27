@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine
 
+    from duron.stream import Observer
+
 
 @dataclass(slots=True)
 class FnCall:
@@ -21,4 +23,21 @@ class TaskRun:
     return_type: type | None = None
 
 
-Op = FnCall | TaskRun
+@dataclass(slots=True)
+class StreamCreate:
+    observer: Observer[object] | None
+
+
+@dataclass(slots=True)
+class StreamEmit:
+    stream_id: str
+    value: object
+
+
+@dataclass(slots=True)
+class StreamClose:
+    stream_id: str
+    exception: BaseException | None
+
+
+Op = FnCall | StreamCreate | StreamEmit | StreamClose | TaskRun
