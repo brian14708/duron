@@ -12,11 +12,13 @@ class FnCall:
     callable: Callable[..., Awaitable[object] | object]
     args: tuple[object, ...]
     kwargs: dict[str, object]
+    return_type: type | None = None
 
 
 @dataclass(slots=True)
 class TaskRun:
     task: Coroutine[Any, Any, object]
+    return_type: type | None = None
 
 
 Op = FnCall | TaskRun
