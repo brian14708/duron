@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from duron import durable
+from duron import fn
 from duron.context import Context
 from duron.contrib.codecs import PickleCodec
 from duron.contrib.storage import MemoryLogStorage
@@ -21,7 +21,7 @@ async def test_task():
             await asyncio.sleep(0.001)
         return str(uuid.uuid4())
 
-    @durable()
+    @fn()
     async def activity(ctx: Context, i: str) -> str:
         x = await asyncio.gather(
             ctx.run(u),
@@ -64,7 +64,7 @@ async def test_task():
 
 @pytest.mark.asyncio
 async def test_task_error():
-    @durable()
+    @fn()
     async def activity(ctx: Context):
         _ = await ctx.run(lambda: asyncio.sleep(0.1))
 
@@ -88,7 +88,7 @@ async def test_task_error():
 async def test_resume():
     sleep = 9999
 
-    @durable()
+    @fn()
     async def activity(ctx: Context, s: str) -> str:
         _ = await ctx.run(lambda: asyncio.sleep(sleep))
         return s
@@ -108,7 +108,7 @@ async def test_resume():
 
 @pytest.mark.asyncio
 async def test_cancel():
-    @durable()
+    @fn()
     async def activity(ctx: Context, s: str) -> str:
         with contextlib.suppress(BaseException):
             _ = await asyncio.wait_for(ctx.run(lambda: asyncio.sleep(9999)), 0.1)
@@ -134,7 +134,7 @@ class CustomPoint:
 
 @pytest.mark.asyncio
 async def test_serialize():
-    @durable(codec=PickleCodec())
+    @fn(codec=PickleCodec())
     async def activity(ctx: Context) -> CustomPoint:
         def new_pt() -> CustomPoint:
             return CustomPoint(x=1, y=2)
@@ -152,7 +152,7 @@ async def test_serialize():
 
 @pytest.mark.asyncio
 async def test_random():
-    @durable()
+    @fn()
     async def activity(ctx: Context) -> int:
         assert ctx.time_ns() == ctx.time_ns()
         return ctx.random().randint(1, 100)

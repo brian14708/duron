@@ -11,7 +11,7 @@ from typing import (
     cast,
 )
 
-from duron.codec import DefaultCodec
+from duron.config import config
 from duron.task import Task, TaskGuard
 
 if TYPE_CHECKING:
@@ -29,7 +29,7 @@ _P = ParamSpec("_P")
 
 
 @dataclass(slots=True)
-class DurableFn(Generic[_P, _T_co]):
+class Fn(Generic[_P, _T_co]):
     codec: Codec
     fn: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]]
 
@@ -42,11 +42,11 @@ class DurableFn(Generic[_P, _T_co]):
         return TaskGuard(Task(self, cast("LogStorage[object, object]", log)))
 
 
-def durable(
+def fn(
     *, codec: Codec | None = None
 ) -> Callable[
     [Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]]],
-    DurableFn[_P, _T_co],
+    Fn[_P, _T_co],
 ]:
     """
     Mark a function as durable, meaning its execution can be recorded and
@@ -55,7 +55,7 @@ def durable(
 
     def decorate(
         fn: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]],
-    ) -> DurableFn[_P, _T_co]:
-        return DurableFn(codec=codec or DefaultCodec(), fn=fn)
+    ) -> Fn[_P, _T_co]:
+        return Fn(codec=codec or config.codec, fn=fn)
 
     return decorate
