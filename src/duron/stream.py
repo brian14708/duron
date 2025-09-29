@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+from abc import ABC, abstractmethod
+from collections import deque
+from dataclasses import dataclass
+from enum import Enum, auto
 from typing import (
     TYPE_CHECKING,
     Concatenate,
@@ -17,7 +22,7 @@ from typing_extensions import override
 from duron.ops import FnCall, StreamClose, StreamCreate, StreamEmit
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Callable
+    from collections.abc import AsyncGenerator, AsyncIterator, Callable
 
     from duron.event_loop import EventLoop
 
@@ -25,6 +30,17 @@ if TYPE_CHECKING:
 
 _In = TypeVar("_In", contravariant=True)
 _Out = TypeVar("_Out", covariant=True)
+_T = TypeVar("_T")
+
+
+class EndOfStream(Exception):
+    pass
+
+
+class StreamState(Enum):
+    INITIAL = auto()
+    STARTED = auto()
+    CLOSED = auto()
 
 
 class Observer(Generic[_In], Protocol):
@@ -32,14 +48,8 @@ class Observer(Generic[_In], Protocol):
     def on_close(self, error: BaseException | None, /) -> None: ...
 
 
-class AmbientRawStream(Protocol[_In]):
-    async def send(self, value: _In, /) -> None: ...
-
-    async def close(self, error: BaseException | None = None, /) -> None: ...
-
-
 @final
-class RawStream(Generic[_In]):
+class StreamHandle(Generic[_In]):
     def __init__(self, id: str, loop: EventLoop) -> None:
         self._stream_id = id
         self._loop = loop
@@ -62,106 +72,280 @@ class RawStream(Generic[_In]):
     async def wait(self) -> None:
         _ = await self._event.wait()
 
-    def to_ambient(self) -> AmbientRawStream[_In]:
-        s: RawStream[_In] = RawStream(self._stream_id, self._loop)
-        s._target_loop = self._loop.ambient_loop()
+    def to_host(self) -> StreamHandle[_In]:
+        s: StreamHandle[_In] = StreamHandle(self._stream_id, self._loop)
+        s._target_loop = self._loop.host_loop()
         return s
 
 
+class Stream(Generic[_Out], ABC):
+    @staticmethod
+    def from_iterator(it: AsyncIterator[_Out]) -> Stream[_Out]:
+        return _AsyncIter(it)
+
+    def __init__(self) -> None:
+        self._state: StreamState = StreamState.INITIAL
+
+    async def discard(self) -> None:
+        async for _ in self:
+            pass
+
+    async def collect(self) -> list[_Out]:
+        result: list[_Out] = []
+        async for v in self:
+            result.append(v)
+        return result
+
+    @final
+    async def start(self) -> None:
+        if self._state == StreamState.CLOSED:
+            raise RuntimeError("Stream has already been stopped")
+        elif self._state != StreamState.STARTED:
+            await self._start()
+            self._state = StreamState.STARTED
+
+    async def close(self) -> None:
+        if self._state != StreamState.CLOSED:
+            await self._close()
+            self._state = StreamState.CLOSED
+
+    def __aiter__(self) -> AsyncIterator[_Out]:
+        return self
+
+    async def __anext__(self) -> _Out:
+        if self._state == StreamState.CLOSED:
+            raise RuntimeError("Stream has already been stopped")
+        elif self._state != StreamState.STARTED:
+            await self._start()
+            self._state = StreamState.STARTED
+        try:
+            return await self._get()
+
+        except EndOfStream:
+            await self.close()
+            raise StopAsyncIteration from None
+        except asyncio.CancelledError:
+            await self.close()
+            raise
+        except Exception:
+            await self.close()
+            raise
+
+    @abstractmethod
+    async def _get(self) -> _Out: ...
+    @abstractmethod
+    async def _start(self) -> None: ...
+    @abstractmethod
+    async def _close(self) -> None: ...
+
+    def map(self, fn: Callable[[_Out], _T]) -> Stream[_T]:
+        return _Map(self, fn)
+
+    def tee(self) -> tuple[Stream[_Out], Stream[_Out]]:
+        return _IntoBuffer(self).tee()
+
+
 @final
-class _StreamObserver(Generic[_In, _Out], Observer[_In]):
-    def __init__(self, initial: _Out, reducer: Callable[[_Out, _In], _Out]):
-        self.current = initial
-        self.enable = True
-        self._reducer = reducer
-        self.data: list[_Out] = []
-        self.closed: bool | BaseException = False
+class _AsyncIter(Generic[_Out], Stream[_Out]):
+    def __init__(
+        self,
+        it: AsyncIterator[_Out],
+    ) -> None:
+        super().__init__()
+        self._it = aiter(it)
 
     @override
-    def on_next(self, val: _In):
-        if self.enable:
-            self.current = self._reducer(self.current, val)
-            self.data.append(self.current)
+    async def _get(self) -> _Out:
+        try:
+            return await anext(self._it)
+        except StopAsyncIteration:
+            raise EndOfStream from None
 
     @override
-    def on_close(self, exc: BaseException | None):
-        self.closed = True if exc is None else exc
+    async def _start(self) -> None: ...
+
+    @override
+    async def _close(self) -> None: ...
 
 
 @final
-class StreamTask(Generic[_In, _Out]):
+class _Map(Generic[_In, _T], Stream[_T]):
+    def __init__(self, source: Stream[_In], fn: Callable[[_In], _T]) -> None:
+        super().__init__()
+        self._source = source
+        self._fn = fn
+
+    @override
+    async def _get(self) -> _T:
+        return self._fn(await self._source._get())
+
+    @override
+    async def _start(self) -> None:
+        await self._source.start()
+
+    @override
+    async def _close(self) -> None:
+        await self._source.close()
+
+
+@dataclass(slots=True)
+class _Sentinel:
+    exception: BaseException | type[EndOfStream]
+
+
+class _BufferedStream(Generic[_T], Stream[_T]):
+    def __init__(self, parent: _BufferedStream[_T] | None = None) -> None:
+        super().__init__()
+        self.__buffer: deque[_T | _Sentinel] = deque()
+        self.__subscribers: list[_BufferedStream[_T]] = []
+        self.__pending_subscribers = 1
+        self.__parent = parent
+        self.__event = asyncio.Event()
+
+    @override
+    async def _get(self) -> _T:
+        while not self.__buffer:
+            self.__event.clear()
+            _ = await self.__event.wait()
+
+        item = self.__buffer.popleft()
+        if isinstance(item, _Sentinel):
+            raise item.exception
+        return item
+
+    def _send(self, value: _T):
+        self.__buffer.append(value)
+        self.__event.set()
+        for s in self.__subscribers:
+            s._send(value)
+
+    def _send_close(self, exc: BaseException | None = None):
+        self.__buffer.append(_Sentinel(exc or EndOfStream))
+        self.__event.set()
+        for s in self.__subscribers:
+            s._send_close(exc)
+
+    @override
+    async def _start(self) -> None:
+        if self.__parent:
+            await self.__parent.start()
+
+    @override
+    async def _close(self) -> None:
+        if self.__parent:
+            await self.__parent.close()
+
+    @override
+    async def close(self) -> None:
+        self.__pending_subscribers -= 1
+        if self.__pending_subscribers == 0:
+            await super().close()
+
+    @override
+    def tee(self) -> tuple[Stream[_T], Stream[_T]]:
+        assert self._state == StreamState.INITIAL, "can only tee before starting"
+        parent = self.__parent or self
+        a: _BufferedStream[_T] = _BufferedStream(parent)
+        parent.__subscribers.append(a)
+        parent.__pending_subscribers += 1
+        return self, a
+
+
+@final
+class _IntoBuffer(Generic[_T], _BufferedStream[_T]):
+    def __init__(self, stream: Stream[_T]) -> None:
+        super().__init__()
+        self._stream = stream
+        self._task: asyncio.Task[None] | None = None
+
+    @override
+    async def _start(self) -> None:
+        async def pump() -> None:
+            try:
+                async for v in self._stream:
+                    self._send(v)
+                self._send_close()
+            except Exception as e:
+                self._send_close(e)
+
+        self._task = asyncio.create_task(pump())
+
+    @override
+    async def _close(self) -> None:
+        if self._task:
+            _ = self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+            self._task = None
+        await super()._close()
+
+
+@final
+class ResumableStream(Generic[_In, _T], _BufferedStream[_T], Observer[_In]):
     def __init__(
         self,
         loop: EventLoop,
-        initial: _Out,
-        reducer: Callable[[_Out, _In], _Out],
-        fn: Callable[Concatenate[_Out, _P], AsyncGenerator[_In, _Out]],
+        initial: _T,
+        reducer: Callable[[_T, _In], _T],
+        fn: Callable[Concatenate[_T, _P], AsyncGenerator[_In, _T]],
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
     ) -> None:
+        super().__init__()
         self._loop = loop
         self._reducer = reducer
+        self._closed: bool | BaseException = False
+        self._current: _T = initial
+        self._op = self._loop.create_op(
+            StreamCreate(observer=cast("Observer[object]", self))
+        )
         self._fn = fn
         self._args = args
         self._kwargs = kwargs
-        self._obs = _StreamObserver(initial, self._reducer)
-        self._op = self._loop.create_op(
-            StreamCreate(observer=cast("Observer[object]", self._obs))
-        )
-        self._queue: asyncio.Queue[tuple[_Out] | None | BaseException] | None = None
+        self._task: asyncio.Future[object] | None = None
 
-    def __aiter__(self) -> StreamTask[_In, _Out]:
-        return self
+    @override
+    def on_next(self, val: _In):
+        self._current = self._reducer(self._current, val)
+        self._send(self._current)
 
-    async def __anext__(self) -> _Out:
-        if self._queue is None:
-            self._queue = await self._setup_stream()
+    @override
+    def on_close(self, exc: BaseException | None):
+        self._closed = True if exc is None else exc
+        self._send_close(exc)
 
-        item = await self._queue.get()
-        if item is None:
-            raise StopAsyncIteration
-        if isinstance(item, BaseException):
-            raise item
-        return item[0]
-
-    async def discard(self) -> None:
-        async for _ in self:
-            ...
-
-    async def _setup_stream(self) -> asyncio.Queue[tuple[_Out] | None | BaseException]:
-        queue: asyncio.Queue[tuple[_Out] | None | BaseException] = asyncio.Queue()
-        stream = cast("RawStream[_In]", await self._op).to_ambient()
+    @override
+    async def _start(self) -> None:
+        stream = cast("StreamHandle[_In]", await self._op).to_host()
 
         async def worker():
+            if self._closed is True:
+                raise StopAsyncIteration
+
+            gen = self._fn(self._current, *self._args, **self._kwargs)
             try:
-                state = self._obs.current
-                self._obs.enable = False
-
-                for d in self._obs.data:
-                    await queue.put((d,))
-                if self._obs.closed is True:
-                    return
-                elif isinstance(self._obs.closed, BaseException):
-                    raise self._obs.closed
-
-                gen = self._fn(state, *self._args, **self._kwargs)
-                state_partial = await gen.__anext__()
-
+                state_partial = await anext(gen)
                 while True:
-                    state = self._reducer(state, state_partial)
                     await stream.send(state_partial)
-                    await queue.put((state,))
-                    state_partial = await gen.asend(state)
+                    state_partial = await gen.asend(self._current)
             except StopAsyncIteration as _e:
                 await stream.close()
-            except BaseException as e:
-                await queue.put(e)
+            except Exception as e:
+                await stream.close(e)
                 raise
             finally:
-                await queue.put(None)
+                await gen.aclose()
 
-        _ = self._loop.create_op(
+        self._task = self._loop.create_op(
             FnCall(callable=worker, args=(), kwargs={}, return_type=None)
         )
-        return queue
+
+    @override
+    async def _close(self) -> None:
+        if self._task:
+            _ = self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+            self._task = None
+        await super()._close()

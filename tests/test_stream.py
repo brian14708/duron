@@ -9,7 +9,7 @@ import pytest
 from duron import fn
 from duron.context import Context
 from duron.contrib.storage import MemoryLogStorage
-from duron.stream import AmbientRawStream, RawStream
+from duron.stream import Stream, StreamHandle
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -20,7 +20,7 @@ async def test_stream():
     @fn()
     async def activity(ctx: Context) -> None:
         state = Observer()
-        stream: RawStream[int] = await ctx.create_stream(state)
+        stream: StreamHandle[int] = await ctx.create_stream(state)
 
         async def f():
             for i in range(50):
@@ -62,9 +62,9 @@ async def test_stream_host():
     @fn()
     async def activity(ctx: Context) -> None:
         state = Observer()
-        stream: AmbientRawStream[int] = (await ctx.create_stream(state)).to_ambient()
+        stream = (await ctx.create_stream(state)).to_host()
 
-        async def task(stream: AmbientRawStream[int]):
+        async def task(stream: StreamHandle[int]):
             for i in range(50):
                 await stream.send(i)
             await stream.close()
@@ -109,3 +109,52 @@ async def test_run():
 
     for s in all_states:
         assert all_states[-1].startswith(s)
+
+
+@pytest.mark.asyncio
+async def test_stream_map():
+    @fn()
+    async def activity(ctx: Context) -> None:
+        async def f(s: str) -> AsyncGenerator[str, str]:
+            while len(s) < 100:
+                chunk = chr(ord("a") + random.randint(0, 25))
+                s = yield chunk
+
+        stream = ctx.stream("", lambda s, p: s + p, f)
+        async for s in stream.map(lambda s: s.upper()):
+            assert s == s.upper()
+        return
+
+    log = MemoryLogStorage()
+    async with activity.create_task(log) as t:
+        await t.start()
+        await t.wait()
+
+
+@pytest.mark.asyncio
+async def test_stream_generator():
+    @fn()
+    async def activity(_ctx: Context) -> None:
+        async def f() -> AsyncGenerator[int]:
+            for i in range(100):
+                yield i
+                await asyncio.sleep(0)
+
+        stream = Stream[int].from_iterator(f())
+        m = stream.map(lambda x: x * 2)
+
+        a, m = m.tee()
+        b, m = m.tee()
+        c, m = m.tee()
+        d, m = m.tee()
+
+        assert await d.collect() == list(range(0, 200, 2))
+        assert sum(await a.map(lambda x: x / 2).collect()) == 4950
+        await b.close()
+        await c.close()
+        await m.close()
+
+    log = MemoryLogStorage()
+    async with activity.create_task(log) as t:
+        await t.start()
+        await t.wait()

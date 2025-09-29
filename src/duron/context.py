@@ -14,7 +14,7 @@ from typing import (
 )
 
 from duron.ops import FnCall, StreamCreate
-from duron.stream import StreamTask
+from duron.stream import ResumableStream
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Coroutine
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
     from duron.event_loop import EventLoop
     from duron.fn import Fn
-    from duron.stream import Observer, RawStream
+    from duron.stream import Observer, Stream, StreamHandle
 
     _T = TypeVar("_T")
     _S = TypeVar("_S")
@@ -55,8 +55,8 @@ class Context:
         if self._token:
             _context.reset(self._token)
 
-    @classmethod
-    def current(cls) -> Context:
+    @staticmethod
+    def current() -> Context:
         ctx = _context.get()
         if ctx is None:
             raise RuntimeError("No duron context is active")
@@ -92,10 +92,10 @@ class Context:
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
-    ) -> StreamTask[_S, _T]:
+    ) -> Stream[_T]:
         if asyncio.get_event_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
-        return StreamTask(
+        return ResumableStream(
             self._loop,
             initial,
             reducer,
@@ -104,12 +104,12 @@ class Context:
             **kwargs,
         )
 
-    async def create_stream(self, observer: Observer[_T] | None) -> RawStream[_T]:
+    async def create_stream(self, observer: Observer[_T] | None) -> StreamHandle[_T]:
         if asyncio.get_event_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
         o = cast("Observer[object]", observer) if observer else None
         return cast(
-            "RawStream[_T]",
+            "StreamHandle[_T]",
             await self._loop.create_op(StreamCreate(observer=o)),
         )
 

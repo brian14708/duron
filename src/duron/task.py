@@ -22,7 +22,7 @@ from duron.context import Context
 from duron.event_loop import EventLoop, create_loop, wrap_future
 from duron.log import is_entry
 from duron.ops import FnCall, StreamClose, StreamCreate, StreamEmit, TaskRun
-from duron.stream import RawStream
+from duron.stream import StreamHandle
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -176,7 +176,7 @@ class _TaskRun:
         self._streams: dict[
             str,
             tuple[
-                RawStream[object],
+                StreamHandle[object],
                 Observer[object] | None,
                 type | None,
             ],
@@ -319,11 +319,11 @@ class _TaskRun:
                 self._loop.post_completion(id, exception=ValueError("Stream not found"))
             else:
                 _, ob, tv = self._streams[e["stream_id"]]
-                self._loop.post_completion(id, result=None)
                 if ob:
                     ob.on_next(
                         self._codec.decode_json(e["value"], tv),
                     )
+                self._loop.post_completion(id, result=None)
             self._pending_ops.discard(id)
         elif e["type"] == "stream/complete":
             id = _decode_id(e["id"])
@@ -429,7 +429,7 @@ class _TaskRun:
                 )
 
             case StreamCreate():
-                stream: RawStream[object] = RawStream(_encode_id(id), self._loop)
+                stream: StreamHandle[object] = StreamHandle(_encode_id(id), self._loop)
                 if op.observer:
                     o = op.observer
                     ty = self._codec.inspect_function(o.on_next)

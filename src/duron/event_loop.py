@@ -83,10 +83,10 @@ class _TaskCtx:
 
 
 class EventLoop(AbstractEventLoop):
-    def __init__(self, ambient: asyncio.AbstractEventLoop, seed: bytes) -> None:
+    def __init__(self, host: asyncio.AbstractEventLoop, seed: bytes) -> None:
         self._ready: deque[Handle] = deque()
         self._debug: bool = False
-        self._ambient: asyncio.AbstractEventLoop = ambient
+        self._host: asyncio.AbstractEventLoop = host
         self._exc_handler: (
             Callable[[AbstractEventLoop, dict[str, object]], object] | None
         ) = None
@@ -103,8 +103,8 @@ class EventLoop(AbstractEventLoop):
         ctx.seq += 1
         return _mix_id(ctx.parent_id, ctx.seq - 1)
 
-    def ambient_loop(self) -> asyncio.AbstractEventLoop:
-        return self._ambient
+    def host_loop(self) -> asyncio.AbstractEventLoop:
+        return self._host
 
     @override
     def call_soon(

@@ -120,7 +120,7 @@ class MemoryLogStorage(LogStorage[int, str]):
     async def stream(
         self, start: int | None, live: bool
     ) -> AsyncGenerator[tuple[int, AnyEntry], None]:
-        start_index: int = start if start is not None else 0
+        start_index: int = start + 1 if start is not None else 0
 
         # Yield existing entries
         async with self._lock:

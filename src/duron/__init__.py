@@ -1,3 +1,5 @@
-from duron.config import set_config as set_config
-from duron.context import Context as Context
-from duron.fn import fn as fn
+from .config import set_config as set_config
+from .context import Context as Context
+from .fn import fn as fn
+from .stream import EndOfStream as EndOfStream
+from .stream import Stream as Stream
