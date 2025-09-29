@@ -136,7 +136,7 @@ class CustomPoint:
 async def test_serialize():
     @fn(codec=PickleCodec())
     async def activity(ctx: Context) -> CustomPoint:
-        def new_pt() -> CustomPoint:
+        async def new_pt() -> CustomPoint:
             return CustomPoint(x=1, y=2)
 
         pt = await ctx.run(new_pt)

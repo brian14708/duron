@@ -94,7 +94,7 @@ async def test_run():
                 all_states.append(s)
             yield ""
 
-        stream = ctx.run_stream("", lambda s, p: s + p, f)
+        stream = ctx.stream("", lambda s, p: s + p, f)
         await stream.discard()
 
     log = MemoryLogStorage()

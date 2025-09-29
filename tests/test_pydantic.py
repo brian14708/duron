@@ -36,7 +36,7 @@ class PydanticCodec(Codec):
 async def test_pydantic_serialize():
     @fn(codec=PydanticCodec())
     async def activity(ctx: Context) -> PydanticPoint:
-        def new_pt() -> PydanticPoint:
+        async def new_pt() -> PydanticPoint:
             return PydanticPoint(x=1, y=2)
 
         pt = await ctx.run(new_pt)

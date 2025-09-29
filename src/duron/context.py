@@ -3,15 +3,21 @@ from __future__ import annotations
 import asyncio
 from contextvars import ContextVar
 from random import Random
-from typing import TYPE_CHECKING, Concatenate, ParamSpec, TypeVar, cast, final
-
-from typing_extensions import overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Concatenate,
+    ParamSpec,
+    TypeVar,
+    cast,
+    final,
+)
 
 from duron.ops import FnCall, StreamCreate
 from duron.stream import StreamTask
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable
+    from collections.abc import AsyncGenerator, Callable, Coroutine
     from contextvars import Token
     from types import TracebackType
 
@@ -56,25 +62,9 @@ class Context:
             raise RuntimeError("No duron context is active")
         return ctx
 
-    @overload
     async def run(
         self,
-        fn: Callable[_P, Awaitable[_T]],
-        /,
-        *args: _P.args,
-        **kwargs: _P.kwargs,
-    ) -> _T: ...
-    @overload
-    async def run(
-        self,
-        fn: Callable[_P, _T],
-        /,
-        *args: _P.args,
-        **kwargs: _P.kwargs,
-    ) -> _T: ...
-    async def run(
-        self,
-        fn: Callable[_P, Awaitable[_T] | _T],
+        fn: Callable[_P, Coroutine[Any, Any, _T]],
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
@@ -94,7 +84,7 @@ class Context:
             ),
         )
 
-    def run_stream(
+    def stream(
         self,
         initial: _T,
         reducer: Callable[[_T, _S], _T],

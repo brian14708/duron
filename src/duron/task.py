@@ -5,7 +5,6 @@ from asyncio.exceptions import CancelledError
 import base64
 import contextlib
 import time
-from collections.abc import Awaitable
 from hashlib import blake2b
 from typing import (
     TYPE_CHECKING,
@@ -78,7 +77,7 @@ class Task(Generic[_P, _T]):
         self._run: _TaskRun | None = None
 
     async def start(self, *args: _P.args, **kwargs: _P.kwargs) -> None:
-        def get_init() -> TaskInitParams:
+        async def get_init() -> TaskInitParams:
             return {
                 "version": _CURRENT_VERSION,
                 "args": [codec.encode_json(arg) for arg in args],
@@ -96,7 +95,7 @@ class Task(Generic[_P, _T]):
         await self._run.resume()
 
     async def resume(self) -> None:
-        def cb() -> TaskInitParams:
+        async def cb() -> TaskInitParams:
             raise Exception("not started")
 
         type_info = self._task_fn.codec.inspect_function(self._task_fn.fn)
@@ -128,9 +127,9 @@ class TaskInitParams(TypedDict):
 async def _task_prelude(
     task_fn: Fn[..., _T],
     type_info: FunctionType,
-    init: Callable[[], TaskInitParams],
+    init: Callable[[], Coroutine[Any, Any, TaskInitParams]],
 ) -> _T:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     assert isinstance(loop, EventLoop)
     with Context(task_fn, loop) as ctx:
         init_params = await ctx.run(init)
@@ -372,9 +371,7 @@ class _TaskRun:
                         "promise_id": _encode_id(id),
                     }
                     try:
-                        result = op.callable(*op.args, **op.kwargs)
-                        if isinstance(result, Awaitable):
-                            result = await cast("Awaitable[object]", result)
+                        result = await op.callable(*op.args, **op.kwargs)
                         entry["result"] = self._codec.encode_json(result)
                     except Exception as e:
                         entry["error"] = _encode_error(e)

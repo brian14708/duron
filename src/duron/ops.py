@@ -4,14 +4,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Coroutine
+    from collections.abc import Callable, Coroutine
 
     from duron.stream import Observer
 
 
 @dataclass(slots=True)
 class FnCall:
-    callable: Callable[..., Awaitable[object] | object]
+    callable: Callable[..., Coroutine[Any, Any, object]]
     args: tuple[object, ...]
     kwargs: dict[str, object]
     return_type: type | None = None
