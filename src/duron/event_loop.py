@@ -6,7 +6,13 @@ import contextvars
 import heapq
 import logging
 import os
-from asyncio import AbstractEventLoop, Handle, Task, TimerHandle, events
+from asyncio import (
+    AbstractEventLoop,
+    Handle,
+    Task,
+    TimerHandle,
+    events,
+)
 from collections import deque
 from dataclasses import dataclass
 from hashlib import blake2b
@@ -219,29 +225,13 @@ class EventLoop(AbstractEventLoop):
 
     def create_op(
         self, params: object, /, *, loop: AbstractEventLoop | None = None
-    ) -> OpFuture:
+    ) -> asyncio.Future[object]:
+        self._event.set()
         if loop is not None and loop is not self:
             id = os.urandom(12)
-            host_fut: asyncio.Future[object] = OpFuture(id, params, loop)
             op_fut = OpFuture(id, params, self)
             self._ops[id] = op_fut
-
-            def op_to_host(f: asyncio.Future[object]):
-                if f.cancelled():
-                    _ = loop.call_soon(host_fut.cancel)
-                elif e := f.exception():
-                    _ = loop.call_soon(host_fut.set_exception, e)
-                else:
-                    _ = loop.call_soon(host_fut.set_result, f.result())
-
-            def host_to_op(f: asyncio.Future[object]):
-                if f.cancelled() and not op_fut.done():
-                    _ = self.call_soon(op_fut.cancel)
-
-            op_fut.add_done_callback(op_to_host)
-            host_fut.add_done_callback(host_to_op)
-            self._event.set()
-            return host_fut
+            return wrap_future(op_fut, loop=loop)
         else:
             id = self.generate_op_id()
             op_fut = OpFuture(id, params, self)
@@ -270,16 +260,18 @@ class EventLoop(AbstractEventLoop):
         exception: BaseException | None = None,
     ) -> None:
         if op := self._ops.pop(id, None):
+            if op.done():
+                return
             tid = _mix_id(op.id, -1)
-            self._event.set()
             self._ready.append(
                 Handle(
                     op.set_result if exception is None else op.set_exception,
-                    [(result if exception is None else exception)],
+                    (result if exception is None else exception,),
                     self,
                     context=self._context_new_task(None, tid),
                 )
             )
+            self._event.set()
 
     @override
     def is_closed(self) -> bool:
@@ -353,8 +345,34 @@ def create_loop(
     return EventLoop(parent_loop, seed)  # type: ignore[abstract]
 
 
-def create_op(params: object) -> OpFuture:
+def create_op(params: object) -> asyncio.Future[object]:
     loop = asyncio.get_running_loop()
     if not isinstance(loop, EventLoop):
         raise RuntimeError("must be called from duron event loop")
     return loop.create_op(params)
+
+
+def wrap_future(
+    future: asyncio.Future[_T], *, loop: asyncio.AbstractEventLoop | None = None
+) -> asyncio.Future[_T]:
+    src_loop = future.get_loop()
+    dst_loop = loop or asyncio.get_running_loop()
+    if src_loop is dst_loop:
+        return future
+    dst_future: asyncio.Future[_T] = dst_loop.create_future()
+
+    def done(f: asyncio.Future[_T]) -> None:
+        if f.cancelled():
+            _ = dst_loop.call_soon(dst_future.cancel)
+        elif e := f.exception():
+            _ = dst_loop.call_soon(dst_future.set_exception, e)
+        else:
+            _ = dst_loop.call_soon(dst_future.set_result, f.result())
+
+    def dst_done(f: asyncio.Future[_T]) -> None:
+        if f.cancelled() and not future.done():
+            _ = src_loop.call_soon(future.cancel)
+
+    future.add_done_callback(done)
+    dst_future.add_done_callback(dst_done)
+    return dst_future

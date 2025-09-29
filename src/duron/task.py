@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from asyncio.exceptions import CancelledError
 import base64
 import contextlib
 import time
@@ -20,7 +21,7 @@ from typing_extensions import TypedDict, assert_never
 
 from duron.codec import Codec, JSONValue
 from duron.context import Context
-from duron.event_loop import EventLoop, create_loop
+from duron.event_loop import EventLoop, create_loop, wrap_future
 from duron.log import is_entry
 from duron.ops import FnCall, StreamClose, StreamCreate, StreamEmit, TaskRun
 from duron.stream import RawStream
@@ -61,7 +62,8 @@ class TaskGuard(Generic[_P, _T]):
         exc_type: type[BaseException] | None,
         exc_value: BaseException | None,
         traceback: TracebackType | None,
-    ) -> None: ...
+    ) -> None:
+        await self._task.close()
 
 
 @final
@@ -110,6 +112,11 @@ class Task(Generic[_P, _T]):
         if self._run is None:
             raise RuntimeError("Task not started")
         return cast("_T", await self._run.run())
+
+    async def close(self) -> None:
+        if self._run:
+            await self._run.close()
+            self._run = None
 
 
 class TaskInitParams(TypedDict):
@@ -178,6 +185,14 @@ class _TaskRun:
         ] = {}
         self._preflight_msg: set[str] = set()
 
+    async def close(self) -> None:
+        for task, _ in self._tasks.values():
+            _ = task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        _ = await self._step()
+        self._loop.close()
+
     def now(self) -> int:
         if self._running:
             t = time.time_ns()
@@ -208,6 +223,7 @@ class _TaskRun:
             return self._task.result()
 
         self._running = await self._log.acquire_lease()
+        bg: asyncio.Task[None] | None = None
         try:
             for msg in self._pending_msg:
                 await self.enqueue_log(msg)
@@ -216,35 +232,18 @@ class _TaskRun:
                 self._tasks[key] = (asyncio.create_task(task_fn()), return_type)
             self._pending_task.clear()
 
-            t1 = asyncio.create_task(self._follow_log())
-            t2 = asyncio.create_task(self._step_loop())
+            bg = asyncio.create_task(self._follow_log())
+            await self._step_loop()
 
-            done, pending = await asyncio.wait(
-                [t1, t2], return_when=asyncio.FIRST_COMPLETED
-            )
-
-            for t in pending:
-                _ = t.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await t
-
-            if len(pending) == 0:
-                # success
-                assert self._task.done()
-                assert len(self._pending_ops) == 0
-                assert len(self._tasks) == 0
-
-            for task, _ in self._tasks.values():
-                _ = task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
-
-            for t in done:
-                if exc := t.exception():
-                    raise exc
+            assert self._task.done()
+            assert len(self._pending_ops) == 0
 
             return self._task.result()
         finally:
+            if bg:
+                _ = bg.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await bg
             await self._log.release_lease(self._running)
             self._running = None
 
@@ -279,13 +278,9 @@ class _TaskRun:
             self._preflight_msg.add(e["id"])
         if e["type"] == "promise/complete":
             pending_info = self._pending_task.pop(e["promise_id"], None)
-            task_info = self._tasks.pop(e["promise_id"], None)
+            task_info = self._tasks.get(e["promise_id"], None)
 
             id = _decode_id(e["promise_id"])
-
-            if task_info is not None:
-                _ = task_info[0].cancel()
-                await task_info[0]
 
             return_type = None
             if pending_info is not None:
@@ -293,7 +288,6 @@ class _TaskRun:
             elif task_info is not None:
                 _, return_type = task_info
             else:
-                print(e)
                 raise AssertionError("unreachable")
 
             if "error" in e:
@@ -306,7 +300,7 @@ class _TaskRun:
                 try:
                     result = self._codec.decode_json(e["result"], return_type)
                     self._loop.post_completion(id, result=result)
-                except BaseException as exc:
+                except Exception as exc:
                     self._loop.post_completion(
                         id,
                         exception=exc,
@@ -382,18 +376,22 @@ class _TaskRun:
                         if isinstance(result, Awaitable):
                             result = await cast("Awaitable[object]", result)
                         entry["result"] = self._codec.encode_json(result)
-                    except BaseException as e:
+                    except Exception as e:
                         entry["error"] = _encode_error(e)
-                    finally:
-                        _ = asyncio.create_task(self.enqueue_log(entry))
+                    except asyncio.CancelledError as e:
+                        entry["error"] = _encode_error(e)
+
+                    await self.enqueue_log(entry)
 
                 def done(f: OpFuture) -> None:
                     if f.cancelled():
                         sid = _encode_id(f.id)
-                        _ = self._pending_task.pop(sid, None)
-                        if task_info := self._tasks.get(sid, None):
+                        if self._pending_task.get(sid, None):
+                            # pending task cancelled
+                            pass
+                        elif task_info := self._tasks.get(sid, None):
                             task, _ = task_info
-                            _ = task.cancel()
+                            _ = task.get_loop().call_soon(task.cancel)
 
                 fut.add_done_callback(done)
                 sid = _encode_id(id)
@@ -409,9 +407,9 @@ class _TaskRun:
                     "type": "promise/create",
                 })
 
-                fut_host: asyncio.Future[None] = asyncio.Future()
 
-                async def cb() -> None:
+                t = self._loop.create_task(op.task)
+                async def task() -> None:
                     entry: PromiseCompleteEntry = {
                         "ts": _encode_timestamp(self.now()),
                         "id": _encode_id(id, 1),
@@ -419,18 +417,18 @@ class _TaskRun:
                         "promise_id": _encode_id(id),
                     }
                     try:
-                        result = await op.task
+                        result = await wrap_future(t)
                         entry["result"] = self._codec.encode_json(result)
-                    except BaseException as e:
+                        await self.enqueue_log(entry, True)
+                    except Exception as e:
                         entry["error"] = _encode_error(e)
-                    finally:
-                        fut_host.set_result(None)
-                        _ = asyncio.create_task(self.enqueue_log(entry, True))
-
-                _ = self._loop.create_task(cb())
+                        await self.enqueue_log(entry, True)
+                    except asyncio.CancelledError as e:
+                        entry["error"] = _encode_error(e)
+                        await self.enqueue_log(entry, True)
 
                 self._tasks[_encode_id(id)] = (
-                    fut_host,
+                    asyncio.create_task(task()),
                     op.return_type,
                 )
 
