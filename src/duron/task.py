@@ -19,9 +19,9 @@ from typing_extensions import TypedDict, assert_never
 
 from duron.codec import Codec, JSONValue
 from duron.context import Context
-from duron.event_loop import EventLoop, create_loop, wrap_future
+from duron.event_loop import EventLoop, create_loop
 from duron.log import is_entry
-from duron.ops import Barrier, FnCall, StreamClose, StreamCreate, StreamEmit, TaskRun
+from duron.ops import Barrier, FnCall, StreamClose, StreamCreate, StreamEmit
 from duron.stream import StreamHandle
 
 if TYPE_CHECKING:
@@ -49,6 +49,8 @@ _CURRENT_VERSION = 0
 
 @final
 class TaskGuard(Generic[_P, _T]):
+    __slots__ = ("_task",)
+
     def __init__(self, task: Task[_P, _T]) -> None:
         self._task = task
 
@@ -66,6 +68,8 @@ class TaskGuard(Generic[_P, _T]):
 
 @final
 class Task(Generic[_P, _T]):
+    __slots__ = ("_task_fn", "_log", "_run")
+
     def __init__(
         self,
         task_fn: Fn[_P, _T],
@@ -87,7 +91,7 @@ class Task(Generic[_P, _T]):
         type_info = codec.inspect_function(self._task_fn.fn)
         task_prelude = _task_prelude(self._task_fn, type_info, get_init)
         self._run = _TaskRun(
-            TaskRun(task=task_prelude, return_type=type_info.return_type),
+            task_prelude,
             self._log,
             codec,
         )
@@ -100,7 +104,7 @@ class Task(Generic[_P, _T]):
         type_info = self._task_fn.codec.inspect_function(self._task_fn.fn)
         task = _task_prelude(self._task_fn, type_info, cb)
         self._run = _TaskRun(
-            TaskRun(task=task, return_type=type_info.return_type),
+            task,
             self._log,
             self._task_fn.codec,
         )
@@ -154,14 +158,30 @@ async def _task_prelude(
 
 @final
 class _TaskRun:
+    __slots__ = (
+        "_loop",
+        "_task",
+        "_log",
+        "_codec",
+        "_running",
+        "_pending_msg",
+        "_pending_task",
+        "_pending_ops",
+        "_now",
+        "_offset",
+        "_tasks",
+        "_streams",
+        "_preflight_msg",
+    )
+
     def __init__(
         self,
-        task: TaskRun,
+        task: Coroutine[Any, Any, object],
         log: LogStorage,
         codec: Codec,
     ) -> None:
         self._loop = create_loop(asyncio.get_running_loop(), b"")
-        self._task = self._loop.create_op(task)
+        self._task = self._loop.create_task(task)
         self._log = log
         self._codec = codec
         self._running: bytes | None = None
@@ -189,20 +209,23 @@ class _TaskRun:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         _ = await self._step()
+
+        _ = self._task.cancel()
+        _ = await self._step()
         self._loop.close()
 
     def now(self) -> int:
         if self._running:
             t = time.time_ns()
-            t -= t % 1_000
-            self._now = max(self._now + 1_000, t)
+            t //= 1_000
+            self._now = max(self._now + 1, t)
         return self._now
 
     async def resume(self) -> None:
         recvd_msgs: set[str] = set()
         async for o, entry in self._log.stream(None, False):
             self._offset = o
-            ts = _decode_timestamp(entry["ts"])
+            ts = entry["ts"]
             self._now = max(self._now, ts)
             _ = await self._step()
             if is_entry(entry):
@@ -232,10 +255,6 @@ class _TaskRun:
 
             bg = asyncio.create_task(self._follow_log())
             await self._step_loop()
-
-            assert self._task.done()
-            assert len(self._pending_ops) == 0
-
             return self._task.result()
         finally:
             if bg:
@@ -247,7 +266,7 @@ class _TaskRun:
 
     async def _follow_log(self) -> None:
         async for o, entry in self._log.stream(self._offset, True):
-            self._now = max(self._now, _decode_timestamp(entry["ts"]))
+            self._now = max(self._now, entry["ts"])
             if is_entry(entry):
                 await self.handle_message(o, entry)
 
@@ -275,7 +294,7 @@ class _TaskRun:
             self._preflight_msg.discard(e["id"])
             return
         if preflight:
-            if e["type"] not in ("barrier",):
+            if e["type"] in ("barrier",):
                 return
             self._preflight_msg.add(e["id"])
 
@@ -365,14 +384,14 @@ class _TaskRun:
         match op:
             case FnCall():
                 await self.enqueue_log({
-                    "ts": _encode_timestamp(self.now()),
+                    "ts": self.now(),
                     "id": _encode_id(id),
                     "type": "promise/create",
                 })
 
                 async def cb() -> None:
                     entry: PromiseCompleteEntry = {
-                        "ts": _encode_timestamp(self.now()),
+                        "ts": self.now(),
                         "id": _encode_id(id, 1),
                         "type": "promise/complete",
                         "promise_id": _encode_id(id),
@@ -405,38 +424,6 @@ class _TaskRun:
                 else:
                     self._pending_task[sid] = (cb, op.return_type)
 
-            case TaskRun():
-                await self.enqueue_log({
-                    "ts": _encode_timestamp(self.now()),
-                    "id": _encode_id(id),
-                    "type": "promise/create",
-                })
-
-                t = self._loop.create_task(op.task)
-
-                async def task() -> None:
-                    entry: PromiseCompleteEntry = {
-                        "ts": _encode_timestamp(self.now()),
-                        "id": _encode_id(id, 1),
-                        "type": "promise/complete",
-                        "promise_id": _encode_id(id),
-                    }
-                    try:
-                        result = await wrap_future(t)
-                        entry["result"] = self._codec.encode_json(result)
-                        await self.enqueue_log(entry, True)
-                    except Exception as e:
-                        entry["error"] = _encode_error(e)
-                        await self.enqueue_log(entry, True)
-                    except asyncio.CancelledError as e:
-                        entry["error"] = _encode_error(e)
-                        await self.enqueue_log(entry, True)
-
-                self._tasks[_encode_id(id)] = (
-                    asyncio.create_task(task()),
-                    op.return_type,
-                )
-
             case StreamCreate():
                 stream: StreamHandle[object] = StreamHandle(_encode_id(id), self._loop)
                 if op.observer:
@@ -450,14 +437,14 @@ class _TaskRun:
                 else:
                     self._streams[_encode_id(id)] = (stream, None, None)
                 await self.enqueue_log({
-                    "ts": _encode_timestamp(self.now()),
+                    "ts": self.now(),
                     "id": _encode_id(id),
                     "type": "stream/create",
                 })
 
             case StreamEmit():
                 await self.enqueue_log({
-                    "ts": _encode_timestamp(self.now()),
+                    "ts": self.now(),
                     "id": _encode_id(id),
                     "stream_id": op.stream_id,
                     "type": "stream/emit",
@@ -466,7 +453,7 @@ class _TaskRun:
             case StreamClose():
                 if op.exception:
                     await self.enqueue_log({
-                        "ts": _encode_timestamp(self.now()),
+                        "ts": self.now(),
                         "id": _encode_id(id),
                         "stream_id": op.stream_id,
                         "type": "stream/complete",
@@ -474,14 +461,14 @@ class _TaskRun:
                     })
                 else:
                     await self.enqueue_log({
-                        "ts": _encode_timestamp(self.now()),
+                        "ts": self.now(),
                         "id": _encode_id(id),
                         "stream_id": op.stream_id,
                         "type": "stream/complete",
                     })
             case Barrier():
                 await self.enqueue_log({
-                    "ts": _encode_timestamp(self.now()),
+                    "ts": self.now(),
                     "id": _encode_id(id),
                     "type": "barrier",
                 })
@@ -499,14 +486,6 @@ def _encode_id(id: bytes, flag: int = 0) -> str:
 
 def _decode_id(encoded: str) -> bytes:
     return base64.b64decode(encoded)
-
-
-def _encode_timestamp(ts_ns: int) -> int:
-    return ts_ns // 1_000
-
-
-def _decode_timestamp(ts: int) -> int:
-    return ts * 1_000
 
 
 def _encode_error(error: BaseException) -> ErrorInfo:

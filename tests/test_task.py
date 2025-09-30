@@ -31,16 +31,14 @@ async def test_task():
         return i + ":".join(x)
 
     IDS = {
-        "04nH6MWw6eE/vJ5r",
-        "5lAazvU2oa7hwmxv",
-        "9mcIBsvU2ej9uDsV",
-        "DzHchUp69P+z34eq",
-        "MKbyO056hUi5M5mu",
-        "P48ejug7cFGpdQkY",
-        "bsHHUcRaDpZ4duNt",
-        "nPpEbQJ0ukEIrYob",
-        "q6LeJqEWRCR0zLTm",
-        "r8oZz+wBVqWRYBuu",
+        "+qPYuDgKBdMkb8ME",
+        "9nLMU+itD7QHcCsf",
+        "BCLA1azFK4LrrEHg",
+        "D7qSBNZIThKa2P+H",
+        "VdptC8Lv0z2kPe3n",
+        "rThvjdqQNneQA3Am",
+        "syoQHz+dg0KA3xJY",
+        "uJ/iXS2GC5Hz6v1R",
     }
 
     log = MemoryLogStorage()
@@ -123,7 +121,7 @@ async def test_cancel():
         except Exception as e:
             assert "Timeout" in repr(e)
 
-    assert len(await log.entries()) == 8
+    assert len(await log.entries()) == 6
 
 
 @dataclass

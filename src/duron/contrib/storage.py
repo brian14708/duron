@@ -4,7 +4,7 @@ import asyncio
 import json
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, cast, final
 
 from typing_extensions import override
 
@@ -16,7 +16,10 @@ if TYPE_CHECKING:
     from duron.log import AnyEntry, Entry
 
 
+@final
 class FileLogStorage(LogStorage):
+    __slots__ = ("_log_file", "_leases", "_lock")
+
     _log_file: Path
     _leases: bytes | None
     _lock: asyncio.Lock
@@ -106,7 +109,10 @@ class FileLogStorage(LogStorage):
         pass
 
 
+@final
 class MemoryLogStorage(LogStorage):
+    __slots__ = ("_entries", "_leases", "_lock", "_condition")
+
     _entries: list[AnyEntry]
     _leases: bytes | None
     _lock: asyncio.Lock

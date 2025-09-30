@@ -34,8 +34,9 @@ _Out = TypeVar("_Out", covariant=True)
 _T = TypeVar("_T")
 
 
+@final
 class EndOfStream(Exception):
-    pass
+    __slots__ = ()
 
 
 class StreamState(Enum):
@@ -50,44 +51,48 @@ class Observer(Generic[_In], Protocol):
 
 
 @final
-class StreamHandle(Generic[_In]):
+class StreamHandle(Generic[_In]):  # can be used from any loop
+    __slots__ = ("_stream_id", "_loop", "_target_loop")
+
     def __init__(self, id: str, loop: EventLoop) -> None:
         self._stream_id = id
         self._loop = loop
         self._target_loop: asyncio.AbstractEventLoop | None = None
-        self._event = asyncio.Event()
 
     async def send(self, value: _In, /) -> None:
-        if self._target_loop is None:
+        loop = asyncio.get_running_loop()
+        if loop is self._loop:
             _ = await self._loop.create_op(
                 StreamEmit(stream_id=self._stream_id, value=value),
             )
         else:
-            _ = await self._loop.create_host_op(
-                StreamEmit(stream_id=self._stream_id, value=value),
+            _ = await wrap_future(
+                self._loop.create_op(
+                    StreamEmit(stream_id=self._stream_id, value=value),
+                    external=True,
+                ),
+                loop=loop,
             )
 
     async def close(self, error: BaseException | None = None, /) -> None:
-        if self._target_loop is None:
+        loop = asyncio.get_running_loop()
+        if loop is self._loop:
             _ = await self._loop.create_op(
                 StreamClose(stream_id=self._stream_id, exception=error),
             )
         else:
-            _ = await self._loop.create_host_op(
-                StreamClose(stream_id=self._stream_id, exception=error),
+            _ = await wrap_future(
+                self._loop.create_op(
+                    StreamClose(stream_id=self._stream_id, exception=error),
+                    external=True,
+                ),
+                loop=loop,
             )
-        self._event.set()
-
-    async def wait(self) -> None:
-        _ = await self._event.wait()
-
-    def to_host(self) -> StreamHandle[_In]:
-        s: StreamHandle[_In] = StreamHandle(self._stream_id, self._loop)
-        s._target_loop = self._loop.host_loop()
-        return s
 
 
 class Stream(Generic[_Out], ABC):
+    __slots__: tuple[str, ...] = ("_state",)
+
     @staticmethod
     def from_iterator(it: AsyncIterator[_Out]) -> Stream[_Out]:
         return _AsyncIter(it)
@@ -162,6 +167,8 @@ class Stream(Generic[_Out], ABC):
 
 @final
 class _AsyncIter(Generic[_Out], Stream[_Out]):
+    __slots__ = ("_it",)
+
     def __init__(
         self,
         it: AsyncIterator[_Out],
@@ -185,6 +192,8 @@ class _AsyncIter(Generic[_Out], Stream[_Out]):
 
 @final
 class _Map(Generic[_In, _T], Stream[_T]):
+    __slots__ = ("_source", "_fn")
+
     def __init__(self, source: Stream[_In], fn: Callable[[_In], _T]) -> None:
         super().__init__()
         self._source = source
@@ -219,6 +228,14 @@ class _Sentinel:
 
 
 class _BufferedStream(Generic[_T], Stream[_T]):
+    __slots__: tuple[str, ...] = (
+        "__buffer",
+        "__subscribers",
+        "__pending_subscribers",
+        "__parent",
+        "__event",
+    )
+
     def __init__(self, parent: _BufferedStream[_T] | None = None) -> None:
         super().__init__()
         self.__buffer: deque[tuple[int, _T | _Sentinel]] = deque()
@@ -290,6 +307,8 @@ class _BufferedStream(Generic[_T], Stream[_T]):
 
 @final
 class _IntoBuffer(Generic[_T], _BufferedStream[_T]):
+    __slots__ = ("_stream", "_task")
+
     def __init__(self, stream: Stream[_T]) -> None:
         super().__init__()
         self._stream = stream
@@ -326,6 +345,19 @@ class _IntoBuffer(Generic[_T], _BufferedStream[_T]):
 
 @final
 class ResumableStream(Generic[_In, _T], _BufferedStream[_T]):
+    __slots__ = (
+        "_loop",
+        "_reducer",
+        "_closed",
+        "_current",
+        "_op",
+        "_fn",
+        "_args",
+        "_kwargs",
+        "_task",
+        "_target_loop",
+    )
+
     def __init__(
         self,
         loop: EventLoop,
@@ -360,7 +392,7 @@ class ResumableStream(Generic[_In, _T], _BufferedStream[_T]):
 
     @override
     async def _start(self) -> None:
-        stream = cast("StreamHandle[_In]", await self._op).to_host()
+        stream = cast("StreamHandle[_In]", await self._op)
 
         async def worker():
             if self._closed is True:
@@ -405,6 +437,8 @@ class ResumableStream(Generic[_In, _T], _BufferedStream[_T]):
 
 @final
 class LogStream(Generic[_T], _BufferedStream[_T]):
+    __slots__ = ("_loop",)
+
     def __init__(self, loop: EventLoop) -> None:
         super().__init__()
         self._loop = loop

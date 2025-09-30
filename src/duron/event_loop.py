@@ -51,6 +51,8 @@ _task_ctx: contextvars.ContextVar[_TaskCtx] = contextvars.ContextVar("duron_task
 
 
 class OpFuture(asyncio.Future[object]):
+    __slots__: tuple[str, ...] = ("id", "params")
+
     id: bytes
     params: object
 
@@ -66,12 +68,12 @@ class WaitSet:
     timer: float | None
     event: asyncio.Event
 
-    async def block(self, now_ns: int) -> None:
+    async def block(self, now_us: int) -> None:
         if self.timer is None:
             _ = await self.event.wait()
             return
         with contextlib.suppress(asyncio.TimeoutError):
-            t = self.timer - (now_ns / 1e9)
+            t = (self.timer - now_us) / 1e6
             if t > 0:
                 _ = await asyncio.wait_for(self.event.wait(), timeout=t)
 
@@ -83,6 +85,19 @@ class _TaskCtx:
 
 
 class EventLoop(AbstractEventLoop):
+    __slots__: tuple[str, ...] = (
+        "_ready",
+        "_debug",
+        "_host",
+        "_exc_handler",
+        "_ops",
+        "_ctx",
+        "_now_us",
+        "_closed",
+        "_event",
+        "_timers",
+    )
+
     def __init__(self, host: asyncio.AbstractEventLoop, seed: bytes) -> None:
         self._ready: deque[Handle] = deque()
         self._debug: bool = False
@@ -92,10 +107,9 @@ class EventLoop(AbstractEventLoop):
         ) = None
         self._ops: dict[bytes, OpFuture] = {}
         self._ctx: _TaskCtx = _TaskCtx(parent_id=seed)
-        self._now_ns: int = 0
+        self._now_us: int = 0
         self._closed: bool = False
-        self._event: asyncio.Event = asyncio.Event()
-
+        self._event: asyncio.Event = asyncio.Event()  # loop = _host
         self._timers: list[TimerHandle] = []
 
     def generate_op_id(self) -> bytes:
@@ -120,6 +134,8 @@ class EventLoop(AbstractEventLoop):
             context=context,
         )
         self._ready.append(h)
+        if asyncio.get_running_loop() is self._host:
+            self._event.set()
         return h
 
     @override
@@ -131,13 +147,15 @@ class EventLoop(AbstractEventLoop):
         context: Context | None = None,
     ) -> TimerHandle:
         th = TimerHandle(
-            when,
+            int(when * 1e6),
             callback,
             args,
             loop=self,
             context=context,
         )
         heapq.heappush(self._timers, th)
+        if asyncio.get_running_loop() is self._host:
+            self._event.set()
         return th
 
     @override
@@ -148,17 +166,27 @@ class EventLoop(AbstractEventLoop):
         *args: Unpack[_Ts],
         context: Context | None = None,
     ) -> TimerHandle:
-        return self.call_at(self.time() + delay, callback, *args, context=context)
+        th = TimerHandle(
+            self.time_us() + int(delay * 1e6),
+            callback,
+            args,
+            loop=self,
+            context=context,
+        )
+        heapq.heappush(self._timers, th)
+        if asyncio.get_running_loop() is self._host:
+            self._event.set()
+        return th
 
     @override
     def time(self) -> float:
-        return self._now_ns / 1e9
+        return self._now_us / 1e6
 
-    def time_ns(self) -> int:
-        return self._now_ns
+    def time_us(self) -> int:
+        return self._now_us
 
     def tick(self, time: int) -> None:
-        self._now_ns = time
+        self._now_us = time
 
     @override
     def create_future(self) -> asyncio.Future[object]:
@@ -183,7 +211,7 @@ class EventLoop(AbstractEventLoop):
         events._set_running_loop(self)
         try:
             self._event.clear()
-            now = self.time()
+            now = self.time_us()
             deadline: float | None = None
             while True:
                 deadline = None
@@ -227,23 +255,20 @@ class EventLoop(AbstractEventLoop):
         self,
         params: object,
         /,
+        *,
+        external: bool = False,
     ) -> asyncio.Future[object]:
-        self._event.set()
-        id = self.generate_op_id()
+        if external:
+            assert asyncio.get_running_loop() is self._host
+            id = os.urandom(12)
+            self._event.set()
+        else:
+            assert asyncio.get_running_loop() is self
+            id = self.generate_op_id()
+
         op_fut = OpFuture(id, params, self)
         self._ops[id] = op_fut
         return op_fut
-
-    def create_host_op(
-        self,
-        params: object,
-        /,
-    ) -> asyncio.Future[object]:
-        self._event.set()
-        id = os.urandom(12)
-        op_fut = OpFuture(id, params, self)
-        self._ops[id] = op_fut
-        return wrap_future(op_fut, loop=self._host)
 
     @overload
     def post_completion(
@@ -270,15 +295,18 @@ class EventLoop(AbstractEventLoop):
             if op.done():
                 return
             tid = _mix_id(op.id, -1)
-            self._ready.append(
-                Handle(
-                    op.set_result if exception is None else op.set_exception,
-                    (result if exception is None else exception,),
-                    self,
+            if exception is None:
+                _ = self.call_soon(
+                    op.set_result,
+                    result,
                     context=self._context_new_task(None, tid),
                 )
-            )
-            self._event.set()
+            else:
+                _ = self.call_soon(
+                    op.set_exception,
+                    exception,
+                    context=self._context_new_task(None, tid),
+                )
 
     @override
     def is_closed(self) -> bool:
@@ -350,13 +378,6 @@ def create_loop(
     seed: bytes,
 ) -> EventLoop:
     return EventLoop(parent_loop, seed)  # type: ignore[abstract]
-
-
-def create_op(params: object) -> asyncio.Future[object]:
-    loop = asyncio.get_running_loop()
-    if not isinstance(loop, EventLoop):
-        raise RuntimeError("must be called from duron event loop")
-    return loop.create_op(params)
 
 
 def wrap_future(

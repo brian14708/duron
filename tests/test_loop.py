@@ -28,20 +28,20 @@ async def test_timer():
     assert tsk.result() == 0
 
 
-def op_single() -> set[bytes]:
+async def op_single() -> set[bytes]:
     async def op1(x: int):
-        _ = await duron.event_loop.create_op(x)
+        _ = await loop.create_op(x)
 
     async def op():
         first = asyncio.create_task(op1(1))
         _ = await asyncio.gather(
-            duron.event_loop.create_op(2),
+            loop.create_op(2),
             asyncio.create_task(op1(3)),
-            duron.event_loop.create_op(4),
+            loop.create_op(4),
             asyncio.create_task(op1(5)),
         )
         await first
-        _ = await duron.event_loop.create_op(6)
+        _ = await loop.create_op(6)
 
     ids: set[bytes] = set()
     loop = duron.event_loop.create_loop(asyncio.get_event_loop(), b"tsk")
@@ -76,7 +76,8 @@ def op_single() -> set[bytes]:
     return ids
 
 
-def test_op():
+@pytest.mark.asyncio
+async def test_op():
     BASELINE = {
         b"\x89U\x82\xd9\xe9\xa1\x01\x0fb\xab}\xba",
         b"\xa2VE\xcb\xf3\x81\x82\xe75@\xe9\xdf",
@@ -86,4 +87,4 @@ def test_op():
         b"\xc6\xbbEu\xdf\xd1uc\xf5M\x11'",
     }
     for _ in range(4):
-        assert op_single() == BASELINE
+        assert await op_single() == BASELINE

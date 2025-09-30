@@ -34,6 +34,8 @@ _context: ContextVar[Context | None] = ContextVar("duron_context", default=None)
 
 @final
 class Context:
+    __slots__ = ("_loop", "_task", "_token")
+
     def __init__(self, task: Fn[..., object], loop: EventLoop) -> None:
         self._loop: EventLoop = loop
         self._task = task
@@ -142,7 +144,7 @@ class Context:
     def time_ns(self) -> int:
         if asyncio.get_event_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
-        return self._loop.time_ns()
+        return self._loop.time_us() * 1_000
 
     def random(self) -> Random:
         if asyncio.get_event_loop() is not self._loop:

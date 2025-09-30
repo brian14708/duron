@@ -18,12 +18,6 @@ class FnCall:
 
 
 @dataclass(slots=True)
-class TaskRun:
-    task: Coroutine[Any, Any, object]
-    return_type: type | None = None
-
-
-@dataclass(slots=True)
 class StreamCreate:
     observer: Observer[object] | None
 
@@ -45,4 +39,4 @@ class Barrier:
     pass
 
 
-Op = FnCall | StreamCreate | StreamEmit | StreamClose | TaskRun | Barrier
+Op = FnCall | StreamCreate | StreamEmit | StreamClose | Barrier

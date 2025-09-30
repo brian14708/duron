@@ -56,8 +56,6 @@ async def test_stream_host():
         handle: StreamHandle[int]
         stream, handle = await ctx.create_stream()
 
-        handle = handle.to_host()
-
         async def task(stream: StreamHandle[int]):
             for i in range(50):
                 await stream.send(i)
@@ -159,9 +157,8 @@ async def test_stream_peek():
     @fn()
     async def activity(ctx: Context) -> list[int]:
         stream: Stream[int]
-        handle: StreamHandle[int]
-        stream, handle = await ctx.create_stream()
-        write = handle.to_host()
+        write: StreamHandle[int]
+        stream, write = await ctx.create_stream()
 
         async def f():
             for i in range(30):

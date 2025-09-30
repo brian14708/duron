@@ -41,6 +41,8 @@ class FunctionType:
 
 
 class Codec(ABC):
+    __slots__: tuple[str, ...] = ()
+
     @abstractmethod
     def encode_json(self, result: object, /) -> JSONValue: ...
 
@@ -83,6 +85,8 @@ class Codec(ABC):
 
 @final
 class DefaultCodec(Codec):
+    __slots__ = ()
+
     @override
     def encode_json(self, result: object) -> JSONValue:
         if is_json_value(result):

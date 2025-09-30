@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import pickle
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, final
 
 from typing_extensions import override
 
@@ -12,7 +12,10 @@ if TYPE_CHECKING:
     from duron.codec import JSONValue
 
 
+@final
 class PickleCodec(Codec):
+    __slots__ = ()
+
     @override
     def encode_json(self, result: object) -> str:
         return base64.b64encode(pickle.dumps(result)).decode()
