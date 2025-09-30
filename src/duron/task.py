@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from asyncio.exceptions import CancelledError
 import base64
 import contextlib
 import time
@@ -404,8 +403,8 @@ class _TaskRun:
                     "type": "promise/create",
                 })
 
-
                 t = self._loop.create_task(op.task)
+
                 async def task() -> None:
                     entry: PromiseCompleteEntry = {
                         "ts": _encode_timestamp(self.now()),
