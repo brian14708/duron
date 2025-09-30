@@ -9,7 +9,7 @@ import pytest
 from duron import fn
 from duron.context import Context
 from duron.contrib.storage import MemoryLogStorage
-from duron.stream import Stream, StreamHandle
+from duron.stream import EndOfStream, PeekStream, Stream, StreamHandle
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -50,10 +50,10 @@ async def test_stream():
 class Observer:
     total: int = 0
 
-    def on_next(self, val: int):
+    def on_next(self, _offset: int, val: int):
         self.total += val
 
-    def on_close(self, _exc: BaseException | None):
+    def on_close(self, _offset: int, _exc: BaseException | None):
         pass
 
 
@@ -158,3 +158,44 @@ async def test_stream_generator():
     async with activity.create_task(log) as t:
         await t.start()
         await t.wait()
+
+
+@pytest.mark.asyncio
+async def test_stream_peek():
+    @fn()
+    async def activity(ctx: Context) -> list[int]:
+        p: tuple[PeekStream[int], StreamHandle[int]] = await ctx.create_peek_stream()
+        rd, write = p
+        write = write.to_host()
+
+        async def f():
+            for i in range(30):
+                await asyncio.sleep(random.random() * 0.001)
+                await write.send(i)
+            await write.close()
+
+        x = asyncio.create_task(ctx.run(f))
+        sample: list[int] = []
+        while True:
+            data: list[int] = []
+            try:
+                async for u in rd.peek():
+                    data.append(u)
+                await asyncio.sleep(0.003)
+            except EndOfStream:
+                break
+            finally:
+                if data:
+                    sample.append(data[0])
+        await x
+        return sample
+
+    log = MemoryLogStorage()
+    async with activity.create_task(log) as t:
+        await t.start()
+        a = await t.wait()
+    for _ in range(4):
+        async with activity.create_task(log) as t:
+            await t.resume()
+            b = await t.wait()
+        assert a == b

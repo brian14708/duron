@@ -8,7 +8,6 @@ from typing import (
     Generic,
     ParamSpec,
     TypeVar,
-    cast,
 )
 
 from duron.config import config
@@ -21,8 +20,6 @@ if TYPE_CHECKING:
     from duron.context import Context
     from duron.log import LogStorage
 
-    _TOffset = TypeVar("_TOffset")
-    _TLease = TypeVar("_TLease")
 
 _T_co = TypeVar("_T_co", covariant=True)
 _P = ParamSpec("_P")
@@ -38,8 +35,8 @@ class Fn(Generic[_P, _T_co]):
     ) -> Coroutine[Any, Any, _T_co]:
         return self.fn(ctx, *args, **kwargs)
 
-    def create_task(self, log: LogStorage[_TOffset, _TLease]) -> TaskGuard[_P, _T_co]:
-        return TaskGuard(Task(self, cast("LogStorage[object, object]", log)))
+    def create_task(self, log: LogStorage) -> TaskGuard[_P, _T_co]:
+        return TaskGuard(Task(self, log))
 
 
 def fn(

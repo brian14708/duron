@@ -10,34 +10,29 @@ import pytest
 from duron.contrib.storage import FileLogStorage, MemoryLogStorage
 
 if TYPE_CHECKING:
-    from typing_extensions import TypeVar
-
     from duron.log import Entry, LogStorage
-
-    _TOffset = TypeVar("_TOffset")
-    _TLease = TypeVar("_TLease")
 
 
 def make_entry(id: str) -> Entry:
     return {"type": "promise/create", "id": id, "ts": -1}
 
 
-async def impl_test_log_storage(storage: LogStorage[_TOffset, _TLease]):
+async def impl_test_log_storage(storage: LogStorage):
     lease = await storage.acquire_lease()
 
     for i in range(3):
-        await storage.append(lease, make_entry(str(i)))
+        _ = await storage.append(lease, make_entry(str(i)))
 
     lease2 = await storage.acquire_lease()
     try:
-        await storage.append(lease2, make_entry("4"))
-        await storage.append(lease, make_entry("5"))
+        _ = await storage.append(lease2, make_entry("4"))
+        _ = await storage.append(lease, make_entry("5"))
         raise AssertionError("Expected exception for invalid lease")
     except Exception:
         pass
 
     entries: list[str] = []
-    offset: _TOffset | None = None
+    offset: int | None = None
     async for o, entry_data in storage.stream(None, False):
         entries.append(entry_data["id"])
         offset = o

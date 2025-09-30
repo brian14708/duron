@@ -19,7 +19,7 @@ from typing import (
 
 from typing_extensions import override
 
-from duron.ops import FnCall, StreamClose, StreamCreate, StreamEmit
+from duron.ops import Barrier, FnCall, StreamClose, StreamCreate, StreamEmit
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator, Callable
@@ -44,8 +44,8 @@ class StreamState(Enum):
 
 
 class Observer(Generic[_In], Protocol):
-    def on_next(self, value: _In, /) -> None: ...
-    def on_close(self, error: BaseException | None, /) -> None: ...
+    def on_next(self, log_offset: int, value: _In, /) -> None: ...
+    def on_close(self, log_offset: int, error: BaseException | None, /) -> None: ...
 
 
 @final
@@ -196,7 +196,7 @@ class _Sentinel:
 class _BufferedStream(Generic[_T], Stream[_T]):
     def __init__(self, parent: _BufferedStream[_T] | None = None) -> None:
         super().__init__()
-        self.__buffer: deque[_T | _Sentinel] = deque()
+        self.__buffer: deque[tuple[int, _T | _Sentinel]] = deque()
         self.__subscribers: list[_BufferedStream[_T]] = []
         self.__pending_subscribers = 1
         self.__parent = parent
@@ -208,22 +208,22 @@ class _BufferedStream(Generic[_T], Stream[_T]):
             self.__event.clear()
             _ = await self.__event.wait()
 
-        item = self.__buffer.popleft()
+        _, item = self.__buffer.popleft()
         if isinstance(item, _Sentinel):
             raise item.exception
         return item
 
-    def _send(self, value: _T):
-        self.__buffer.append(value)
+    def _send(self, offset: int, value: _T):
+        self.__buffer.append((offset, value))
         self.__event.set()
         for s in self.__subscribers:
-            s._send(value)
+            s._send(offset, value)
 
-    def _send_close(self, exc: BaseException | None = None):
-        self.__buffer.append(_Sentinel(exc or EndOfStream))
+    def _send_close(self, offset: int, exc: BaseException | None = None):
+        self.__buffer.append((offset, _Sentinel(exc or EndOfStream)))
         self.__event.set()
         for s in self.__subscribers:
-            s._send_close(exc)
+            s._send_close(offset, exc)
 
     @override
     async def _start(self) -> None:
@@ -261,12 +261,14 @@ class _IntoBuffer(Generic[_T], _BufferedStream[_T]):
     @override
     async def _start(self) -> None:
         async def pump() -> None:
+            i = 0
             try:
                 async for v in self._stream:
-                    self._send(v)
-                self._send_close()
+                    self._send(i, v)
+                    i += 1
+                self._send_close(i, None)
             except Exception as e:
-                self._send_close(e)
+                self._send_close(i, e)
 
         self._task = asyncio.create_task(pump())
 
@@ -306,14 +308,14 @@ class ResumableStream(Generic[_In, _T], _BufferedStream[_T], Observer[_In]):
         self._task: asyncio.Future[object] | None = None
 
     @override
-    def on_next(self, val: _In):
+    def on_next(self, offset: int, val: _In):
         self._current = self._reducer(self._current, val)
-        self._send(self._current)
+        self._send(offset, self._current)
 
     @override
-    def on_close(self, exc: BaseException | None):
+    def on_close(self, offset: int, exc: BaseException | None):
         self._closed = True if exc is None else exc
-        self._send_close(exc)
+        self._send_close(offset, exc)
 
     @override
     async def _start(self) -> None:
@@ -349,3 +351,28 @@ class ResumableStream(Generic[_In, _T], _BufferedStream[_T], Observer[_In]):
                 await self._task
             self._task = None
         await super()._close()
+
+
+@final
+class PeekStream(Generic[_T], Observer[_T]):
+    def __init__(self, loop: EventLoop) -> None:
+        super().__init__()
+        self._loop = loop
+        self._data: deque[tuple[int, _T | _Sentinel]] = deque()
+
+    @override
+    def on_next(self, _offset: int, val: _T):
+        self._data.append((_offset, val))
+
+    @override
+    def on_close(self, _offset: int, exc: BaseException | None):
+        self._data.append((_offset, _Sentinel(exc or EndOfStream)))
+
+    async def peek(self) -> AsyncGenerator[_T]:
+        offset = cast("int", await self._loop.create_op(Barrier()))
+        while self._data and self._data[0][0] <= offset:
+            _off, item = self._data.popleft()
+            if isinstance(item, _Sentinel):
+                raise item.exception
+            else:
+                yield item

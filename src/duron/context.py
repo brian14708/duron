@@ -13,8 +13,8 @@ from typing import (
     final,
 )
 
-from duron.ops import FnCall, StreamCreate
-from duron.stream import ResumableStream
+from duron.ops import Barrier, FnCall, StreamCreate
+from duron.stream import PeekStream, ResumableStream
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Coroutine
@@ -104,6 +104,12 @@ class Context:
             **kwargs,
         )
 
+    async def barrier(self) -> int:
+        return cast(
+            "int",
+            await self._loop.create_op(Barrier()),
+        )
+
     async def create_stream(self, observer: Observer[_T] | None) -> StreamHandle[_T]:
         if asyncio.get_event_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
@@ -111,6 +117,20 @@ class Context:
         return cast(
             "StreamHandle[_T]",
             await self._loop.create_op(StreamCreate(observer=o)),
+        )
+
+    async def create_peek_stream(self) -> tuple[PeekStream[_T], StreamHandle[_T]]:
+        if asyncio.get_event_loop() is not self._loop:
+            raise RuntimeError("Context time can only be used in the context loop")
+        ps: PeekStream[_T] = PeekStream(self._loop)
+        return (
+            ps,
+            cast(
+                "StreamHandle[_T]",
+                await self._loop.create_op(
+                    StreamCreate(observer=cast("Observer[object]", ps))
+                ),
+            ),
         )
 
     def time(self) -> float:

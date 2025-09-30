@@ -16,9 +16,9 @@ if TYPE_CHECKING:
     from duron.log import AnyEntry, Entry
 
 
-class FileLogStorage(LogStorage[int, str]):
+class FileLogStorage(LogStorage):
     _log_file: Path
-    _leases: str | None
+    _leases: bytes | None
     _lock: asyncio.Lock
 
     def __init__(self, log_file: str | Path):
@@ -77,36 +77,38 @@ class FileLogStorage(LogStorage[int, str]):
                         await asyncio.sleep(0.1)
 
     @override
-    async def acquire_lease(self) -> str:
-        lease_id = str(uuid.uuid4())
+    async def acquire_lease(self) -> bytes:
+        lease_id = uuid.uuid4().bytes
         async with self._lock:
             self._leases = lease_id
         return lease_id
 
     @override
-    async def release_lease(self, token: str) -> None:
+    async def release_lease(self, token: bytes) -> None:
         async with self._lock:
             if token == self._leases:
                 self._leases = None
 
     @override
-    async def append(self, token: str, entry: Entry):
+    async def append(self, token: bytes, entry: Entry) -> int:
         async with self._lock:
             if token != self._leases:
                 raise ValueError("Invalid lease token")
 
             with open(self._log_file, "a") as f:
+                offset = f.tell()
                 json.dump(entry, f, separators=(",", ":"))
                 _ = f.write("\n")
+                return offset
 
     @override
-    async def flush(self, token: str):
+    async def flush(self, token: bytes):
         pass
 
 
-class MemoryLogStorage(LogStorage[int, str]):
+class MemoryLogStorage(LogStorage):
     _entries: list[AnyEntry]
-    _leases: str | None
+    _leases: bytes | None
     _lock: asyncio.Lock
     _condition: asyncio.Condition
 
@@ -151,29 +153,31 @@ class MemoryLogStorage(LogStorage[int, str]):
                     last_seen_index = index
 
     @override
-    async def acquire_lease(self) -> str:
-        lease_id = str(uuid.uuid4())
+    async def acquire_lease(self) -> bytes:
+        lease_id = uuid.uuid4().bytes
         async with self._lock:
             self._leases = lease_id
         return lease_id
 
     @override
-    async def release_lease(self, token: str) -> None:
+    async def release_lease(self, token: bytes) -> None:
         async with self._lock:
             if token == self._leases:
                 self._leases = None
 
     @override
-    async def append(self, token: str, entry: Entry):
+    async def append(self, token: bytes, entry: Entry) -> int:
         async with self._condition:
             if token != self._leases:
                 raise ValueError("Invalid lease token")
 
+            offset = len(self._entries)
             self._entries.append(cast("AnyEntry", cast("object", entry)))
             self._condition.notify_all()
+            return offset
 
     @override
-    async def flush(self, token: str):
+    async def flush(self, token: bytes):
         pass
 
     async def entries(self) -> list[AnyEntry]:

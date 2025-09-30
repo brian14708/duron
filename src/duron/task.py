@@ -21,7 +21,7 @@ from duron.codec import Codec, JSONValue
 from duron.context import Context
 from duron.event_loop import EventLoop, create_loop, wrap_future
 from duron.log import is_entry
-from duron.ops import FnCall, StreamClose, StreamCreate, StreamEmit, TaskRun
+from duron.ops import Barrier, FnCall, StreamClose, StreamCreate, StreamEmit, TaskRun
 from duron.stream import StreamHandle
 
 if TYPE_CHECKING:
@@ -69,7 +69,7 @@ class Task(Generic[_P, _T]):
     def __init__(
         self,
         task_fn: Fn[_P, _T],
-        log: LogStorage[object, object],
+        log: LogStorage,
     ) -> None:
         self._task_fn = task_fn
         self._log = log
@@ -157,21 +157,21 @@ class _TaskRun:
     def __init__(
         self,
         task: TaskRun,
-        log: LogStorage[object, object],
+        log: LogStorage,
         codec: Codec,
     ) -> None:
         self._loop = create_loop(asyncio.get_running_loop(), b"")
         self._task = self._loop.create_op(task)
         self._log = log
         self._codec = codec
-        self._running: object | None = None
+        self._running: bytes | None = None
         self._pending_msg: list[Entry] = []
         self._pending_task: dict[
             str, tuple[Callable[[], Coroutine[Any, Any, None]], type | None]
         ] = {}
         self._pending_ops: set[bytes] = set()
         self._now = 0
-        self._offset: object | None = None
+        self._offset: int | None = None
         self._tasks: dict[str, tuple[asyncio.Future[None], type | None]] = {}
         self._streams: dict[
             str,
@@ -206,7 +206,7 @@ class _TaskRun:
             self._now = max(self._now, ts)
             _ = await self._step()
             if is_entry(entry):
-                await self.handle_message(entry)
+                await self.handle_message(o, entry)
                 _ = await self._step()
             recvd_msgs.add(entry["id"])
 
@@ -246,10 +246,10 @@ class _TaskRun:
             self._running = None
 
     async def _follow_log(self) -> None:
-        async for _, entry in self._log.stream(self._offset, True):
+        async for o, entry in self._log.stream(self._offset, True):
             self._now = max(self._now, _decode_timestamp(entry["ts"]))
             if is_entry(entry):
-                await self.handle_message(entry)
+                await self.handle_message(o, entry)
 
     async def _step_loop(self):
         while waitset := await self._step():
@@ -268,12 +268,17 @@ class _TaskRun:
                     self._pending_ops.add(sid)
                     await self.enqueue_op(sid, s)
 
-    async def handle_message(self, e: Entry, preflight: bool = False) -> None:
+    async def handle_message(
+        self, offset: int, e: Entry, preflight: bool = False
+    ) -> None:
         if not preflight and e["id"] in self._preflight_msg:
             self._preflight_msg.discard(e["id"])
             return
         if preflight:
+            if e["type"] not in ("barrier",):
+                return
             self._preflight_msg.add(e["id"])
+
         if e["type"] == "promise/complete":
             pending_info = self._pending_task.pop(e["promise_id"], None)
             task_info = self._tasks.get(e["promise_id"], None)
@@ -321,6 +326,7 @@ class _TaskRun:
                 _, ob, tv = self._streams[e["stream_id"]]
                 if ob:
                     ob.on_next(
+                        offset,
                         self._codec.decode_json(e["value"], tv),
                     )
                 self._loop.post_completion(id, result=None)
@@ -334,23 +340,25 @@ class _TaskRun:
                 self._loop.post_completion(id, result=None)
                 if ob:
                     if "error" in e:
-                        ob.on_close(_decode_error(e["error"]))
+                        ob.on_close(offset, _decode_error(e["error"]))
                     else:
-                        ob.on_close(None)
+                        ob.on_close(offset, None)
 
                 _ = self._streams.pop(e["stream_id"], None)
             self._pending_ops.discard(id)
-        else:
-            assert e["type"] == "promise/create"
+        elif e["type"] == "barrier":
+            id = _decode_id(e["id"])
+            self._loop.post_completion(id, result=offset)
+            self._pending_ops.discard(id)
 
-    async def enqueue_log(self, entry: Entry, flush: bool = False) -> None:
+    async def enqueue_log(self, entry: Entry, flush: bool = False):
         if not self._running:
             self._pending_msg.append(entry)
         else:
-            await self._log.append(self._running, entry)
+            offset = await self._log.append(self._running, entry)
             if flush:
                 await self._log.flush(self._running)
-            await self.handle_message(entry, preflight=True)
+            await self.handle_message(offset, entry, preflight=True)
 
     async def enqueue_op(self, id: bytes, fut: OpFuture) -> None:
         op = cast("Op", fut.params)
@@ -470,6 +478,12 @@ class _TaskRun:
                         "stream_id": op.stream_id,
                         "type": "stream/complete",
                     })
+            case Barrier():
+                await self.enqueue_log({
+                    "ts": _encode_timestamp(self.now()),
+                    "id": _encode_id(id),
+                    "type": "barrier",
+                })
             case _:
                 assert_never(op)
 

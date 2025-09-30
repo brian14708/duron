@@ -1,19 +1,15 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Generic, Literal
+from typing import TYPE_CHECKING, Literal
 
-from typing_extensions import NotRequired, TypedDict, TypeVar
+from typing_extensions import NotRequired, TypedDict
 
 from duron.codec import JSONValue
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
     from typing import TypeGuard
-
-
-_TOffset = TypeVar("_TOffset")
-_TLease = TypeVar("_TLease")
 
 
 class _BaseEntry(TypedDict):
@@ -55,6 +51,10 @@ class StreamCompleteEntry(_BaseEntry):
     error: NotRequired[ErrorInfo]
 
 
+class BarrierEntry(_BaseEntry):
+    type: Literal["barrier"]
+
+
 class AnyEntry(_BaseEntry):
     type: str
 
@@ -65,6 +65,7 @@ Entry = (
     | StreamCreateEntry
     | StreamEmitEntry
     | StreamCompleteEntry
+    | BarrierEntry
 )
 
 
@@ -75,23 +76,24 @@ def is_entry(entry: Entry | AnyEntry) -> TypeGuard[Entry]:
         "stream/create",
         "stream/emit",
         "stream/complete",
+        "barrier",
     }
 
 
-class LogStorage(ABC, Generic[_TOffset, _TLease]):
+class LogStorage(ABC):
     @abstractmethod
     def stream(
-        self, start: _TOffset | None, live: bool, /
-    ) -> AsyncGenerator[tuple[_TOffset, AnyEntry], None]: ...
+        self, start: int | None, live: bool, /
+    ) -> AsyncGenerator[tuple[int, AnyEntry], None]: ...
 
     @abstractmethod
-    async def acquire_lease(self) -> _TLease: ...
+    async def acquire_lease(self) -> bytes: ...
 
     @abstractmethod
-    async def release_lease(self, token: _TLease, /): ...
+    async def release_lease(self, token: bytes, /): ...
 
     @abstractmethod
-    async def append(self, token: _TLease, entry: Entry, /): ...
+    async def append(self, token: bytes, entry: Entry, /) -> int: ...
 
     @abstractmethod
-    async def flush(self, token: _TLease, /): ...
+    async def flush(self, token: bytes, /): ...

@@ -40,4 +40,9 @@ class StreamClose:
     exception: BaseException | None
 
 
-Op = FnCall | StreamCreate | StreamEmit | StreamClose | TaskRun
+@dataclass(slots=True)
+class Barrier:
+    pass
+
+
+Op = FnCall | StreamCreate | StreamEmit | StreamClose | TaskRun | Barrier
