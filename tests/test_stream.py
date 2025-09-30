@@ -9,7 +9,7 @@ import pytest
 from duron import fn
 from duron.context import Context
 from duron.contrib.storage import MemoryLogStorage
-from duron.stream import EndOfStream, PeekStream, Stream, StreamHandle
+from duron.stream import EndOfStream, Stream, StreamHandle
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -19,14 +19,15 @@ if TYPE_CHECKING:
 async def test_stream():
     @fn()
     async def activity(ctx: Context) -> None:
-        state = Observer()
-        stream: StreamHandle[int] = await ctx.create_stream(state)
+        stream: Stream[int]
+        handle: StreamHandle[int]
+        stream, handle = await ctx.create_stream()
 
         async def f():
             for i in range(50):
                 x = ctx.random().randint(1, 10)
                 await asyncio.sleep(0.001 * x)
-                await stream.send(i)
+                await handle.send(i)
 
         _ = await asyncio.gather(
             asyncio.create_task(f()),
@@ -34,8 +35,8 @@ async def test_stream():
             asyncio.create_task(f()),
             asyncio.create_task(f()),
         )
-        await stream.close()
-        assert state.total == 4900
+        await handle.close()
+        assert sum(await stream.collect()) == 4900
 
     log = MemoryLogStorage()
     async with activity.create_task(log) as t:
@@ -47,30 +48,23 @@ async def test_stream():
         await t.wait()
 
 
-class Observer:
-    total: int = 0
-
-    def on_next(self, _offset: int, val: int):
-        self.total += val
-
-    def on_close(self, _offset: int, _exc: BaseException | None):
-        pass
-
-
 @pytest.mark.asyncio
 async def test_stream_host():
     @fn()
     async def activity(ctx: Context) -> None:
-        state = Observer()
-        stream = (await ctx.create_stream(state)).to_host()
+        stream: Stream[int]
+        handle: StreamHandle[int]
+        stream, handle = await ctx.create_stream()
+
+        handle = handle.to_host()
 
         async def task(stream: StreamHandle[int]):
             for i in range(50):
                 await stream.send(i)
             await stream.close()
 
-        await ctx.run(task, stream)
-        assert state.total == 1225
+        await ctx.run(task, handle)
+        assert sum(await stream.collect()) == 1225
 
     log = MemoryLogStorage()
     async with activity.create_task(log) as t:
@@ -164,9 +158,10 @@ async def test_stream_generator():
 async def test_stream_peek():
     @fn()
     async def activity(ctx: Context) -> list[int]:
-        p: tuple[PeekStream[int], StreamHandle[int]] = await ctx.create_peek_stream()
-        rd, write = p
-        write = write.to_host()
+        stream: Stream[int]
+        handle: StreamHandle[int]
+        stream, handle = await ctx.create_stream()
+        write = handle.to_host()
 
         async def f():
             for i in range(30):
@@ -179,7 +174,7 @@ async def test_stream_peek():
         while True:
             data: list[int] = []
             try:
-                async for u in rd.peek():
+                async for u in stream.peek():
                     data.append(u)
                 await asyncio.sleep(0.003)
             except EndOfStream:
@@ -195,6 +190,38 @@ async def test_stream_peek():
         await t.start()
         a = await t.wait()
     for _ in range(4):
+        async with activity.create_task(log) as t:
+            await t.resume()
+            b = await t.wait()
+        assert a == b
+
+
+@pytest.mark.asyncio
+async def test_stream_cross_loop():
+    @fn()
+    async def activity(ctx: Context) -> list[str]:
+        async def f(s: str) -> AsyncGenerator[str, str]:
+            while len(s) < 5:
+                chunk = chr(ord("a") + random.randint(0, 25))
+                s = yield chunk
+
+        stream = ctx.stream("", lambda s, p: s + p, f)
+        stream = await stream.map(lambda x: x * 2).to_host()
+
+        async def g() -> list[str]:
+            result: list[str] = []
+            async for x in stream:
+                result.append(x)
+            return result
+
+        result = await ctx.run(g)
+        return result
+
+    log = MemoryLogStorage()
+    async with activity.create_task(log) as t:
+        await t.start()
+        a = await t.wait()
+    for _ in range(1):
         async with activity.create_task(log) as t:
             await t.resume()
             b = await t.wait()

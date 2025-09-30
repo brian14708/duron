@@ -224,19 +224,26 @@ class EventLoop(AbstractEventLoop):
             events._set_running_loop(old)
 
     def create_op(
-        self, params: object, /, *, loop: AbstractEventLoop | None = None
+        self,
+        params: object,
+        /,
     ) -> asyncio.Future[object]:
         self._event.set()
-        if loop is not None and loop is not self:
-            id = os.urandom(12)
-            op_fut = OpFuture(id, params, self)
-            self._ops[id] = op_fut
-            return wrap_future(op_fut, loop=loop)
-        else:
-            id = self.generate_op_id()
-            op_fut = OpFuture(id, params, self)
-            self._ops[id] = op_fut
-            return op_fut
+        id = self.generate_op_id()
+        op_fut = OpFuture(id, params, self)
+        self._ops[id] = op_fut
+        return op_fut
+
+    def create_host_op(
+        self,
+        params: object,
+        /,
+    ) -> asyncio.Future[object]:
+        self._event.set()
+        id = os.urandom(12)
+        op_fut = OpFuture(id, params, self)
+        self._ops[id] = op_fut
+        return wrap_future(op_fut, loop=self._host)
 
     @overload
     def post_completion(

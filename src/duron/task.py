@@ -395,7 +395,8 @@ class _TaskRun:
                             pass
                         elif task_info := self._tasks.get(sid, None):
                             task, _ = task_info
-                            _ = task.get_loop().call_soon(task.cancel)
+                            if not task.done():
+                                _ = task.get_loop().call_soon(task.cancel)
 
                 fut.add_done_callback(done)
                 sid = _encode_id(id)

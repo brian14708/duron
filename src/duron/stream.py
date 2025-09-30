@@ -19,6 +19,7 @@ from typing import (
 
 from typing_extensions import override
 
+from duron.event_loop import wrap_future
 from duron.ops import Barrier, FnCall, StreamClose, StreamCreate, StreamEmit
 
 if TYPE_CHECKING:
@@ -57,16 +58,24 @@ class StreamHandle(Generic[_In]):
         self._event = asyncio.Event()
 
     async def send(self, value: _In, /) -> None:
-        _ = await self._loop.create_op(
-            StreamEmit(stream_id=self._stream_id, value=value),
-            loop=self._target_loop,
-        )
+        if self._target_loop is None:
+            _ = await self._loop.create_op(
+                StreamEmit(stream_id=self._stream_id, value=value),
+            )
+        else:
+            _ = await self._loop.create_host_op(
+                StreamEmit(stream_id=self._stream_id, value=value),
+            )
 
     async def close(self, error: BaseException | None = None, /) -> None:
-        _ = await self._loop.create_op(
-            StreamClose(stream_id=self._stream_id, exception=error),
-            loop=self._target_loop,
-        )
+        if self._target_loop is None:
+            _ = await self._loop.create_op(
+                StreamClose(stream_id=self._stream_id, exception=error),
+            )
+        else:
+            _ = await self._loop.create_host_op(
+                StreamClose(stream_id=self._stream_id, exception=error),
+            )
         self._event.set()
 
     async def wait(self) -> None:
@@ -138,6 +147,12 @@ class Stream(Generic[_Out], ABC):
     @abstractmethod
     async def _close(self) -> None: ...
 
+    def peek(self) -> AsyncGenerator[_Out]:
+        raise NotImplementedError("peek is not supported for this stream")
+
+    async def to_host(self) -> Stream[_Out]:
+        raise NotImplementedError("to_host is not supported for this stream")
+
     def map(self, fn: Callable[[_Out], _T]) -> Stream[_T]:
         return _Map(self, fn)
 
@@ -187,6 +202,16 @@ class _Map(Generic[_In, _T], Stream[_T]):
     async def _close(self) -> None:
         await self._source.close()
 
+    @override
+    async def peek(self) -> AsyncGenerator[_T]:
+        async for v in self._source.peek():
+            yield self._fn(v)
+
+    @override
+    async def to_host(self) -> Stream[_T]:
+        self._source = await self._source.to_host()
+        return self
+
 
 @dataclass(slots=True)
 class _Sentinel:
@@ -225,6 +250,14 @@ class _BufferedStream(Generic[_T], Stream[_T]):
         for s in self.__subscribers:
             s._send_close(offset, exc)
 
+    async def _peek(self, offset: int) -> AsyncGenerator[_T]:
+        while self.__buffer and self.__buffer[0][0] <= offset:
+            _, item = self.__buffer.popleft()
+            if isinstance(item, _Sentinel):
+                raise item.exception
+            else:
+                yield item
+
     @override
     async def _start(self) -> None:
         if self.__parent:
@@ -249,6 +282,10 @@ class _BufferedStream(Generic[_T], Stream[_T]):
         parent.__subscribers.append(a)
         parent.__pending_subscribers += 1
         return self, a
+
+    @override
+    async def to_host(self) -> Stream[_T]:
+        return self
 
 
 @final
@@ -281,9 +318,14 @@ class _IntoBuffer(Generic[_T], _BufferedStream[_T]):
             self._task = None
         await super()._close()
 
+    @override
+    async def to_host(self) -> Stream[_T]:
+        self._stream = await self._stream.to_host()
+        return self
+
 
 @final
-class ResumableStream(Generic[_In, _T], _BufferedStream[_T], Observer[_In]):
+class ResumableStream(Generic[_In, _T], _BufferedStream[_T]):
     def __init__(
         self,
         loop: EventLoop,
@@ -300,19 +342,18 @@ class ResumableStream(Generic[_In, _T], _BufferedStream[_T], Observer[_In]):
         self._closed: bool | BaseException = False
         self._current: _T = initial
         self._op = self._loop.create_op(
-            StreamCreate(observer=cast("Observer[object]", self))
+            StreamCreate(observer=cast("Observer[object]", cast("Observer[_In]", self)))
         )
         self._fn = fn
         self._args = args
         self._kwargs = kwargs
         self._task: asyncio.Future[object] | None = None
+        self._target_loop: asyncio.AbstractEventLoop | None = None
 
-    @override
     def on_next(self, offset: int, val: _In):
         self._current = self._reducer(self._current, val)
         self._send(offset, self._current)
 
-    @override
     def on_close(self, offset: int, exc: BaseException | None):
         self._closed = True if exc is None else exc
         self._send_close(offset, exc)
@@ -323,7 +364,7 @@ class ResumableStream(Generic[_In, _T], _BufferedStream[_T], Observer[_In]):
 
         async def worker():
             if self._closed is True:
-                raise StopAsyncIteration
+                return
 
             gen = self._fn(self._current, *self._args, **self._kwargs)
             try:
@@ -339,8 +380,11 @@ class ResumableStream(Generic[_In, _T], _BufferedStream[_T], Observer[_In]):
             finally:
                 await gen.aclose()
 
-        self._task = self._loop.create_op(
-            FnCall(callable=worker, args=(), kwargs={}, return_type=None)
+        self._task = wrap_future(
+            self._loop.create_op(
+                FnCall(callable=worker, args=(), kwargs={}, return_type=None),
+            ),
+            loop=self._target_loop,
         )
 
     @override
@@ -352,27 +396,30 @@ class ResumableStream(Generic[_In, _T], _BufferedStream[_T], Observer[_In]):
             self._task = None
         await super()._close()
 
+    @override
+    async def to_host(self) -> Stream[_T]:
+        self._target_loop = self._loop.host_loop()
+        await self.start()
+        return self
+
 
 @final
-class PeekStream(Generic[_T], Observer[_T]):
+class LogStream(Generic[_T], _BufferedStream[_T]):
     def __init__(self, loop: EventLoop) -> None:
         super().__init__()
         self._loop = loop
-        self._data: deque[tuple[int, _T | _Sentinel]] = deque()
 
-    @override
     def on_next(self, _offset: int, val: _T):
-        self._data.append((_offset, val))
+        self._send(_offset, val)
+
+    def on_close(self, _offset: int, exc: BaseException | None):
+        self._send_close(_offset, exc)
 
     @override
-    def on_close(self, _offset: int, exc: BaseException | None):
-        self._data.append((_offset, _Sentinel(exc or EndOfStream)))
-
     async def peek(self) -> AsyncGenerator[_T]:
+        assert asyncio.get_event_loop() is self._loop, (
+            "peek can only be used in the context loop"
+        )
         offset = cast("int", await self._loop.create_op(Barrier()))
-        while self._data and self._data[0][0] <= offset:
-            _off, item = self._data.popleft()
-            if isinstance(item, _Sentinel):
-                raise item.exception
-            else:
-                yield item
+        async for value in self._peek(offset):
+            yield value

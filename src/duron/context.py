@@ -14,7 +14,7 @@ from typing import (
 )
 
 from duron.ops import Barrier, FnCall, StreamCreate
-from duron.stream import PeekStream, ResumableStream
+from duron.stream import LogStream, ResumableStream
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Coroutine
@@ -28,7 +28,6 @@ if TYPE_CHECKING:
     _T = TypeVar("_T")
     _S = TypeVar("_S")
     _P = ParamSpec("_P")
-
 
 _context: ContextVar[Context | None] = ContextVar("duron_context", default=None)
 
@@ -110,7 +109,9 @@ class Context:
             await self._loop.create_op(Barrier()),
         )
 
-    async def create_stream(self, observer: Observer[_T] | None) -> StreamHandle[_T]:
+    async def create_stream_handle(
+        self, observer: Observer[_T] | None
+    ) -> StreamHandle[_T]:
         if asyncio.get_event_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
         o = cast("Observer[object]", observer) if observer else None
@@ -119,19 +120,19 @@ class Context:
             await self._loop.create_op(StreamCreate(observer=o)),
         )
 
-    async def create_peek_stream(self) -> tuple[PeekStream[_T], StreamHandle[_T]]:
+    async def create_stream(self) -> tuple[Stream[_T], StreamHandle[_T]]:
         if asyncio.get_event_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
-        ps: PeekStream[_T] = PeekStream(self._loop)
-        return (
-            ps,
-            cast(
-                "StreamHandle[_T]",
-                await self._loop.create_op(
-                    StreamCreate(observer=cast("Observer[object]", ps))
-                ),
+        log: LogStream[_T] = LogStream(self._loop)
+        hdl = cast(
+            "StreamHandle[_T]",
+            await self._loop.create_op(
+                StreamCreate(
+                    observer=cast("Observer[object]", cast("Observer[_T]", log))
+                )
             ),
         )
+        return (log, hdl)
 
     def time(self) -> float:
         if asyncio.get_event_loop() is not self._loop:
