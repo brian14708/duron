@@ -3,46 +3,28 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from abc import ABC, abstractmethod
+from asyncio.exceptions import CancelledError
 from collections import deque
-from dataclasses import dataclass
-from enum import Enum, auto
-from typing import (
-    TYPE_CHECKING,
-    Concatenate,
-    Generic,
-    ParamSpec,
-    Protocol,
-    TypeVar,
-    cast,
-    final,
-)
+from typing import TYPE_CHECKING, Concatenate, Generic, Protocol, TypeVar, cast
 
-from typing_extensions import override
+from typing_extensions import final, override
 
-from duron.event_loop import wrap_future
-from duron.ops import Barrier, FnCall, StreamClose, StreamCreate, StreamEmit
+from duron.ops import FnCall, StreamClose, StreamCreate, StreamEmit, create_op
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, AsyncIterator, Callable
+    from collections.abc import AsyncGenerator, Callable, Sequence
+    from types import TracebackType
 
+    from typing_extensions import AsyncContextManager, ParamSpec
+
+    from duron.context import Context
     from duron.event_loop import EventLoop
 
     _P = ParamSpec("_P")
 
-_In = TypeVar("_In", contravariant=True)
-_Out = TypeVar("_Out", covariant=True)
 _T = TypeVar("_T")
-
-
-@final
-class EndOfStream(Exception):
-    __slots__ = ()
-
-
-class StreamState(Enum):
-    INITIAL = auto()
-    STARTED = auto()
-    CLOSED = auto()
+_U = TypeVar("_U")
+_In = TypeVar("_In", contravariant=True)
 
 
 class Observer(Generic[_In], Protocol):
@@ -51,409 +33,378 @@ class Observer(Generic[_In], Protocol):
 
 
 @final
-class StreamHandle(Generic[_In]):  # can be used from any loop
-    __slots__ = ("_stream_id", "_loop", "_target_loop")
+class Sink(Generic[_T]):
+    __slots__ = ("_stream_id", "_loop")
 
     def __init__(self, id: str, loop: EventLoop) -> None:
         self._stream_id = id
         self._loop = loop
-        self._target_loop: asyncio.AbstractEventLoop | None = None
 
-    async def send(self, value: _In, /) -> None:
-        loop = asyncio.get_running_loop()
-        if loop is self._loop:
-            _ = await self._loop.create_op(
-                StreamEmit(stream_id=self._stream_id, value=value),
-            )
-        else:
-            _ = await wrap_future(
-                self._loop.create_op(
-                    StreamEmit(stream_id=self._stream_id, value=value),
-                    external=True,
-                ),
-                loop=loop,
-            )
+    async def send(self, value: _T, /) -> None:
+        await create_op(
+            self._loop,
+            StreamEmit(stream_id=self._stream_id, value=value),
+        )
 
     async def close(self, error: BaseException | None = None, /) -> None:
-        loop = asyncio.get_running_loop()
-        if loop is self._loop:
-            _ = await self._loop.create_op(
-                StreamClose(stream_id=self._stream_id, exception=error),
-            )
-        else:
-            _ = await wrap_future(
-                self._loop.create_op(
-                    StreamClose(stream_id=self._stream_id, exception=error),
-                    external=True,
-                ),
-                loop=loop,
-            )
+        await create_op(
+            self._loop,
+            StreamClose(stream_id=self._stream_id, exception=error),
+        )
 
 
-class Stream(Generic[_Out], ABC):
-    __slots__: tuple[str, ...] = ("_state",)
-
-    @staticmethod
-    def from_iterator(it: AsyncIterator[_Out]) -> Stream[_Out]:
-        return _AsyncIter(it)
+class Stream(Generic[_T], ABC):
+    @abstractmethod
+    async def _start(self) -> None: ...
+    @abstractmethod
+    async def _next(self) -> tuple[int, _T]: ...
+    @abstractmethod
+    def _next_nowait(self, offset: int, /) -> tuple[int, _T]: ...
+    @abstractmethod
+    async def _shutdown(self) -> None: ...
 
     def __init__(self) -> None:
-        self._state: StreamState = StreamState.INITIAL
+        self._started: bool = False
+
+    def __aiter__(self) -> AsyncGenerator[_T]:
+        assert not self._started
+        self._started = True
+        return self.__agen()
+
+    async def __agen(self) -> AsyncGenerator[_T]:
+        try:
+            await self._start()
+            while True:
+                _, val = await self._next()
+                yield val
+        except EndOfStream as e:
+            if e.reason:
+                raise e.reason from None
+        finally:
+            await self._shutdown()
+
+    async def __aenter__(self) -> StreamOp[_T]:
+        assert not self._started
+        self._started = True
+        await self._start()
+        return StreamOp(self)
+
+    async def __aexit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
+        await self._shutdown()
+
+    # collect methods
+
+    async def collect(self) -> list[_T]:
+        result: list[_T] = []
+        async for e in self:
+            result.append(e)
+        return result
 
     async def discard(self) -> None:
         async for _ in self:
             pass
 
-    async def collect(self) -> list[_Out]:
-        result: list[_Out] = []
-        async for v in self:
-            result.append(v)
-        return result
+    # stream methods
 
-    @final
-    async def start(self) -> None:
-        if self._state == StreamState.CLOSED:
-            raise RuntimeError("Stream has already been stopped")
-        elif self._state != StreamState.STARTED:
-            await self._start()
-            self._state = StreamState.STARTED
-
-    async def close(self) -> None:
-        if self._state != StreamState.CLOSED:
-            await self._close()
-            self._state = StreamState.CLOSED
-
-    def __aiter__(self) -> AsyncIterator[_Out]:
-        return self
-
-    async def __anext__(self) -> _Out:
-        if self._state == StreamState.CLOSED:
-            raise RuntimeError("Stream has already been stopped")
-        elif self._state != StreamState.STARTED:
-            await self._start()
-            self._state = StreamState.STARTED
-        try:
-            return await self._get()
-
-        except EndOfStream:
-            await self.close()
-            raise StopAsyncIteration from None
-        except asyncio.CancelledError:
-            await self.close()
-            raise
-        except Exception:
-            await self.close()
-            raise
-
-    @abstractmethod
-    async def _get(self) -> _Out: ...
-    @abstractmethod
-    async def _start(self) -> None: ...
-    @abstractmethod
-    async def _close(self) -> None: ...
-
-    def peek(self) -> AsyncGenerator[_Out]:
-        raise NotImplementedError("peek is not supported for this stream")
-
-    async def to_host(self) -> Stream[_Out]:
-        raise NotImplementedError("to_host is not supported for this stream")
-
-    def map(self, fn: Callable[[_Out], _T]) -> Stream[_T]:
+    def map(self, fn: Callable[[_T], _U]) -> Stream[_U]:
         return _Map(self, fn)
 
-    def tee(self) -> tuple[Stream[_Out], Stream[_Out]]:
-        return _IntoBuffer(self).tee()
+    def broadcast(self, n: int) -> AsyncContextManager[Sequence[Stream[_T]]]:
+        return _Broadcast(self, n)
 
 
 @final
-class _AsyncIter(Generic[_Out], Stream[_Out]):
-    __slots__ = ("_it",)
+class StreamOp(Generic[_T]):
+    def __init__(self, stream: Stream[_T]) -> None:
+        self._stream = stream
+
+    async def next(self) -> tuple[int, _T]:
+        return await self._stream._next()  # pyright: ignore[reportPrivateUsage]
+
+    async def next_nowait(self, ctx: Context) -> AsyncGenerator[tuple[int, _T]]:
+        offset = await ctx.barrier()
+        try:
+            while True:
+                yield self._stream._next_nowait(offset)  # pyright: ignore[reportPrivateUsage]
+        except EmptyStream:
+            return
+
+
+async def create_stream(
+    loop: EventLoop, dtype: type[_T]
+) -> tuple[Stream[_T], Sink[_T]]:
+    assert asyncio.get_running_loop() is loop
+    s: _ObserverStream[_T] = _ObserverStream()
+    sid = await create_op(
+        loop,
+        StreamCreate(
+            dtype=dtype,
+            observer=s,
+        ),
+    )
+    return (s, Sink(sid, loop))
+
+
+@final
+class EndOfStream(Exception):
+    __slots__ = ("offset",)
 
     def __init__(
-        self,
-        it: AsyncIterator[_Out],
+        self, *args: object, offset: int, reason: BaseException | None
     ) -> None:
-        super().__init__()
-        self._it = aiter(it)
+        super().__init__(*args)
+        self.offset = offset
+        self.__cause__ = reason
 
-    @override
-    async def _get(self) -> _Out:
-        try:
-            return await anext(self._it)
-        except StopAsyncIteration:
-            raise EndOfStream from None
-
-    @override
-    async def _start(self) -> None: ...
-
-    @override
-    async def _close(self) -> None: ...
+    @property
+    def reason(self) -> Exception | None:
+        return cast("Exception | None", self.__cause__)
 
 
 @final
-class _Map(Generic[_In, _T], Stream[_T]):
-    __slots__ = ("_source", "_fn")
+class EmptyStream(Exception):
+    __slots__ = ()
 
-    def __init__(self, source: Stream[_In], fn: Callable[[_In], _T]) -> None:
+
+class _ObserverStream(Generic[_T], Stream[_T]):
+    def __init__(self) -> None:
         super().__init__()
-        self._source = source
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._event: asyncio.Event | None = None
+        self._buffer: deque[tuple[int, _T | EndOfStream]] = deque()
+
+    @override
+    async def _start(self) -> None:
+        self._loop = asyncio.get_running_loop()
+        self._event = asyncio.Event()
+
+    @final
+    @override
+    async def _next(self) -> tuple[int, _T]:
+        assert self._event is not None
+
+        while not self._buffer:
+            self._event.clear()
+            _ = await self._event.wait()
+
+        t, item = self._buffer.popleft()
+        if isinstance(item, EndOfStream):
+            raise item
+        return t, item
+
+    @final
+    @override
+    def _next_nowait(self, offset: int) -> tuple[int, _T]:
+        while self._buffer and self._buffer[0][0] <= offset:
+            t, item = self._buffer.popleft()
+            if isinstance(item, EndOfStream):
+                raise item
+            return t, item
+        raise EmptyStream
+
+    @override
+    async def _shutdown(self) -> None:
+        pass
+
+    def _send(self, offset: int, value: _T) -> None:
+        self._buffer.append((offset, value))
+        if self._loop and self._event:
+            _ = self._loop.call_soon(self._event.set)
+
+    def _send_close(self, offset: int, exc: BaseException | None) -> None:
+        self._buffer.append((offset, EndOfStream(offset=offset, reason=exc)))
+        if self._loop and self._event:
+            _ = self._loop.call_soon(self._event.set)
+
+    def on_next(self, offset: int, value: _T) -> None:
+        self._send(offset, value)
+
+    def on_close(self, offset: int, exc: BaseException | None) -> None:
+        self._send_close(offset, exc)
+
+
+@final
+class _Map(Generic[_T, _U], Stream[_U]):
+    def __init__(self, stream: Stream[_T], fn: Callable[[_T], _U]) -> None:
+        super().__init__()
+        self._stream = stream
         self._fn = fn
 
     @override
-    async def _get(self) -> _T:
-        return self._fn(await self._source._get())
-
-    @override
     async def _start(self) -> None:
-        await self._source.start()
+        return await self._stream._start()
 
     @override
-    async def _close(self) -> None:
-        await self._source.close()
+    async def _next(self) -> tuple[int, _U]:
+        t, val = await self._stream._next()
+        return t, self._fn(val)
 
     @override
-    async def peek(self) -> AsyncGenerator[_T]:
-        async for v in self._source.peek():
-            yield self._fn(v)
+    def _next_nowait(self, offset: int) -> tuple[int, _U]:
+        t, val = self._stream._next_nowait(offset)
+        return t, self._fn(val)
 
     @override
-    async def to_host(self) -> Stream[_T]:
-        self._source = await self._source.to_host()
-        return self
-
-
-@dataclass(slots=True)
-class _Sentinel:
-    exception: BaseException | type[EndOfStream]
-
-
-class _BufferedStream(Generic[_T], Stream[_T]):
-    __slots__: tuple[str, ...] = (
-        "__buffer",
-        "__subscribers",
-        "__pending_subscribers",
-        "__parent",
-        "__event",
-    )
-
-    def __init__(self, parent: _BufferedStream[_T] | None = None) -> None:
-        super().__init__()
-        self.__buffer: deque[tuple[int, _T | _Sentinel]] = deque()
-        self.__subscribers: list[_BufferedStream[_T]] = []
-        self.__pending_subscribers = 1
-        self.__parent = parent
-        self.__event = asyncio.Event()
-
-    @override
-    async def _get(self) -> _T:
-        while not self.__buffer:
-            self.__event.clear()
-            _ = await self.__event.wait()
-
-        _, item = self.__buffer.popleft()
-        if isinstance(item, _Sentinel):
-            raise item.exception
-        return item
-
-    def _send(self, offset: int, value: _T):
-        self.__buffer.append((offset, value))
-        self.__event.set()
-        for s in self.__subscribers:
-            s._send(offset, value)
-
-    def _send_close(self, offset: int, exc: BaseException | None = None):
-        self.__buffer.append((offset, _Sentinel(exc or EndOfStream)))
-        self.__event.set()
-        for s in self.__subscribers:
-            s._send_close(offset, exc)
-
-    async def _peek(self, offset: int) -> AsyncGenerator[_T]:
-        while self.__buffer and self.__buffer[0][0] <= offset:
-            _, item = self.__buffer.popleft()
-            if isinstance(item, _Sentinel):
-                raise item.exception
-            else:
-                yield item
-
-    @override
-    async def _start(self) -> None:
-        if self.__parent:
-            await self.__parent.start()
-
-    @override
-    async def _close(self) -> None:
-        if self.__parent:
-            await self.__parent.close()
-
-    @override
-    async def close(self) -> None:
-        self.__pending_subscribers -= 1
-        if self.__pending_subscribers == 0:
-            await super().close()
-
-    @override
-    def tee(self) -> tuple[Stream[_T], Stream[_T]]:
-        assert self._state == StreamState.INITIAL, "can only tee before starting"
-        parent = self.__parent or self
-        a: _BufferedStream[_T] = _BufferedStream(parent)
-        parent.__subscribers.append(a)
-        parent.__pending_subscribers += 1
-        return self, a
-
-    @override
-    async def to_host(self) -> Stream[_T]:
-        return self
+    async def _shutdown(self) -> None:
+        return await self._stream._shutdown()
 
 
 @final
-class _IntoBuffer(Generic[_T], _BufferedStream[_T]):
-    __slots__ = ("_stream", "_task")
-
-    def __init__(self, stream: Stream[_T]) -> None:
-        super().__init__()
-        self._stream = stream
+class _Broadcast(Generic[_T]):
+    def __init__(self, parent: Stream[_T], n: int) -> None:
+        self._parent = parent
         self._task: asyncio.Task[None] | None = None
+        self._streams: list[_ObserverStream[_T]] = [_ObserverStream() for _ in range(n)]
 
-    @override
-    async def _start(self) -> None:
-        async def pump() -> None:
-            i = 0
+    async def _pump(self):
+        async with self._parent as parent:
             try:
-                async for v in self._stream:
-                    self._send(i, v)
-                    i += 1
-                self._send_close(i, None)
-            except Exception as e:
-                self._send_close(i, e)
+                while True:
+                    o, v = await parent.next()
+                    for s in self._streams:
+                        s._send(o, v)  # pyright: ignore[reportPrivateUsage]
+            except EndOfStream as e:
+                for s in self._streams:
+                    s._send_close(e.offset, e.reason)  # pyright: ignore[reportPrivateUsage]
 
-        self._task = asyncio.create_task(pump())
+    async def __aenter__(self) -> Sequence[Stream[_T]]:
+        self._task = asyncio.create_task(self._pump())
+        return tuple(self._streams)
 
-    @override
-    async def _close(self) -> None:
+    async def __aexit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
         if self._task:
             _ = self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            self._task = None
-        await super()._close()
 
-    @override
-    async def to_host(self) -> Stream[_T]:
-        self._stream = await self._stream.to_host()
-        return self
+
+def resumable(
+    loop: EventLoop,
+    dtype: type | None,
+    initial: _T,
+    reducer: Callable[[_T, _U], _T],
+    fn: Callable[Concatenate[_T, _P], AsyncGenerator[_U, _T]],
+    /,
+    *args: _P.args,
+    **kwargs: _P.kwargs,
+) -> AsyncContextManager[Stream[_U]]:
+    assert asyncio.get_running_loop() is loop
+    s: _Resumable[_U, _T] = _Resumable(
+        initial,
+        reducer,
+        fn,
+        *args,
+        **kwargs,
+    )
+    return _ResumableGuard(loop, s, dtype)
 
 
 @final
-class ResumableStream(Generic[_In, _T], _BufferedStream[_T]):
-    __slots__ = (
-        "_loop",
-        "_reducer",
-        "_closed",
-        "_current",
-        "_op",
-        "_fn",
-        "_args",
-        "_kwargs",
-        "_task",
-        "_target_loop",
-    )
+class _ResumableGuard(Generic[_U, _T]):
+    def __init__(
+        self, loop: EventLoop, resumable: _Resumable[_U, _T], dtype: type | None
+    ) -> None:
+        self._loop = loop
+        self._stream = resumable
+        self._task: asyncio.Future[object] | None = None
+        self._dtype = dtype
 
+    async def __aenter__(self) -> Stream[_U]:
+        sid = await create_op(
+            self._loop,
+            StreamCreate(
+                dtype=self._dtype,
+                observer=self._stream,
+            ),
+        )
+        sink: Sink[_T] = Sink(sid, self._loop)
+        self._task = create_op(
+            self._loop,
+            FnCall(
+                callable=self._stream.worker,
+                args=(sink,),
+                kwargs={},
+                return_type=None,
+            ),
+        )
+        return self._stream
+
+    async def __aexit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
+        if self._task:
+            _ = self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+
+
+@final
+class _Resumable(Generic[_U, _T], _ObserverStream[_U]):
     def __init__(
         self,
-        loop: EventLoop,
         initial: _T,
-        reducer: Callable[[_T, _In], _T],
-        fn: Callable[Concatenate[_T, _P], AsyncGenerator[_In, _T]],
+        reducer: Callable[[_T, _U], _T],
+        fn: Callable[Concatenate[_T, _P], AsyncGenerator[_U, _T]],
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
     ) -> None:
         super().__init__()
-        self._loop = loop
         self._reducer = reducer
         self._closed: bool | BaseException = False
         self._current: _T = initial
-        self._op = self._loop.create_op(
-            StreamCreate(observer=cast("Observer[object]", cast("Observer[_In]", self)))
-        )
         self._fn = fn
         self._args = args
         self._kwargs = kwargs
-        self._task: asyncio.Future[object] | None = None
-        self._target_loop: asyncio.AbstractEventLoop | None = None
+        self._enabled = True
 
-    def on_next(self, offset: int, val: _In):
-        self._current = self._reducer(self._current, val)
-        self._send(offset, self._current)
-
-    def on_close(self, offset: int, exc: BaseException | None):
-        self._closed = True if exc is None else exc
-        self._send_close(offset, exc)
-
-    @override
-    async def _start(self) -> None:
-        stream = cast("StreamHandle[_In]", await self._op)
-
-        async def worker():
+    async def worker(self, sink: Sink[_U]):
+        gen = None
+        try:
             if self._closed is True:
                 return
+            self._enabled = False
 
-            gen = self._fn(self._current, *self._args, **self._kwargs)
-            try:
-                state_partial = await anext(gen)
-                while True:
-                    await stream.send(state_partial)
-                    state_partial = await gen.asend(self._current)
-            except StopAsyncIteration as _e:
-                await stream.close()
-            except Exception as e:
-                await stream.close(e)
-                raise
-            finally:
+            state = self._current
+            gen = self._fn(state, *self._args, **self._kwargs)
+            state_partial = await anext(gen)
+            while True:
+                state = self._reducer(state, state_partial)
+                await sink.send(state_partial)
+                state_partial = await gen.asend(state)
+        except StopAsyncIteration:
+            await sink.close()
+        except Exception as e:
+            await sink.close(e)
+            raise
+        except CancelledError as e:
+            self._send_close(-1, e)
+            raise
+        finally:
+            if gen:
                 await gen.aclose()
 
-        self._task = wrap_future(
-            self._loop.create_op(
-                FnCall(callable=worker, args=(), kwargs={}, return_type=None),
-            ),
-            loop=self._target_loop,
-        )
+    @override
+    def on_next(self, offset: int, value: _U):
+        if self._enabled:
+            self._current = self._reducer(self._current, value)
+        super().on_next(offset, value)
 
     @override
-    async def _close(self) -> None:
-        if self._task:
-            _ = self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
-            self._task = None
-        await super()._close()
-
-    @override
-    async def to_host(self) -> Stream[_T]:
-        self._target_loop = self._loop.host_loop()
-        await self.start()
-        return self
-
-
-@final
-class LogStream(Generic[_T], _BufferedStream[_T]):
-    __slots__ = ("_loop",)
-
-    def __init__(self, loop: EventLoop) -> None:
-        super().__init__()
-        self._loop = loop
-
-    def on_next(self, _offset: int, val: _T):
-        self._send(_offset, val)
-
-    def on_close(self, _offset: int, exc: BaseException | None):
-        self._send_close(_offset, exc)
-
-    @override
-    async def peek(self) -> AsyncGenerator[_T]:
-        assert asyncio.get_event_loop() is self._loop, (
-            "peek can only be used in the context loop"
-        )
-        offset = cast("int", await self._loop.create_op(Barrier()))
-        async for value in self._peek(offset):
-            yield value
+    def on_close(self, offset: int, exc: BaseException | None):
+        if self._enabled:
+            self._closed = True if exc is None else exc
+        super().on_close(offset, exc)

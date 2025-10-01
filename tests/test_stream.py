@@ -2,26 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import random
-from typing import TYPE_CHECKING
+from collections.abc import AsyncGenerator
 
 import pytest
 
-from duron import fn
+from duron import EndOfStream, Sink, fn, host
 from duron.context import Context
 from duron.contrib.storage import MemoryLogStorage
-from duron.stream import EndOfStream, Stream, StreamHandle
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
 
 
 @pytest.mark.asyncio
 async def test_stream():
     @fn()
     async def activity(ctx: Context) -> None:
-        stream: Stream[int]
-        handle: StreamHandle[int]
-        stream, handle = await ctx.create_stream()
+        stream, handle = await ctx.create_stream(int)
 
         async def f():
             for i in range(50):
@@ -52,11 +46,10 @@ async def test_stream():
 async def test_stream_host():
     @fn()
     async def activity(ctx: Context) -> None:
-        stream: Stream[int]
-        handle: StreamHandle[int]
-        stream, handle = await ctx.create_stream()
+        stream, handle = await ctx.create_stream(int)
 
-        async def task(stream: StreamHandle[int]):
+        @host
+        async def task(stream: Sink[int]):
             for i in range(50):
                 await stream.send(i)
             await stream.close()
@@ -77,6 +70,7 @@ async def test_run():
 
     @fn()
     async def activity(ctx: Context) -> None:
+        @host
         async def f(s: str) -> AsyncGenerator[str, str]:
             while len(s) < 100:
                 if len(s) == sleep_idx:
@@ -86,8 +80,8 @@ async def test_run():
                 all_states.append(s)
             yield ""
 
-        stream = ctx.stream("", lambda s, p: s + p, f)
-        await stream.discard()
+        async with ctx.stream("", lambda s, p: s + p, f) as stream:
+            await stream.discard()
 
     log = MemoryLogStorage()
     while True:
@@ -112,39 +106,10 @@ async def test_stream_map():
                 chunk = chr(ord("a") + random.randint(0, 25))
                 s = yield chunk
 
-        stream = ctx.stream("", lambda s, p: s + p, f)
-        async for s in stream.map(lambda s: s.upper()):
-            assert s == s.upper()
-        return
-
-    log = MemoryLogStorage()
-    async with activity.create_task(log) as t:
-        await t.start()
-        await t.wait()
-
-
-@pytest.mark.asyncio
-async def test_stream_generator():
-    @fn()
-    async def activity(_ctx: Context) -> None:
-        async def f() -> AsyncGenerator[int]:
-            for i in range(100):
-                yield i
-                await asyncio.sleep(0)
-
-        stream = Stream[int].from_iterator(f())
-        m = stream.map(lambda x: x * 2)
-
-        a, m = m.tee()
-        b, m = m.tee()
-        c, m = m.tee()
-        d, m = m.tee()
-
-        assert await d.collect() == list(range(0, 200, 2))
-        assert sum(await a.map(lambda x: x / 2).collect()) == 4950
-        await b.close()
-        await c.close()
-        await m.close()
+        async with ctx.stream("", lambda s, p: s + p, f) as stream:
+            async for s in stream.map(lambda s: s.upper()):
+                assert s == s.upper()
+            return
 
     log = MemoryLogStorage()
     async with activity.create_task(log) as t:
@@ -156,9 +121,7 @@ async def test_stream_generator():
 async def test_stream_peek():
     @fn()
     async def activity(ctx: Context) -> list[int]:
-        stream: Stream[int]
-        write: StreamHandle[int]
-        stream, write = await ctx.create_stream()
+        stream, write = await ctx.create_stream(int)
 
         async def f():
             for i in range(30):
@@ -168,17 +131,18 @@ async def test_stream_peek():
 
         x = asyncio.create_task(ctx.run(f))
         sample: list[int] = []
-        while True:
-            data: list[int] = []
-            try:
-                async for u in stream.peek():
-                    data.append(u)
-                await asyncio.sleep(0.003)
-            except EndOfStream:
-                break
-            finally:
-                if data:
-                    sample.append(data[0])
+        async with stream as s:
+            while True:
+                data: list[int] = []
+                try:
+                    async for _, u in s.next_nowait(ctx):
+                        data.append(u)
+                    await asyncio.sleep(0.003)
+                except EndOfStream:
+                    break
+                finally:
+                    if data:
+                        sample.append(data[0])
         await x
         return sample
 
@@ -202,23 +166,23 @@ async def test_stream_cross_loop():
                 chunk = chr(ord("a") + random.randint(0, 25))
                 s = yield chunk
 
-        stream = ctx.stream("", lambda s, p: s + p, f)
-        stream = await stream.map(lambda x: x * 2).to_host()
+        async with ctx.stream("", lambda s, p: s + p, f) as stream:
+            stream = stream.map(lambda x: x * 2)
 
-        async def g() -> list[str]:
-            result: list[str] = []
-            async for x in stream:
-                result.append(x)
+            async def g() -> list[str]:
+                result: list[str] = []
+                async for x in stream:
+                    result.append(x)
+                return result
+
+            result = await ctx.run(g)
             return result
-
-        result = await ctx.run(g)
-        return result
 
     log = MemoryLogStorage()
     async with activity.create_task(log) as t:
         await t.start()
         a = await t.wait()
-    for _ in range(1):
+    for _ in range(4):
         async with activity.create_task(log) as t:
             await t.resume()
             b = await t.wait()

@@ -55,7 +55,10 @@ class Codec(ABC):
         self,
         fn: Callable[..., object],
     ) -> FunctionType:
-        sig = inspect.signature(fn, eval_str=True)
+        try:
+            sig = inspect.signature(fn, eval_str=True)
+        except NameError:
+            sig = inspect.signature(fn)
         return_type = (
             sig.return_annotation
             if sig.return_annotation != inspect.Parameter.empty

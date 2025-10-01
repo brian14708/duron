@@ -22,7 +22,6 @@ from duron.context import Context
 from duron.event_loop import EventLoop, create_loop
 from duron.log import is_entry
 from duron.ops import Barrier, FnCall, StreamClose, StreamCreate, StreamEmit
-from duron.stream import StreamHandle
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -180,7 +179,7 @@ class _TaskRun:
         log: LogStorage,
         codec: Codec,
     ) -> None:
-        self._loop = create_loop(asyncio.get_running_loop(), b"")
+        self._loop = create_loop(asyncio.get_event_loop(), b"")
         self._task = self._loop.create_task(task)
         self._log = log
         self._codec = codec
@@ -196,7 +195,6 @@ class _TaskRun:
         self._streams: dict[
             str,
             tuple[
-                StreamHandle[object],
                 Observer[object] | None,
                 type | None,
             ],
@@ -335,14 +333,14 @@ class _TaskRun:
             if e["id"] not in self._streams:
                 self._loop.post_completion(id, exception=ValueError("Stream not found"))
             else:
-                self._loop.post_completion(id, result=self._streams[e["id"]][0])
+                self._loop.post_completion(id, result=e["id"])
             self._pending_ops.discard(id)
         elif e["type"] == "stream/emit":
             id = _decode_id(e["id"])
             if e["stream_id"] not in self._streams:
                 self._loop.post_completion(id, exception=ValueError("Stream not found"))
             else:
-                _, ob, tv = self._streams[e["stream_id"]]
+                ob, tv = self._streams[e["stream_id"]]
                 if ob:
                     ob.on_next(
                         offset,
@@ -355,7 +353,7 @@ class _TaskRun:
             if e["stream_id"] not in self._streams:
                 self._loop.post_completion(id, exception=ValueError("Stream not found"))
             else:
-                _, ob, _ = self._streams[e["stream_id"]]
+                ob, _ = self._streams[e["stream_id"]]
                 self._loop.post_completion(id, result=None)
                 if ob:
                     if "error" in e:
@@ -425,17 +423,11 @@ class _TaskRun:
                     self._pending_task[sid] = (cb, op.return_type)
 
             case StreamCreate():
-                stream: StreamHandle[object] = StreamHandle(_encode_id(id), self._loop)
                 if op.observer:
                     o = op.observer
-                    ty = self._codec.inspect_function(o.on_next)
-                    self._streams[_encode_id(id)] = (
-                        stream,
-                        o,
-                        ty.parameter_types[ty.parameters[0]],
-                    )
+                    self._streams[_encode_id(id)] = (o, op.dtype)
                 else:
-                    self._streams[_encode_id(id)] = (stream, None, None)
+                    self._streams[_encode_id(id)] = (None, None)
                 await self.enqueue_log({
                     "ts": self.now(),
                     "id": _encode_id(id),
@@ -489,6 +481,11 @@ def _decode_id(encoded: str) -> bytes:
 
 
 def _encode_error(error: BaseException) -> ErrorInfo:
+    if type(error) is asyncio.CancelledError:
+        return {
+            "code": -2,
+            "message": repr(error),
+        }
     return {
         "code": -1,
         "message": repr(error),
@@ -496,4 +493,6 @@ def _encode_error(error: BaseException) -> ErrorInfo:
 
 
 def _decode_error(error_info: ErrorInfo) -> BaseException:
+    if error_info["code"] == -2:
+        return asyncio.CancelledError()
     return Exception(f"[{error_info['code']}] {error_info['message']}")

@@ -8,6 +8,7 @@ import logging
 import os
 from asyncio import (
     AbstractEventLoop,
+    CancelledError,
     Handle,
     Task,
     TimerHandle,
@@ -254,21 +255,21 @@ class EventLoop(AbstractEventLoop):
     def create_op(
         self,
         params: object,
-        /,
-        *,
-        external: bool = False,
     ) -> asyncio.Future[object]:
-        if external:
-            assert asyncio.get_running_loop() is self._host
+        loop = asyncio.get_running_loop()
+        if loop is self._host:
             id = os.urandom(12)
             self._event.set()
-        else:
-            assert asyncio.get_running_loop() is self
+            op_fut = OpFuture(id, params, self)
+            self._ops[id] = op_fut
+            return wrap_future(op_fut, loop=self._host)
+        elif loop is self:
             id = self.generate_op_id()
-
-        op_fut = OpFuture(id, params, self)
-        self._ops[id] = op_fut
-        return op_fut
+            op_fut = OpFuture(id, params, self)
+            self._ops[id] = op_fut
+            return op_fut
+        else:
+            raise AssertionError("unreachable")
 
     @overload
     def post_completion(
@@ -299,6 +300,11 @@ class EventLoop(AbstractEventLoop):
                 _ = self.call_soon(
                     op.set_result,
                     result,
+                    context=self._context_new_task(None, tid),
+                )
+            elif type(exception) is CancelledError:
+                _ = self.call_soon(
+                    op.cancel,
                     context=self._context_new_task(None, tid),
                 )
             else:

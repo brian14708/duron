@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator
 from contextvars import ContextVar
 from random import Random
 from typing import (
@@ -11,19 +12,23 @@ from typing import (
     TypeVar,
     cast,
     final,
+    get_args,
+    get_origin,
 )
 
-from duron.ops import Barrier, FnCall, StreamCreate
-from duron.stream import LogStream, ResumableStream
+from duron.ops import Barrier, FnCall, create_op
+from duron.stream import create_stream, resumable
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Callable, Coroutine
+    from collections.abc import Callable, Coroutine
     from contextvars import Token
     from types import TracebackType
 
+    from typing_extensions import AsyncContextManager
+
     from duron.event_loop import EventLoop
     from duron.fn import Fn
-    from duron.stream import Observer, Stream, StreamHandle
+    from duron.stream import Sink, Stream
 
     _T = TypeVar("_T")
     _S = TypeVar("_S")
@@ -70,20 +75,19 @@ class Context:
         *args: _P.args,
         **kwargs: _P.kwargs,
     ) -> _T:
-        if asyncio.get_event_loop() is not self._loop:
+        if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
         type_info = self._task.codec.inspect_function(fn)
-        return cast(
-            "_T",
-            await self._loop.create_op(
-                FnCall(
-                    callable=fn,
-                    args=args,
-                    kwargs=kwargs,
-                    return_type=type_info.return_type,
-                )
+        op = create_op(
+            self._loop,
+            FnCall(
+                callable=fn,
+                args=args,
+                kwargs=kwargs,
+                return_type=type_info.return_type,
             ),
         )
+        return cast("_T", await op)
 
     def stream(
         self,
@@ -93,60 +97,45 @@ class Context:
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
-    ) -> Stream[_T]:
-        if asyncio.get_event_loop() is not self._loop:
+    ) -> AsyncContextManager[Stream[_S]]:
+        if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
-        return ResumableStream(
+        dtype: type | None = None
+        return_type = self._task.codec.inspect_function(fn).return_type
+        if get_origin(return_type) is AsyncGenerator:
+            dtype, _ = get_args(return_type)
+        r = resumable(
             self._loop,
+            dtype,
             initial,
             reducer,
             fn,
             *args,
             **kwargs,
         )
+        return r
+
+    async def create_stream(self, dtype: type[_T]) -> tuple[Stream[_T], Sink[_T]]:
+        if asyncio.get_running_loop() is not self._loop:
+            raise RuntimeError("Context time can only be used in the context loop")
+        return await create_stream(self._loop, dtype)
 
     async def barrier(self) -> int:
-        return cast(
-            "int",
-            await self._loop.create_op(Barrier()),
-        )
-
-    async def create_stream_handle(
-        self, observer: Observer[_T] | None
-    ) -> StreamHandle[_T]:
-        if asyncio.get_event_loop() is not self._loop:
+        if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
-        o = cast("Observer[object]", observer) if observer else None
-        return cast(
-            "StreamHandle[_T]",
-            await self._loop.create_op(StreamCreate(observer=o)),
-        )
-
-    async def create_stream(self) -> tuple[Stream[_T], StreamHandle[_T]]:
-        if asyncio.get_event_loop() is not self._loop:
-            raise RuntimeError("Context time can only be used in the context loop")
-        log: LogStream[_T] = LogStream(self._loop)
-        hdl = cast(
-            "StreamHandle[_T]",
-            await self._loop.create_op(
-                StreamCreate(
-                    observer=cast("Observer[object]", cast("Observer[_T]", log))
-                )
-            ),
-        )
-        return (log, hdl)
+        return await create_op(self._loop, Barrier())
 
     def time(self) -> float:
-        if asyncio.get_event_loop() is not self._loop:
+        if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
         return self._loop.time()
 
     def time_ns(self) -> int:
-        if asyncio.get_event_loop() is not self._loop:
+        if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
         return self._loop.time_us() * 1_000
 
     def random(self) -> Random:
-        if asyncio.get_event_loop() is not self._loop:
+        if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("Context random can only be used in the context loop")
         return Random(self._loop.generate_op_id())

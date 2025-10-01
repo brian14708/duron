@@ -56,3 +56,7 @@ def fn(
         return Fn(codec=codec or config.codec, fn=fn)
 
     return decorate
+
+
+def host(fn: Callable[_P, _T_co]) -> Callable[_P, _T_co]:
+    return fn
