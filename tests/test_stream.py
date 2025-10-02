@@ -6,7 +6,7 @@ from collections.abc import AsyncGenerator
 
 import pytest
 
-from duron import EndOfStream, Sink, fn, host
+from duron import EndOfStream, Sink, effect, fn
 from duron.context import Context
 from duron.contrib.storage import MemoryLogStorage
 
@@ -48,7 +48,7 @@ async def test_stream_host():
     async def activity(ctx: Context) -> None:
         stream, handle = await ctx.create_stream(int)
 
-        @host
+        @effect
         async def task(stream: Sink[int]):
             for i in range(50):
                 await stream.send(i)
@@ -70,7 +70,7 @@ async def test_run():
 
     @fn()
     async def activity(ctx: Context) -> None:
-        @host
+        @effect
         async def f(s: str) -> AsyncGenerator[str, str]:
             while len(s) < 100:
                 if len(s) == sleep_idx:
