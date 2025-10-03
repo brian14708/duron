@@ -13,9 +13,10 @@ from duron.ops import FnCall, StreamClose, StreamCreate, StreamEmit, create_op
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Sequence
+    from contextlib import AbstractAsyncContextManager
     from types import TracebackType
 
-    from typing_extensions import AsyncContextManager, ParamSpec
+    from typing_extensions import ParamSpec
 
     from duron.context import Context
     from duron.event_loop import EventLoop
@@ -114,7 +115,7 @@ class Stream(Generic[_T], ABC):
     def map(self, fn: Callable[[_T], _U]) -> Stream[_U]:
         return _Map(self, fn)
 
-    def broadcast(self, n: int) -> AsyncContextManager[Sequence[Stream[_T]]]:
+    def broadcast(self, n: int) -> AbstractAsyncContextManager[Sequence[Stream[_T]]]:
         return _Broadcast(self, n)
 
 
@@ -297,7 +298,7 @@ def resumable(
     /,
     *args: _P.args,
     **kwargs: _P.kwargs,
-) -> AsyncContextManager[Stream[_U]]:
+) -> AbstractAsyncContextManager[Stream[_U]]:
     assert asyncio.get_running_loop() is loop
     s: _Resumable[_U, _T] = _Resumable(
         initial,

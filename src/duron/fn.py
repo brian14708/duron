@@ -8,14 +8,17 @@ from typing import (
     Generic,
     ParamSpec,
     TypeVar,
+    final,
     overload,
 )
 
 from duron.config import config
-from duron.task import Task, TaskGuard
+from duron.job import Job
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
+    from contextlib import AbstractAsyncContextManager
+    from types import TracebackType
 
     from duron.codec import Codec
     from duron.context import Context
@@ -36,8 +39,29 @@ class Fn(Generic[_P, _T_co]):
     ) -> Coroutine[Any, Any, _T_co]:
         return self.fn(ctx, *args, **kwargs)
 
-    def create_task(self, log: LogStorage) -> TaskGuard[_P, _T_co]:
-        return TaskGuard(Task(self, log))
+    def create_job(
+        self, log: LogStorage
+    ) -> AbstractAsyncContextManager[Job[_P, _T_co]]:
+        return _JobGuard(Job(self, log))
+
+
+@final
+class _JobGuard(Generic[_P, _T_co]):
+    __slots__ = ("_job",)
+
+    def __init__(self, job: Job[_P, _T_co]) -> None:
+        self._job = job
+
+    async def __aenter__(self) -> Job[_P, _T_co]:
+        return self._job
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        await self._job.close()
 
 
 @overload

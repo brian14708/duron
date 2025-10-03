@@ -25,7 +25,6 @@ from duron.ops import Barrier, FnCall, StreamClose, StreamCreate, StreamEmit
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
-    from types import TracebackType
 
     from duron.codec import Codec, FunctionType
     from duron.event_loop import OpFuture, WaitSet
@@ -47,71 +46,52 @@ _CURRENT_VERSION = 0
 
 
 @final
-class TaskGuard(Generic[_P, _T]):
-    __slots__ = ("_task",)
-
-    def __init__(self, task: Task[_P, _T]) -> None:
-        self._task = task
-
-    async def __aenter__(self) -> Task[_P, _T]:
-        return self._task
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        await self._task.close()
-
-
-@final
-class Task(Generic[_P, _T]):
-    __slots__ = ("_task_fn", "_log", "_run")
+class Job(Generic[_P, _T]):
+    __slots__ = ("_job_fn", "_log", "_run")
 
     def __init__(
         self,
-        task_fn: Fn[_P, _T],
+        job_fn: Fn[_P, _T],
         log: LogStorage,
     ) -> None:
-        self._task_fn = task_fn
+        self._job_fn = job_fn
         self._log = log
-        self._run: _TaskRun | None = None
+        self._run: _JobRun | None = None
 
     async def start(self, *args: _P.args, **kwargs: _P.kwargs) -> None:
-        async def get_init() -> TaskInitParams:
+        async def get_init() -> JobInitParams:
             return {
                 "version": _CURRENT_VERSION,
                 "args": [codec.encode_json(arg) for arg in args],
                 "kwargs": {k: codec.encode_json(v) for k, v in kwargs.items()},
             }
 
-        codec = self._task_fn.codec
-        type_info = codec.inspect_function(self._task_fn.fn)
-        task_prelude = _task_prelude(self._task_fn, type_info, get_init)
-        self._run = _TaskRun(
-            task_prelude,
+        codec = self._job_fn.codec
+        type_info = codec.inspect_function(self._job_fn.fn)
+        job_prelude = _job_prelude(self._job_fn, type_info, get_init)
+        self._run = _JobRun(
+            job_prelude,
             self._log,
             codec,
         )
         await self._run.resume()
 
     async def resume(self) -> None:
-        async def cb() -> TaskInitParams:
+        async def cb() -> JobInitParams:
             raise Exception("not started")
 
-        type_info = self._task_fn.codec.inspect_function(self._task_fn.fn)
-        task = _task_prelude(self._task_fn, type_info, cb)
-        self._run = _TaskRun(
-            task,
+        type_info = self._job_fn.codec.inspect_function(self._job_fn.fn)
+        job = _job_prelude(self._job_fn, type_info, cb)
+        self._run = _JobRun(
+            job,
             self._log,
-            self._task_fn.codec,
+            self._job_fn.codec,
         )
         await self._run.resume()
 
     async def wait(self) -> _T:
         if self._run is None:
-            raise RuntimeError("Task not started")
+            raise RuntimeError("Job not started")
         return cast("_T", await self._run.run())
 
     async def close(self) -> None:
@@ -120,24 +100,24 @@ class Task(Generic[_P, _T]):
             self._run = None
 
 
-class TaskInitParams(TypedDict):
+class JobInitParams(TypedDict):
     version: int
     args: list[JSONValue]
     kwargs: dict[str, JSONValue]
 
 
-async def _task_prelude(
-    task_fn: Fn[..., _T],
+async def _job_prelude(
+    job_fn: Fn[..., _T],
     type_info: FunctionType,
-    init: Callable[[], Coroutine[Any, Any, TaskInitParams]],
+    init: Callable[[], Coroutine[Any, Any, JobInitParams]],
 ) -> _T:
     loop = asyncio.get_running_loop()
     assert isinstance(loop, EventLoop)
-    with Context(task_fn, loop) as ctx:
+    with Context(job_fn, loop) as ctx:
         init_params = await ctx.run(init)
         if init_params["version"] != _CURRENT_VERSION:
             raise Exception("version mismatch")
-        codec = task_fn.codec
+        codec = job_fn.codec
 
         args = tuple(
             codec.decode_json(
@@ -152,11 +132,11 @@ async def _task_prelude(
             k: codec.decode_json(v, type_info.parameter_types.get(k))
             for k, v in init_params["kwargs"].items()
         }
-        return await task_fn.fn(ctx, *args, **kwargs)
+        return await job_fn.fn(ctx, *args, **kwargs)
 
 
 @final
-class _TaskRun:
+class _JobRun:
     __slots__ = (
         "_loop",
         "_task",

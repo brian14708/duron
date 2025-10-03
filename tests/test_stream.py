@@ -33,11 +33,11 @@ async def test_stream():
         assert sum(await stream.collect()) == 4900
 
     log = MemoryLogStorage()
-    async with activity.create_task(log) as t:
+    async with activity.create_job(log) as t:
         await t.start()
         await t.wait()
 
-    async with activity.create_task(log) as t:
+    async with activity.create_job(log) as t:
         await t.resume()
         await t.wait()
 
@@ -58,7 +58,7 @@ async def test_stream_host():
         assert sum(await stream.collect()) == 1225
 
     log = MemoryLogStorage()
-    async with activity.create_task(log) as t:
+    async with activity.create_job(log) as t:
         await t.start()
         await t.wait()
 
@@ -85,7 +85,7 @@ async def test_run():
 
     log = MemoryLogStorage()
     while True:
-        async with activity.create_task(log) as t:
+        async with activity.create_job(log) as t:
             await t.start()
             try:
                 _ = await asyncio.wait_for(t.wait(), 0.1)
@@ -112,7 +112,7 @@ async def test_stream_map():
             return
 
     log = MemoryLogStorage()
-    async with activity.create_task(log) as t:
+    async with activity.create_job(log) as t:
         await t.start()
         await t.wait()
 
@@ -147,11 +147,11 @@ async def test_stream_peek():
         return sample
 
     log = MemoryLogStorage()
-    async with activity.create_task(log) as t:
+    async with activity.create_job(log) as t:
         await t.start()
         a = await t.wait()
     for _ in range(4):
-        async with activity.create_task(log) as t:
+        async with activity.create_job(log) as t:
             await t.resume()
             b = await t.wait()
         assert a == b
@@ -179,11 +179,11 @@ async def test_stream_cross_loop():
             return result
 
     log = MemoryLogStorage()
-    async with activity.create_task(log) as t:
+    async with activity.create_job(log) as t:
         await t.start()
         a = await t.wait()
     for _ in range(4):
-        async with activity.create_task(log) as t:
+        async with activity.create_job(log) as t:
             await t.resume()
             b = await t.wait()
         assert a == b
