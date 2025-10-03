@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
     from typing_extensions import ParamSpec
 
+    from duron.codec import JSONValue
     from duron.context import Context
     from duron.event_loop import EventLoop
 
@@ -160,7 +161,11 @@ class StreamOp(Generic[_T]):
 
 
 async def create_stream(
-    loop: EventLoop, dtype: type[_T], *, effect: bool = False
+    loop: EventLoop,
+    dtype: type[_T],
+    *,
+    effect: bool = False,
+    metadata: dict[str, JSONValue] | None = None,
 ) -> tuple[Stream[_T], StreamWriter[_T]]:
     assert asyncio.get_running_loop() is loop
     s: _ObserverStream[_T] = _ObserverStream()
@@ -169,6 +174,7 @@ async def create_stream(
         StreamCreate(
             dtype=dtype,
             observer=s,
+            metadata=metadata,
         ),
     )
     if effect:

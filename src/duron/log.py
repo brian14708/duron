@@ -16,7 +16,6 @@ class _BaseEntry(TypedDict):
     id: str
     # Unix timestamp in microseconds
     ts: int
-    meta: NotRequired[dict[str, str]]
 
 
 class ErrorInfo(TypedDict):
@@ -26,6 +25,7 @@ class ErrorInfo(TypedDict):
 
 class PromiseCreateEntry(_BaseEntry):
     type: Literal["promise/create"]
+    metadata: NotRequired[dict[str, JSONValue]]
 
 
 class PromiseCompleteEntry(_BaseEntry):
@@ -37,6 +37,7 @@ class PromiseCompleteEntry(_BaseEntry):
 
 class StreamCreateEntry(_BaseEntry):
     type: Literal["stream/create"]
+    metadata: NotRequired[dict[str, JSONValue]]
 
 
 class StreamEmitEntry(_BaseEntry):

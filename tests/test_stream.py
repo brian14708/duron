@@ -6,7 +6,7 @@ from collections.abc import AsyncGenerator
 
 import pytest
 
-from duron import EndOfStream, StreamWriter, effect, fn
+from duron import EndOfStream, RunOptions, StreamWriter, effect, fn
 from duron.context import Context
 from duron.contrib.storage import MemoryLogStorage
 
@@ -54,7 +54,7 @@ async def test_stream_host():
                 await stream.send(i)
             await stream.close()
 
-        await ctx.run(task, handle)
+        await ctx.run(task, RunOptions(), handle)
         assert sum(await stream.collect()) == 1225
 
     log = MemoryLogStorage()

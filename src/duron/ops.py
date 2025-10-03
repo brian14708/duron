@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     import asyncio
     from collections.abc import Callable, Coroutine
 
+    from duron.codec import JSONValue
     from duron.event_loop import EventLoop
 
 
@@ -21,6 +22,7 @@ class FnCall:
     args: tuple[object, ...]
     kwargs: dict[str, object]
     return_type: type | None = None
+    metadata: dict[str, JSONValue] | None = None
 
 
 class StreamObserver(Generic[_In], Protocol):
@@ -32,6 +34,7 @@ class StreamObserver(Generic[_In], Protocol):
 class StreamCreate:
     observer: StreamObserver[Any] | None
     dtype: type | None
+    metadata: dict[str, JSONValue] | None = None
 
 
 @dataclass(slots=True)
@@ -47,8 +50,7 @@ class StreamClose:
 
 
 @dataclass(slots=True)
-class Barrier:
-    pass
+class Barrier: ...
 
 
 Op = FnCall | StreamCreate | StreamEmit | StreamClose | Barrier

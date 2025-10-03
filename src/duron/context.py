@@ -27,8 +27,10 @@ if TYPE_CHECKING:
 
     from typing_extensions import AsyncContextManager
 
+    from duron.codec import JSONValue
     from duron.event_loop import EventLoop
     from duron.fn import Fn
+    from duron.options import RunOptions
     from duron.stream import Stream, StreamWriter
 
     _T = TypeVar("_T")
@@ -73,6 +75,7 @@ class Context:
     async def run(
         self,
         fn: Callable[_P, Coroutine[Any, Any, _T]],
+        options: RunOptions[_T] | None = ...,
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
@@ -81,6 +84,7 @@ class Context:
     async def run(
         self,
         fn: Callable[_P, _T],
+        options: RunOptions[_T] | None = ...,
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
@@ -88,20 +92,25 @@ class Context:
     async def run(
         self,
         fn: Callable[_P, Coroutine[Any, Any, _T] | _T],
+        options: RunOptions[_T] | None = None,
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
     ) -> _T:
         if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
-        type_info = self._task.codec.inspect_function(fn)
+        return_type = (
+            options and options.return_type
+        ) or self._task.codec.inspect_function(fn).return_type
+        metadata = options.metadata if options else None
         op = create_op(
             self._loop,
             FnCall(
                 callable=fn,
                 args=args,
                 kwargs=kwargs,
-                return_type=type_info.return_type,
+                return_type=return_type,
+                metadata=metadata,
             ),
         )
         return cast("_T", await op)
@@ -111,6 +120,7 @@ class Context:
         initial: _T,
         reducer: Callable[[_T, _S], _T],
         fn: Callable[Concatenate[_T, _P], AsyncGenerator[_S, _T]],
+        options: RunOptions[_S] | None = None,
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
@@ -118,9 +128,12 @@ class Context:
         if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
         dtype: type | None = None
-        return_type = self._task.codec.inspect_function(fn).return_type
-        if get_origin(return_type) is AsyncGenerator:
-            dtype, _ = get_args(return_type)
+        if options and options.return_type:
+            dtype = options.return_type
+        else:
+            return_type = self._task.codec.inspect_function(fn).return_type
+            if get_origin(return_type) is AsyncGenerator:
+                dtype, _ = get_args(return_type)
         r = resumable(
             self._loop,
             dtype,
@@ -133,11 +146,15 @@ class Context:
         return r
 
     async def create_stream(
-        self, dtype: type[_T], *, effect: bool = False
+        self,
+        dtype: type[_T],
+        *,
+        effect: bool = False,
+        metadata: dict[str, JSONValue] | None = None,
     ) -> tuple[Stream[_T], StreamWriter[_T]]:
         if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
-        return await create_stream(self._loop, dtype, effect=effect)
+        return await create_stream(self._loop, dtype, effect=effect, metadata=metadata)
 
     async def barrier(self) -> int:
         if asyncio.get_running_loop() is not self._loop:

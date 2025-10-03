@@ -36,10 +36,15 @@ if TYPE_CHECKING:
     from duron.event_loop import OpFuture, WaitSet
     from duron.fn import Fn
     from duron.log import (
+        BarrierEntry,
         Entry,
         ErrorInfo,
         LogStorage,
         PromiseCompleteEntry,
+        PromiseCreateEntry,
+        StreamCompleteEntry,
+        StreamCreateEntry,
+        StreamEmitEntry,
     )
     from duron.ops import (
         Op,
@@ -369,11 +374,14 @@ class _JobRun:
         op = cast("Op", fut.params)
         match op:
             case FnCall():
-                await self.enqueue_log({
+                promise_create_entry: PromiseCreateEntry = {
                     "ts": self.now(),
                     "id": _encode_id(id),
                     "type": "promise/create",
-                })
+                }
+                if op.metadata:
+                    promise_create_entry["metadata"] = op.metadata
+                await self.enqueue_log(promise_create_entry)
 
                 async def cb() -> None:
                     entry: PromiseCompleteEntry = {
@@ -418,42 +426,49 @@ class _JobRun:
                     self._streams[_encode_id(id)] = (o, op.dtype)
                 else:
                     self._streams[_encode_id(id)] = (None, None)
-                await self.enqueue_log({
+                stream_create_entry: StreamCreateEntry = {
                     "ts": self.now(),
                     "id": _encode_id(id),
                     "type": "stream/create",
-                })
+                }
+                if op.metadata:
+                    stream_create_entry["metadata"] = op.metadata
+                await self.enqueue_log(stream_create_entry)
 
             case StreamEmit():
-                await self.enqueue_log({
+                stream_emit_entry: StreamEmitEntry = {
                     "ts": self.now(),
                     "id": _encode_id(id),
                     "stream_id": op.stream_id,
                     "type": "stream/emit",
                     "value": self._codec.encode_json(op.value),
-                })
+                }
+                await self.enqueue_log(stream_emit_entry)
             case StreamClose():
                 if op.exception:
-                    await self.enqueue_log({
+                    stream_close_entry_err: StreamCompleteEntry = {
                         "ts": self.now(),
                         "id": _encode_id(id),
                         "stream_id": op.stream_id,
                         "type": "stream/complete",
                         "error": _encode_error(op.exception),
-                    })
+                    }
+                    await self.enqueue_log(stream_close_entry_err)
                 else:
-                    await self.enqueue_log({
+                    stream_close_entry: StreamCompleteEntry = {
                         "ts": self.now(),
                         "id": _encode_id(id),
                         "stream_id": op.stream_id,
                         "type": "stream/complete",
-                    })
+                    }
+                    await self.enqueue_log(stream_close_entry)
             case Barrier():
-                await self.enqueue_log({
+                barrier_entry: BarrierEntry = {
                     "ts": self.now(),
                     "id": _encode_id(id),
                     "type": "barrier",
-                })
+                }
+                await self.enqueue_log(barrier_entry)
             case _:
                 assert_never(op)
 
