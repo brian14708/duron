@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
     from duron.event_loop import EventLoop
     from duron.fn import Fn
-    from duron.stream import Sink, Stream
+    from duron.stream import Stream, StreamWriter
 
     _T = TypeVar("_T")
     _S = TypeVar("_S")
@@ -132,10 +132,12 @@ class Context:
         )
         return r
 
-    async def create_stream(self, dtype: type[_T]) -> tuple[Stream[_T], Sink[_T]]:
+    async def create_stream(
+        self, dtype: type[_T], *, effect: bool = False
+    ) -> tuple[Stream[_T], StreamWriter[_T]]:
         if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
-        return await create_stream(self._loop, dtype)
+        return await create_stream(self._loop, dtype, effect=effect)
 
     async def barrier(self) -> int:
         if asyncio.get_running_loop() is not self._loop:

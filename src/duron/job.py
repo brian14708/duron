@@ -21,7 +21,13 @@ from duron.codec import Codec, JSONValue
 from duron.context import Context
 from duron.event_loop import EventLoop, create_loop
 from duron.log import is_entry
-from duron.ops import Barrier, FnCall, StreamClose, StreamCreate, StreamEmit
+from duron.ops import (
+    Barrier,
+    FnCall,
+    StreamClose,
+    StreamCreate,
+    StreamEmit,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -35,8 +41,10 @@ if TYPE_CHECKING:
         LogStorage,
         PromiseCompleteEntry,
     )
-    from duron.ops import Op
-    from duron.stream import Observer
+    from duron.ops import (
+        Op,
+        StreamObserver,
+    )
 
 
 _T = TypeVar("_T")
@@ -175,7 +183,7 @@ class _JobRun:
         self._streams: dict[
             str,
             tuple[
-                Observer[object] | None,
+                StreamObserver[object] | None,
                 type | None,
             ],
         ] = {}

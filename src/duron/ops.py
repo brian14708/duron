@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar
 
 from typing_extensions import overload
 
@@ -10,7 +10,9 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
     from duron.event_loop import EventLoop
-    from duron.stream import Observer
+
+
+_In = TypeVar("_In", contravariant=True)
 
 
 @dataclass(slots=True)
@@ -21,9 +23,14 @@ class FnCall:
     return_type: type | None = None
 
 
+class StreamObserver(Generic[_In], Protocol):
+    def on_next(self, log_offset: int, value: _In, /) -> None: ...
+    def on_close(self, log_offset: int, error: BaseException | None, /) -> None: ...
+
+
 @dataclass(slots=True)
 class StreamCreate:
-    observer: Observer[Any] | None
+    observer: StreamObserver[Any] | None
     dtype: type | None
 
 

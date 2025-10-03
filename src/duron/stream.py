@@ -28,13 +28,36 @@ _U = TypeVar("_U")
 _In = TypeVar("_In", contravariant=True)
 
 
-class Observer(Generic[_In], Protocol):
-    def on_next(self, log_offset: int, value: _In, /) -> None: ...
-    def on_close(self, log_offset: int, error: BaseException | None, /) -> None: ...
+class StreamWriter(Generic[_In], Protocol):
+    async def send(self, value: _In, /) -> None: ...
+    async def close(self, error: BaseException | None = None, /) -> None: ...
 
 
 @final
-class Sink(Generic[_T]):
+class _Writer(Generic[_T]):
+    __slots__ = ("_stream_id", "_loop")
+
+    def __init__(self, id: str, loop: EventLoop) -> None:
+        self._stream_id = id
+        self._loop = loop
+
+    async def send(self, value: _T, /) -> None:
+        assert asyncio.get_running_loop() is self._loop
+        await create_op(
+            self._loop,
+            StreamEmit(stream_id=self._stream_id, value=value),
+        )
+
+    async def close(self, error: BaseException | None = None, /) -> None:
+        assert asyncio.get_running_loop() is self._loop
+        await create_op(
+            self._loop,
+            StreamClose(stream_id=self._stream_id, exception=error),
+        )
+
+
+@final
+class _EffectWriter(Generic[_T]):
     __slots__ = ("_stream_id", "_loop")
 
     def __init__(self, id: str, loop: EventLoop) -> None:
@@ -137,8 +160,8 @@ class StreamOp(Generic[_T]):
 
 
 async def create_stream(
-    loop: EventLoop, dtype: type[_T]
-) -> tuple[Stream[_T], Sink[_T]]:
+    loop: EventLoop, dtype: type[_T], *, effect: bool = False
+) -> tuple[Stream[_T], StreamWriter[_T]]:
     assert asyncio.get_running_loop() is loop
     s: _ObserverStream[_T] = _ObserverStream()
     sid = await create_op(
@@ -148,7 +171,10 @@ async def create_stream(
             observer=s,
         ),
     )
-    return (s, Sink(sid, loop))
+    if effect:
+        return (s, _EffectWriter(sid, loop))
+    else:
+        return (s, _Writer(sid, loop))
 
 
 @final
@@ -328,7 +354,7 @@ class _ResumableGuard(Generic[_U, _T]):
                 observer=self._stream,
             ),
         )
-        sink: Sink[_T] = Sink(sid, self._loop)
+        sink: StreamWriter[_T] = _EffectWriter(sid, self._loop)
         self._task = create_op(
             self._loop,
             FnCall(
@@ -372,7 +398,7 @@ class _Resumable(Generic[_U, _T], _ObserverStream[_U]):
         self._kwargs = kwargs
         self._enabled = True
 
-    async def worker(self, sink: Sink[_U]):
+    async def worker(self, sink: StreamWriter[_U]):
         gen = None
         try:
             if self._closed is True:
