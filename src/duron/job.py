@@ -375,7 +375,9 @@ class _JobRun:
                         "promise_id": _encode_id(id),
                     }
                     try:
-                        result = await op.callable(*op.args, **op.kwargs)
+                        result = op.callable(*op.args, **op.kwargs)
+                        if asyncio.iscoroutine(result):
+                            result = await result
                         entry["result"] = self._codec.encode_json(result)
                     except Exception as e:
                         entry["error"] = _encode_error(e)

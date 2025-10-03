@@ -14,6 +14,7 @@ from typing import (
     final,
     get_args,
     get_origin,
+    overload,
 )
 
 from duron.ops import Barrier, FnCall, create_op
@@ -68,9 +69,25 @@ class Context:
             raise RuntimeError("No duron context is active")
         return ctx
 
+    @overload
     async def run(
         self,
         fn: Callable[_P, Coroutine[Any, Any, _T]],
+        /,
+        *args: _P.args,
+        **kwargs: _P.kwargs,
+    ) -> _T: ...
+    @overload
+    async def run(
+        self,
+        fn: Callable[_P, _T],
+        /,
+        *args: _P.args,
+        **kwargs: _P.kwargs,
+    ) -> _T: ...
+    async def run(
+        self,
+        fn: Callable[_P, Coroutine[Any, Any, _T] | _T],
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,

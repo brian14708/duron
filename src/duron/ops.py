@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 @dataclass(slots=True)
 class FnCall:
-    callable: Callable[..., Coroutine[Any, Any, object]]
+    callable: Callable[..., Coroutine[Any, Any, object] | object]
     args: tuple[object, ...]
     kwargs: dict[str, object]
     return_type: type | None = None
