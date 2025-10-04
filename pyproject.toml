@@ -2,6 +2,7 @@
 name = "duron"
 version = "0.0.1"
 description = ""
+license = "Apache-2.0"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
