@@ -6,8 +6,7 @@ from collections.abc import AsyncGenerator
 
 import pytest
 
-from duron import RunOptions, StreamClosed, StreamWriter, effect, fn
-from duron.context import Context
+from duron import Context, RunOptions, StreamClosed, StreamWriter, effect, fn
 from duron.contrib.storage import MemoryLogStorage
 
 

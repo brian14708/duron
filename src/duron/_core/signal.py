@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from typing_extensions import final
 
-from duron.ops import Barrier, StreamClose, StreamCreate, StreamEmit, create_op
+from duron._core.ops import Barrier, StreamClose, StreamCreate, StreamEmit, create_op
 
 if TYPE_CHECKING:
     from types import TracebackType
 
+    from duron._loop import EventLoop
     from duron.codec import JSONValue
-    from duron.event_loop import EventLoop
 
 _In = TypeVar("_In", contravariant=True)
 

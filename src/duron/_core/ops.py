@@ -9,8 +9,8 @@ if TYPE_CHECKING:
     import asyncio
     from collections.abc import Callable, Coroutine
 
+    from duron._loop import EventLoop
     from duron.codec import JSONValue
-    from duron.event_loop import EventLoop
 
 
 _In = TypeVar("_In", contravariant=True)

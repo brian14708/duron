@@ -12,16 +12,16 @@ from typing import (
     overload,
 )
 
-from duron.config import config
-from duron.job import Job
+from duron._core.config import config
+from duron._core.job import Job
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
     from contextlib import AbstractAsyncContextManager
     from types import TracebackType
 
+    from duron._core.context import Context
     from duron.codec import Codec
-    from duron.context import Context
     from duron.log import LogStorage
 
 

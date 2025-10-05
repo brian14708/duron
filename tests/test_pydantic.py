@@ -6,9 +6,8 @@ import pytest
 from pydantic import BaseModel, TypeAdapter
 from typing_extensions import override
 
-from duron import fn
+from duron import Context, fn
 from duron.codec import Codec
-from duron.context import Context
 from duron.contrib.storage import MemoryLogStorage
 
 if TYPE_CHECKING:

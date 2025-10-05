@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Concatenate, Generic, Protocol, TypeVar, cast
 
 from typing_extensions import final, override
 
-from duron.ops import FnCall, StreamClose, StreamCreate, StreamEmit, create_op
+from duron._core.ops import FnCall, StreamClose, StreamCreate, StreamEmit, create_op
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Sequence
@@ -18,9 +18,9 @@ if TYPE_CHECKING:
 
     from typing_extensions import ParamSpec
 
+    from duron._core.context import Context
+    from duron._loop import EventLoop
     from duron.codec import JSONValue
-    from duron.context import Context
-    from duron.event_loop import EventLoop
 
     _P = ParamSpec("_P")
 

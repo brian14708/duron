@@ -17,9 +17,9 @@ from typing import (
     overload,
 )
 
-from duron.ops import Barrier, FnCall, create_op
-from duron.signal import create_signal
-from duron.stream import create_stream, resumable
+from duron._core.ops import Barrier, FnCall, create_op
+from duron._core.signal import create_signal
+from duron._core.stream import create_stream, resumable
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -28,12 +28,12 @@ if TYPE_CHECKING:
 
     from typing_extensions import AsyncContextManager
 
+    from duron._core.fn import Fn
+    from duron._core.options import RunOptions
+    from duron._core.signal import Signal, SignalWriter
+    from duron._core.stream import Stream, StreamWriter
+    from duron._loop import EventLoop
     from duron.codec import JSONValue
-    from duron.event_loop import EventLoop
-    from duron.fn import Fn
-    from duron.options import RunOptions
-    from duron.signal import Signal, SignalWriter
-    from duron.stream import Stream, StreamWriter
 
     _T = TypeVar("_T")
     _S = TypeVar("_S")

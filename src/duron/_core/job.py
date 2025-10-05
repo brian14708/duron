@@ -17,24 +17,28 @@ from typing import (
 
 from typing_extensions import TypedDict, assert_never
 
-from duron.codec import Codec, JSONValue
-from duron.context import Context
-from duron.event_loop import EventLoop, create_loop
-from duron.log import is_entry
-from duron.ops import (
+from duron._core.context import Context
+from duron._core.ops import (
     Barrier,
     FnCall,
     StreamClose,
     StreamCreate,
     StreamEmit,
 )
+from duron._loop import EventLoop, create_loop
+from duron.codec import Codec, JSONValue
+from duron.log import is_entry
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
+    from duron._core.fn import Fn
+    from duron._core.ops import (
+        Op,
+        StreamObserver,
+    )
+    from duron._loop import OpFuture, WaitSet
     from duron.codec import Codec, FunctionType
-    from duron.event_loop import OpFuture, WaitSet
-    from duron.fn import Fn
     from duron.log import (
         BarrierEntry,
         Entry,
@@ -45,10 +49,6 @@ if TYPE_CHECKING:
         StreamCompleteEntry,
         StreamCreateEntry,
         StreamEmitEntry,
-    )
-    from duron.ops import (
-        Op,
-        StreamObserver,
     )
 
 

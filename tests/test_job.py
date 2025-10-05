@@ -8,8 +8,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from duron import fn
-from duron.context import Context
+from duron import Context, fn
 from duron.contrib.codecs import PickleCodec
 from duron.contrib.storage import MemoryLogStorage
 
