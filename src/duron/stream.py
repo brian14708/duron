@@ -35,14 +35,14 @@ class StreamWriter(Generic[_In], Protocol):
 
 
 @final
-class _Writer(Generic[_T]):
+class _Writer(Generic[_In]):
     __slots__ = ("_stream_id", "_loop")
 
     def __init__(self, id: str, loop: EventLoop) -> None:
         self._stream_id = id
         self._loop = loop
 
-    async def send(self, value: _T, /) -> None:
+    async def send(self, value: _In, /) -> None:
         assert asyncio.get_running_loop() is self._loop
         await create_op(
             self._loop,
@@ -58,14 +58,14 @@ class _Writer(Generic[_T]):
 
 
 @final
-class _EffectWriter(Generic[_T]):
+class _EffectWriter(Generic[_In]):
     __slots__ = ("_stream_id", "_loop")
 
     def __init__(self, id: str, loop: EventLoop) -> None:
         self._stream_id = id
         self._loop = loop
 
-    async def send(self, value: _T, /) -> None:
+    async def send(self, value: _In, /) -> None:
         await create_op(
             self._loop,
             StreamEmit(stream_id=self._stream_id, value=value),

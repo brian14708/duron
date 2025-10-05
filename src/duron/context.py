@@ -18,6 +18,7 @@ from typing import (
 )
 
 from duron.ops import Barrier, FnCall, create_op
+from duron.signal import create_signal
 from duron.stream import create_stream, resumable
 
 if TYPE_CHECKING:
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
     from duron.event_loop import EventLoop
     from duron.fn import Fn
     from duron.options import RunOptions
+    from duron.signal import Signal, SignalWriter
     from duron.stream import Stream, StreamWriter
 
     _T = TypeVar("_T")
@@ -155,6 +157,16 @@ class Context:
         if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
         return await create_stream(self._loop, dtype, effect=effect, metadata=metadata)
+
+    async def create_signal(
+        self,
+        dtype: type[_T],
+        *,
+        metadata: dict[str, JSONValue] | None = None,
+    ) -> tuple[Signal[_T], SignalWriter[_T]]:
+        if asyncio.get_running_loop() is not self._loop:
+            raise RuntimeError("Context time can only be used in the context loop")
+        return await create_signal(self._loop, dtype, metadata=metadata)
 
     async def barrier(self) -> int:
         if asyncio.get_running_loop() is not self._loop:
