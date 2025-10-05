@@ -6,6 +6,6 @@ from .options import RunOptions as RunOptions
 from .signal import Signal as Signal
 from .signal import SignalInterrupt as SignalInterrupt
 from .signal import SignalWriter as SignalWriter
-from .stream import EndOfStream as EndOfStream
 from .stream import Stream as Stream
+from .stream import StreamClosed as StreamClosed
 from .stream import StreamWriter as StreamWriter

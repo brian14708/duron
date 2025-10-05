@@ -6,7 +6,7 @@ from collections.abc import AsyncGenerator
 
 import pytest
 
-from duron import EndOfStream, RunOptions, StreamWriter, effect, fn
+from duron import RunOptions, StreamClosed, StreamWriter, effect, fn
 from duron.context import Context
 from duron.contrib.storage import MemoryLogStorage
 
@@ -138,7 +138,7 @@ async def test_stream_peek():
                     async for _, u in s.next_nowait(ctx):
                         data.append(u)
                     await asyncio.sleep(0.003)
-                except EndOfStream:
+                except StreamClosed:
                     break
                 finally:
                     if data:

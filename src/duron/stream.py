@@ -102,7 +102,7 @@ class Stream(Generic[_T], ABC):
             while True:
                 _, val = await self._next()
                 yield val
-        except EndOfStream as e:
+        except StreamClosed as e:
             if e.reason:
                 raise e.reason from None
         finally:
@@ -184,7 +184,7 @@ async def create_stream(
 
 
 @final
-class EndOfStream(Exception):
+class StreamClosed(Exception):
     __slots__ = ("offset",)
 
     def __init__(
@@ -209,7 +209,7 @@ class _ObserverStream(Generic[_T], Stream[_T]):
         super().__init__()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._event: asyncio.Event | None = None
-        self._buffer: deque[tuple[int, _T | EndOfStream]] = deque()
+        self._buffer: deque[tuple[int, _T | StreamClosed]] = deque()
 
     @override
     async def _start(self) -> None:
@@ -226,7 +226,7 @@ class _ObserverStream(Generic[_T], Stream[_T]):
             _ = await self._event.wait()
 
         t, item = self._buffer.popleft()
-        if isinstance(item, EndOfStream):
+        if isinstance(item, StreamClosed):
             raise item
         return t, item
 
@@ -235,7 +235,7 @@ class _ObserverStream(Generic[_T], Stream[_T]):
     def _next_nowait(self, offset: int) -> tuple[int, _T]:
         while self._buffer and self._buffer[0][0] <= offset:
             t, item = self._buffer.popleft()
-            if isinstance(item, EndOfStream):
+            if isinstance(item, StreamClosed):
                 raise item
             return t, item
         raise EmptyStream
@@ -250,7 +250,7 @@ class _ObserverStream(Generic[_T], Stream[_T]):
             _ = self._loop.call_soon(self._event.set)
 
     def _send_close(self, offset: int, exc: BaseException | None) -> None:
-        self._buffer.append((offset, EndOfStream(offset=offset, reason=exc)))
+        self._buffer.append((offset, StreamClosed(offset=offset, reason=exc)))
         if self._loop and self._event:
             _ = self._loop.call_soon(self._event.set)
 
@@ -301,7 +301,7 @@ class _Broadcast(Generic[_T]):
                     o, v = await parent.next()
                     for s in self._streams:
                         s._send(o, v)  # pyright: ignore[reportPrivateUsage]
-            except EndOfStream as e:
+            except StreamClosed as e:
                 for s in self._streams:
                     s._send_close(e.offset, e.reason)  # pyright: ignore[reportPrivateUsage]
 
