@@ -87,7 +87,7 @@ def fn(
     ]
 ):
     """
-    Mark a function as durable, meaning its execution can be recorded and
+    Make a function as durable, meaning its execution can be recorded and
     replayed.
     """
 
@@ -95,22 +95,6 @@ def fn(
         fn: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]],
     ) -> Fn[_P, _T_co]:
         return Fn(codec=codec or config.codec, fn=fn)
-
-    if _fn is not None:
-        return decorate(_fn)
-    else:
-        return decorate
-
-
-@overload
-def effect(_fn: Callable[_P, _T_co]) -> Callable[_P, _T_co]: ...
-@overload
-def effect() -> Callable[[Callable[_P, _T_co]], Callable[_P, _T_co]]: ...
-def effect(
-    _fn: Callable[_P, _T_co] | None = None,
-) -> Callable[_P, _T_co] | Callable[[Callable[_P, _T_co]], Callable[_P, _T_co]]:
-    def decorate(fn: Callable[_P, _T_co]) -> Callable[_P, _T_co]:
-        return fn
 
     if _fn is not None:
         return decorate(_fn)

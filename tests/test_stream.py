@@ -6,8 +6,9 @@ from collections.abc import AsyncGenerator
 
 import pytest
 
-from duron import Context, RunOptions, StreamClosed, StreamWriter, effect, fn
+from duron import Context, RunOptions, StreamClosed, StreamWriter, fn
 from duron.contrib.storage import MemoryLogStorage
+from tests.utils import external
 
 
 @pytest.mark.asyncio
@@ -45,9 +46,9 @@ async def test_stream():
 async def test_stream_host():
     @fn()
     async def activity(ctx: Context) -> None:
-        stream, handle = await ctx.create_stream(int, effect=True)
+        stream, handle = await ctx.create_stream(int, external=True)
 
-        @effect
+        @external
         async def task(stream: StreamWriter[int]):
             for i in range(50):
                 await stream.send(i)
@@ -69,7 +70,7 @@ async def test_run():
 
     @fn()
     async def activity(ctx: Context) -> None:
-        @effect
+        @external
         async def f(s: str) -> AsyncGenerator[str, str]:
             while len(s) < 100:
                 if len(s) == sleep_idx:
@@ -120,7 +121,7 @@ async def test_stream_map():
 async def test_stream_peek():
     @fn()
     async def activity(ctx: Context) -> list[int]:
-        stream, write = await ctx.create_stream(int, effect=True)
+        stream, write = await ctx.create_stream(int, external=True)
 
         async def f():
             for i in range(30):

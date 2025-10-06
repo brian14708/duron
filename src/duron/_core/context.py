@@ -151,12 +151,14 @@ class Context:
         self,
         dtype: type[_T],
         *,
-        effect: bool = False,
+        external: bool = False,
         metadata: dict[str, JSONValue] | None = None,
     ) -> tuple[Stream[_T], StreamWriter[_T]]:
         if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
-        return await create_stream(self._loop, dtype, effect=effect, metadata=metadata)
+        return await create_stream(
+            self._loop, dtype, external=external, metadata=metadata
+        )
 
     async def create_signal(
         self,

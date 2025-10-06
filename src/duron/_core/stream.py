@@ -164,7 +164,7 @@ async def create_stream(
     loop: EventLoop,
     dtype: type[_T],
     *,
-    effect: bool = False,
+    external: bool = False,
     metadata: dict[str, JSONValue] | None = None,
 ) -> tuple[Stream[_T], StreamWriter[_T]]:
     assert asyncio.get_running_loop() is loop
@@ -177,7 +177,7 @@ async def create_stream(
             metadata=metadata,
         ),
     )
-    if effect:
+    if external:
         return (s, _EffectWriter(sid, loop))
     else:
         return (s, _Writer(sid, loop))
