@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import os
 import time
 from hashlib import blake2b
 from typing import (
@@ -13,6 +14,7 @@ from typing import (
     TypeVar,
     cast,
     final,
+    overload,
 )
 
 from typing_extensions import TypedDict, assert_never
@@ -26,6 +28,7 @@ from duron._core.ops import (
     StreamCreate,
     StreamEmit,
 )
+from duron._core.stream import ObserverStream
 from duron._loop import EventLoop, create_loop
 from duron.codec import Codec, JSONValue
 from duron.log import is_entry
@@ -38,6 +41,7 @@ if TYPE_CHECKING:
         Op,
         StreamObserver,
     )
+    from duron._core.stream import Stream
     from duron._loop import OpFuture, WaitSet
     from duron.codec import Codec, FunctionType
     from duron.log import (
@@ -61,7 +65,7 @@ _CURRENT_VERSION = 0
 
 @final
 class Job(Generic[_P, _T]):
-    __slots__ = ("_job_fn", "_log", "_run")
+    __slots__ = ("_job_fn", "_log", "_run", "_watchers")
 
     def __init__(
         self,
@@ -71,6 +75,12 @@ class Job(Generic[_P, _T]):
         self._job_fn = job_fn
         self._log = log
         self._run: _JobRun | None = None
+        self._watchers: list[
+            tuple[
+                Callable[[dict[str, JSONValue]], bool],
+                StreamObserver[object],
+            ]
+        ] = []
 
     async def start(self, *args: _P.args, **kwargs: _P.kwargs) -> None:
         async def get_init() -> JobInitParams:
@@ -87,6 +97,7 @@ class Job(Generic[_P, _T]):
             job_prelude,
             self._log,
             codec,
+            watchers=self._watchers,
         )
         await self._run.resume()
 
@@ -100,6 +111,7 @@ class Job(Generic[_P, _T]):
             job,
             self._log,
             self._job_fn.codec,
+            watchers=self._watchers,
         )
         await self._run.resume()
 
@@ -113,6 +125,20 @@ class Job(Generic[_P, _T]):
             await self._run.close()
             self._run = None
 
+    @overload
+    async def complete_promise(
+        self,
+        id: str,
+        *,
+        result: object,
+    ) -> None: ...
+    @overload
+    async def complete_promise(
+        self,
+        id: str,
+        *,
+        error: BaseException,
+    ) -> None: ...
     async def complete_promise(
         self,
         id: str,
@@ -122,7 +148,46 @@ class Job(Generic[_P, _T]):
     ) -> None:
         if self._run is None:
             raise RuntimeError("Job not started")
-        await self._run.complete_external_promise(id, result=result, error=error)
+        if error is not None:
+            await self._run.complete_external_promise(id, error=error)
+        elif result is not None:
+            await self._run.complete_external_promise(id, result=result)
+        else:
+            raise ValueError("Either result or error must be provided")
+
+    async def send_stream(
+        self,
+        predicate: Callable[[dict[str, JSONValue]], bool],
+        value: object,
+    ) -> int:
+        if self._run is None:
+            raise RuntimeError("Job not started")
+        return await self._run.send_stream(predicate, value)
+
+    async def close_stream(
+        self,
+        predicate: Callable[[dict[str, JSONValue]], bool],
+        error: BaseException | None = None,
+    ) -> int:
+        if self._run is None:
+            raise RuntimeError("Job not started")
+        return await self._run.close_stream(predicate, error)
+
+    def watch_stream(
+        self,
+        predicate: Callable[[dict[str, JSONValue]], bool],
+    ) -> Stream[_T]:
+        if self._run is not None:
+            raise RuntimeError(
+                "create_watcher() must be called before start() or resume()"
+            )
+
+        observer: ObserverStream[_T] = ObserverStream()
+        self._watchers.append((
+            predicate,
+            cast("StreamObserver[object]", cast("StreamObserver[_T]", observer)),
+        ))
+        return observer
 
 
 class JobInitParams(TypedDict):
@@ -174,6 +239,7 @@ class _JobRun:
         "_now",
         "_tasks",
         "_streams",
+        "_watchers",
     )
 
     def __init__(
@@ -181,6 +247,10 @@ class _JobRun:
         task: Coroutine[Any, Any, object],
         log: LogStorage,
         codec: Codec,
+        watchers: list[
+            tuple[Callable[[dict[str, JSONValue]], bool], StreamObserver[object]]
+        ]
+        | None = None,
     ) -> None:
         self._loop = create_loop(asyncio.get_event_loop(), b"")
         self._task = self._loop.create_task(task)
@@ -197,10 +267,12 @@ class _JobRun:
         self._streams: dict[
             str,
             tuple[
-                StreamObserver[object] | None,
+                list[StreamObserver[object]],
                 type | None,
+                dict[str, JSONValue] | None,
             ],
         ] = {}
+        self._watchers = watchers or []
 
     async def close(self) -> None:
         for task, _ in self._tasks.values():
@@ -319,8 +391,8 @@ class _JobRun:
             if e["stream_id"] not in self._streams:
                 self._loop.post_completion(id, exception=ValueError("Stream not found"))
             else:
-                ob, tv = self._streams[e["stream_id"]]
-                if ob:
+                obs, tv, _ = self._streams[e["stream_id"]]
+                for ob in obs:
                     ob.on_next(
                         offset,
                         self._codec.decode_json(e["value"], tv),
@@ -332,9 +404,9 @@ class _JobRun:
             if e["stream_id"] not in self._streams:
                 self._loop.post_completion(id, exception=ValueError("Stream not found"))
             else:
-                ob, _ = self._streams[e["stream_id"]]
+                obs, _, _ = self._streams[e["stream_id"]]
                 self._loop.post_completion(id, result=None)
-                if ob:
+                for ob in obs:
                     if "error" in e:
                         ob.on_close(offset, _decode_error(e["error"]))
                     else:
@@ -407,14 +479,21 @@ class _JobRun:
                     self._pending_task[sid] = (cb, op.return_type)
 
             case StreamCreate():
-                if op.observer:
-                    o = op.observer
-                    self._streams[_encode_id(id)] = (o, op.dtype)
-                else:
-                    self._streams[_encode_id(id)] = (None, None)
+                stream_id = _encode_id(id)
+
+                # Determine which observer to use
+                ob = [op.observer] if op.observer else []
+
+                # Check if any external watchers match
+                for predicate, watcher in self._watchers:
+                    if predicate(op.metadata or {}):
+                        ob.append(watcher)
+
+                self._streams[stream_id] = (ob, op.dtype, op.metadata)
+
                 stream_create_entry: StreamCreateEntry = {
                     "ts": self.now(),
-                    "id": _encode_id(id),
+                    "id": stream_id,
                     "type": "stream/create",
                 }
                 if op.metadata:
@@ -471,6 +550,7 @@ class _JobRun:
     async def complete_external_promise(
         self,
         id: str,
+        *,
         result: object | None = None,
         error: BaseException | None = None,
     ) -> None:
@@ -489,6 +569,60 @@ class _JobRun:
         else:
             raise ValueError("Either result or error must be provided")
         await self.enqueue_log(entry)
+
+    async def send_stream(
+        self,
+        predicate: Callable[[dict[str, JSONValue]], bool],
+        value: object,
+    ) -> int:
+        cnt = 0
+        ts = self.now()
+        for stream_id, (_, _, md) in self._streams.items():
+            if predicate(md or {}):
+                entry: StreamEmitEntry = {
+                    "ts": ts,
+                    "id": _encode_id(os.urandom(12)),
+                    "type": "stream/emit",
+                    "stream_id": stream_id,
+                    "value": self._codec.encode_json(value),
+                }
+                await self.enqueue_log(entry)
+                cnt += 1
+        return cnt
+
+    async def close_stream(
+        self,
+        predicate: Callable[[dict[str, JSONValue]], bool],
+        error: BaseException | None = None,
+    ) -> int:
+        cnt = 0
+        ts = self.now()
+        # Collect matching stream IDs first to avoid modifying dict during iteration
+        matching_streams = [
+            stream_id
+            for stream_id, (_, _, md) in self._streams.items()
+            if predicate(md or {})
+        ]
+
+        for stream_id in matching_streams:
+            if error:
+                entry: StreamCompleteEntry = {
+                    "ts": ts,
+                    "id": _encode_id(os.urandom(12)),
+                    "type": "stream/complete",
+                    "stream_id": stream_id,
+                    "error": _encode_error(error),
+                }
+            else:
+                entry = {
+                    "ts": ts,
+                    "id": _encode_id(os.urandom(12)),
+                    "type": "stream/complete",
+                    "stream_id": stream_id,
+                }
+            await self.enqueue_log(entry)
+            cnt += 1
+        return cnt
 
 
 def _encode_id(id: bytes, flag: int = 0) -> str:

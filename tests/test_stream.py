@@ -80,7 +80,7 @@ async def test_run():
                 all_states.append(s)
             yield ""
 
-        async with ctx.stream("", lambda s, p: s + p, f) as stream:
+        async with ctx.run_stream("", lambda s, p: s + p, f) as stream:
             await stream.discard()
 
     log = MemoryLogStorage()
@@ -106,7 +106,7 @@ async def test_stream_map():
                 chunk = chr(ord("a") + random.randint(0, 25))
                 s = yield chunk
 
-        async with ctx.stream("", lambda s, p: s + p, f) as stream:
+        async with ctx.run_stream("", lambda s, p: s + p, f) as stream:
             async for s in stream.map(lambda s: s.upper()):
                 assert s == s.upper()
             return
@@ -166,7 +166,7 @@ async def test_stream_cross_loop():
                 chunk = chr(ord("a") + random.randint(0, 25))
                 s = yield chunk
 
-        async with ctx.stream("", lambda s, p: s + p, f) as stream:
+        async with ctx.run_stream("", lambda s, p: s + p, f) as stream:
             stream = stream.map(lambda x: x * 2)
 
             async def g() -> list[str]:

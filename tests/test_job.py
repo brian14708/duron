@@ -194,3 +194,64 @@ async def test_external_promise():
         bg = asyncio.create_task(do())
         assert await t.wait() == 9
         await bg
+
+
+@pytest.mark.asyncio
+async def test_external_stream():
+    @fn
+    async def activity(ctx: Context) -> int:
+        stream, _ = await ctx.create_stream(int, metadata={"name": "test"})
+        t = 0
+        async for value in stream:
+            t += value
+            if value == -1:
+                return t
+        return -1
+
+    log = MemoryLogStorage()
+    async with activity.create_job(log) as t:
+        await t.start()
+
+        async def do():
+            while True:
+                n = await t.send_stream(lambda d: d.get("name") == "test", 0)
+                if n == 0:
+                    await asyncio.sleep(0.1)
+                else:
+                    break
+            for i in range(10):
+                n = await t.send_stream(lambda d: d.get("name") == "test", i)
+            n = await t.send_stream(lambda d: d.get("name") == "test", -1)
+
+        bg = asyncio.create_task(do())
+        assert await t.wait() == 44
+        await bg
+
+
+@pytest.mark.asyncio
+async def test_watch_stream():
+    @fn
+    async def activity(ctx: Context) -> int:
+        _, sink = await ctx.create_stream(int, metadata={"name": "output"})
+        for i in range(10):
+            await sink.send(i)
+        await sink.close()
+        return 42
+
+    log = MemoryLogStorage()
+
+    async with activity.create_job(log) as job:
+        output_stream = job.watch_stream(lambda d: d.get("name") == "output")
+
+        await job.start()
+
+        async def bg() -> list[int]:
+            values: list[int] = []
+            async for value in output_stream:
+                values.append(value)
+            return values
+
+        b = asyncio.create_task(bg())
+        result = await job.wait()
+        assert result == 42
+        assert await b == list(range(10))

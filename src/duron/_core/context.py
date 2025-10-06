@@ -118,7 +118,7 @@ class Context:
         )
         return cast("_T", await op)
 
-    def stream(
+    def run_stream(
         self,
         initial: _T,
         reducer: Callable[[_T, _S], _T],

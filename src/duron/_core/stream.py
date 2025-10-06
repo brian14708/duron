@@ -171,7 +171,7 @@ async def create_stream(
     metadata: dict[str, JSONValue] | None = None,
 ) -> tuple[Stream[_T], StreamWriter[_T]]:
     assert asyncio.get_running_loop() is loop
-    s: _ObserverStream[_T] = _ObserverStream()
+    s: ObserverStream[_T] = ObserverStream()
     sid = await create_op(
         loop,
         StreamCreate(
@@ -207,7 +207,7 @@ class EmptyStream(Exception):
     __slots__ = ()
 
 
-class _ObserverStream(Generic[_T], Stream[_T]):
+class ObserverStream(Generic[_T], Stream[_T]):
     def __init__(self) -> None:
         super().__init__()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -295,7 +295,7 @@ class _Broadcast(Generic[_T]):
     def __init__(self, parent: Stream[_T], n: int) -> None:
         self._parent = parent
         self._task: asyncio.Task[None] | None = None
-        self._streams: list[_ObserverStream[_T]] = [_ObserverStream() for _ in range(n)]
+        self._streams: list[ObserverStream[_T]] = [ObserverStream() for _ in range(n)]
 
     async def _pump(self):
         async with self._parent as parent:
@@ -388,7 +388,7 @@ class _ResumableGuard(Generic[_U, _T]):
 
 
 @final
-class _Resumable(Generic[_U, _T], _ObserverStream[_U]):
+class _Resumable(Generic[_U, _T], ObserverStream[_U]):
     def __init__(
         self,
         initial: _T,
