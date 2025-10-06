@@ -119,8 +119,12 @@ async def test_cancel():
             _ = await t.wait()
         except Exception as e:
             assert "Timeout" in repr(e)
-
-    assert len(await log.entries()) == 6
+    async with activity.create_job(log) as t:
+        await t.resume()
+        try:
+            _ = await t.wait()
+        except Exception as e:
+            assert "Timeout" in repr(e)
 
 
 @dataclass

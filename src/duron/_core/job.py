@@ -172,10 +172,8 @@ class _JobRun:
         "_pending_task",
         "_pending_ops",
         "_now",
-        "_offset",
         "_tasks",
         "_streams",
-        "_preflight_msg",
     )
 
     def __init__(
@@ -195,7 +193,6 @@ class _JobRun:
         ] = {}
         self._pending_ops: set[bytes] = set()
         self._now = 0
-        self._offset: int | None = None
         self._tasks: dict[str, tuple[asyncio.Future[None], type | None]] = {}
         self._streams: dict[
             str,
@@ -204,7 +201,6 @@ class _JobRun:
                 type | None,
             ],
         ] = {}
-        self._preflight_msg: set[str] = set()
 
     async def close(self) -> None:
         for task, _ in self._tasks.values():
@@ -227,7 +223,6 @@ class _JobRun:
     async def resume(self) -> None:
         recvd_msgs: set[str] = set()
         async for o, entry in self._log.stream(None, False):
-            self._offset = o
             ts = entry["ts"]
             self._now = max(self._now, ts)
             _ = await self._step()
@@ -247,7 +242,6 @@ class _JobRun:
             return self._task.result()
 
         self._running = await self._log.acquire_lease()
-        bg: asyncio.Task[None] | None = None
         try:
             for msg in self._pending_msg:
                 await self.enqueue_log(msg)
@@ -256,26 +250,12 @@ class _JobRun:
                 self._tasks[key] = (asyncio.create_task(task_fn()), return_type)
             self._pending_task.clear()
 
-            bg = asyncio.create_task(self._follow_log())
-            await self._step_loop()
+            while waitset := await self._step():
+                await waitset.block(self.now())
             return self._task.result()
         finally:
-            if bg:
-                _ = bg.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await bg
             await self._log.release_lease(self._running)
             self._running = None
-
-    async def _follow_log(self) -> None:
-        async for o, entry in self._log.stream(self._offset, True):
-            self._now = max(self._now, entry["ts"])
-            if is_entry(entry):
-                await self.handle_message(o, entry)
-
-    async def _step_loop(self):
-        while waitset := await self._step():
-            await waitset.block(self.now())
 
     async def _step(self) -> WaitSet | None:
         while True:
@@ -291,16 +271,10 @@ class _JobRun:
                     await self.enqueue_op(sid, s)
 
     async def handle_message(
-        self, offset: int, e: Entry, preflight: bool = False
+        self,
+        offset: int,
+        e: Entry,
     ) -> None:
-        if not preflight and e["id"] in self._preflight_msg:
-            self._preflight_msg.discard(e["id"])
-            return
-        if preflight:
-            if e["type"] in ("barrier",):
-                return
-            self._preflight_msg.add(e["id"])
-
         if e["type"] == "promise/complete":
             pending_info = self._pending_task.pop(e["promise_id"], None)
             task_info = self._tasks.get(e["promise_id"], None)
@@ -380,7 +354,7 @@ class _JobRun:
             offset = await self._log.append(self._running, entry)
             if flush:
                 await self._log.flush(self._running)
-            await self.handle_message(offset, entry, preflight=True)
+            await self.handle_message(offset, entry)
 
     async def enqueue_op(self, id: bytes, fut: OpFuture[object]) -> None:
         op = cast("Op", fut.params)
@@ -480,7 +454,7 @@ class _JobRun:
                     "id": _encode_id(id),
                     "type": "barrier",
                 }
-                await self.enqueue_log(barrier_entry)
+                await self.enqueue_log(barrier_entry, flush=True)
             case ExternalPromiseCreate():
                 promise_create_entry = {
                     "ts": self.now(),
