@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Concatenate, Generic, Protocol, TypeVar, cast
 from typing_extensions import final, override
 
 from duron._core.ops import FnCall, StreamClose, StreamCreate, StreamEmit, create_op
+from duron._loop import wrap_future
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Sequence
@@ -43,14 +44,12 @@ class _Writer(Generic[_In]):
         self._loop = loop
 
     async def send(self, value: _In, /) -> None:
-        assert asyncio.get_running_loop() is self._loop
         await create_op(
             self._loop,
             StreamEmit(stream_id=self._stream_id, value=value),
         )
 
     async def close(self, error: BaseException | None = None, /) -> None:
-        assert asyncio.get_running_loop() is self._loop
         await create_op(
             self._loop,
             StreamClose(stream_id=self._stream_id, exception=error),
@@ -58,7 +57,7 @@ class _Writer(Generic[_In]):
 
 
 @final
-class _EffectWriter(Generic[_In]):
+class _ExternalWriter(Generic[_In]):
     __slots__ = ("_stream_id", "_loop")
 
     def __init__(self, id: str, loop: EventLoop) -> None:
@@ -66,15 +65,19 @@ class _EffectWriter(Generic[_In]):
         self._loop = loop
 
     async def send(self, value: _In, /) -> None:
-        await create_op(
-            self._loop,
-            StreamEmit(stream_id=self._stream_id, value=value),
+        await wrap_future(
+            create_op(
+                self._loop,
+                StreamEmit(stream_id=self._stream_id, value=value),
+            )
         )
 
     async def close(self, error: BaseException | None = None, /) -> None:
-        await create_op(
-            self._loop,
-            StreamClose(stream_id=self._stream_id, exception=error),
+        await wrap_future(
+            create_op(
+                self._loop,
+                StreamClose(stream_id=self._stream_id, exception=error),
+            )
         )
 
 
@@ -178,7 +181,7 @@ async def create_stream(
         ),
     )
     if external:
-        return (s, _EffectWriter(sid, loop))
+        return (s, _ExternalWriter(sid, loop))
     else:
         return (s, _Writer(sid, loop))
 
@@ -360,7 +363,7 @@ class _ResumableGuard(Generic[_U, _T]):
                 observer=self._stream,
             ),
         )
-        sink: StreamWriter[_T] = _EffectWriter(sid, self._loop)
+        sink: StreamWriter[_T] = _ExternalWriter(sid, self._loop)
         self._task = create_op(
             self._loop,
             FnCall(

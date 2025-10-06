@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 from typing_extensions import final
 
 from duron._core.ops import Barrier, StreamClose, StreamCreate, StreamEmit, create_op
+from duron._loop import wrap_future
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -34,15 +35,19 @@ class SignalWriter(Generic[_In]):
         self._loop = loop
 
     async def trigger(self, value: _In, /) -> None:
-        await create_op(
-            self._loop,
-            StreamEmit(stream_id=self._stream_id, value=value),
+        await wrap_future(
+            create_op(
+                self._loop,
+                StreamEmit(stream_id=self._stream_id, value=value),
+            )
         )
 
     async def close(self, /) -> None:
-        await create_op(
-            self._loop,
-            StreamClose(stream_id=self._stream_id, exception=None),
+        await wrap_future(
+            create_op(
+                self._loop,
+                StreamClose(stream_id=self._stream_id, exception=None),
+            )
         )
 
 

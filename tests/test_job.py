@@ -165,3 +165,28 @@ async def test_random():
         b = await t.wait()
 
     assert a == b
+
+
+@pytest.mark.asyncio
+async def test_external_promise():
+    @fn
+    async def activity(ctx: Context) -> int:
+        a, b = await ctx.create_promise(int)
+        assert a == "9mcIBsvU2ej9uDsV"
+        return await b
+
+    log = MemoryLogStorage()
+    async with activity.create_job(log) as t:
+        await t.start()
+
+        async def do():
+            while True:
+                try:
+                    await t.complete_promise("9mcIBsvU2ej9uDsV", result=9)
+                    break
+                except Exception:
+                    await asyncio.sleep(0.1)
+
+        bg = asyncio.create_task(do())
+        assert await t.wait() == 9
+        await bg

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import AsyncGenerator
 from contextvars import ContextVar
 from random import Random
@@ -17,7 +18,7 @@ from typing import (
     overload,
 )
 
-from duron._core.ops import Barrier, FnCall, create_op
+from duron._core.ops import Barrier, ExternalPromiseCreate, FnCall, create_op
 from duron._core.signal import create_signal
 from duron._core.stream import create_stream, resumable
 
@@ -169,6 +170,19 @@ class Context:
         if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
         return await create_signal(self._loop, dtype, metadata=metadata)
+
+    async def create_promise(
+        self,
+        dtype: type[_T],
+        *,
+        metadata: dict[str, JSONValue] | None = None,
+    ) -> tuple[str, asyncio.Future[_T]]:
+        if asyncio.get_running_loop() is not self._loop:
+            raise RuntimeError("Context time can only be used in the context loop")
+        fut = create_op(
+            self._loop, ExternalPromiseCreate(metadata=metadata, return_type=dtype)
+        )
+        return (base64.b64encode(fut.id).decode(), cast("asyncio.Future[_T]", fut))
 
     async def barrier(self) -> int:
         if asyncio.get_running_loop() is not self._loop:

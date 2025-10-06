@@ -17,11 +17,14 @@ from asyncio import (
 from collections import deque
 from dataclasses import dataclass
 from hashlib import blake2b
-from typing import TYPE_CHECKING, cast, overload
+from typing import TYPE_CHECKING, Generic, cast, overload
 
 from typing_extensions import (
+    TypeVar,
     override,
 )
+
+_T = TypeVar("_T")
 
 if TYPE_CHECKING:
     import sys
@@ -31,12 +34,10 @@ if TYPE_CHECKING:
 
     from typing_extensions import (
         Any,
-        TypeVar,
         TypeVarTuple,
         Unpack,
     )
 
-    _T = TypeVar("_T")
     _Ts = TypeVarTuple("_Ts")
 
     if sys.version_info >= (3, 12):
@@ -51,7 +52,7 @@ logger = logging.getLogger(__name__)
 _task_ctx: contextvars.ContextVar[_TaskCtx] = contextvars.ContextVar("duron_task")
 
 
-class OpFuture(asyncio.Future[object]):
+class OpFuture(Generic[_T], asyncio.Future[_T]):
     __slots__: tuple[str, ...] = ("id", "params")
 
     id: bytes
@@ -65,7 +66,7 @@ class OpFuture(asyncio.Future[object]):
 
 @dataclass(slots=True)
 class WaitSet:
-    ops: list[OpFuture]
+    ops: list[OpFuture[object]]
     timer: float | None
     event: asyncio.Event
 
@@ -106,7 +107,7 @@ class EventLoop(AbstractEventLoop):
         self._exc_handler: (
             Callable[[AbstractEventLoop, dict[str, object]], object] | None
         ) = None
-        self._ops: dict[bytes, OpFuture] = {}
+        self._ops: dict[bytes, OpFuture[object]] = {}
         self._ctx: _TaskCtx = _TaskCtx(parent_id=seed)
         self._now_us: int = 0
         self._closed: bool = False
@@ -252,24 +253,15 @@ class EventLoop(AbstractEventLoop):
         finally:
             events._set_running_loop(old)
 
-    def create_op(
-        self,
-        params: object,
-    ) -> asyncio.Future[object]:
-        loop = asyncio.get_running_loop()
-        if loop is self._host:
+    def create_op(self, params: object, *, external: bool = False) -> OpFuture[object]:
+        if external:
             id = os.urandom(12)
             self._event.set()
-            op_fut = OpFuture(id, params, self)
-            self._ops[id] = op_fut
-            return wrap_future(op_fut, loop=self._host)
-        elif loop is self:
-            id = self.generate_op_id()
-            op_fut = OpFuture(id, params, self)
-            self._ops[id] = op_fut
-            return op_fut
         else:
-            raise AssertionError("unreachable")
+            id = self.generate_op_id()
+        op_fut: OpFuture[object] = OpFuture(id, params, self)
+        self._ops[id] = op_fut
+        return op_fut
 
     @overload
     def post_completion(

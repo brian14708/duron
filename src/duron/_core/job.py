@@ -20,6 +20,7 @@ from typing_extensions import TypedDict, assert_never
 from duron._core.context import Context
 from duron._core.ops import (
     Barrier,
+    ExternalPromiseCreate,
     FnCall,
     StreamClose,
     StreamCreate,
@@ -111,6 +112,17 @@ class Job(Generic[_P, _T]):
         if self._run:
             await self._run.close()
             self._run = None
+
+    async def complete_promise(
+        self,
+        id: str,
+        *,
+        result: object | None = None,
+        error: BaseException | None = None,
+    ) -> None:
+        if self._run is None:
+            raise RuntimeError("Job not started")
+        await self._run.complete_external_promise(id, result=result, error=error)
 
 
 class JobInitParams(TypedDict):
@@ -370,7 +382,7 @@ class _JobRun:
                 await self._log.flush(self._running)
             await self.handle_message(offset, entry, preflight=True)
 
-    async def enqueue_op(self, id: bytes, fut: OpFuture) -> None:
+    async def enqueue_op(self, id: bytes, fut: OpFuture[object]) -> None:
         op = cast("Op", fut.params)
         match op:
             case FnCall():
@@ -402,7 +414,7 @@ class _JobRun:
 
                     await self.enqueue_log(entry)
 
-                def done(f: OpFuture) -> None:
+                def done(f: OpFuture[object]) -> None:
                     if f.cancelled():
                         sid = _encode_id(f.id)
                         if self._pending_task.get(sid, None):
@@ -469,8 +481,40 @@ class _JobRun:
                     "type": "barrier",
                 }
                 await self.enqueue_log(barrier_entry)
+            case ExternalPromiseCreate():
+                promise_create_entry = {
+                    "ts": self.now(),
+                    "id": _encode_id(id),
+                    "type": "promise/create",
+                }
+                if op.metadata:
+                    promise_create_entry["metadata"] = op.metadata
+                self._tasks[_encode_id(id)] = (asyncio.Future(), op.return_type)
+                await self.enqueue_log(promise_create_entry)
             case _:
                 assert_never(op)
+
+    async def complete_external_promise(
+        self,
+        id: str,
+        result: object | None = None,
+        error: BaseException | None = None,
+    ) -> None:
+        if id not in self._tasks:
+            raise ValueError("Promise not found")
+        entry: PromiseCompleteEntry = {
+            "ts": self.now(),
+            "id": _encode_id(_decode_id(id), 1),
+            "type": "promise/complete",
+            "promise_id": id,
+        }
+        if error is not None:
+            entry["error"] = _encode_error(error)
+        elif result is not None:
+            entry["result"] = self._codec.encode_json(result)
+        else:
+            raise ValueError("Either result or error must be provided")
+        await self.enqueue_log(entry)
 
 
 def _encode_id(id: bytes, flag: int = 0) -> str:
