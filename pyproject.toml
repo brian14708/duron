@@ -32,6 +32,10 @@ docs = [
     "mkdocs-mermaid2-plugin>=1.2.1",
     "mkdocstrings[python]>=0.30.0",
 ]
+examples = [
+    "pydantic>=2.11.9",
+    "openai>=2.2.0",
+]
 
 [tool.ruff.lint]
 select = [
@@ -67,6 +71,7 @@ disable_error_code = [
 [tool.pyright]
 venv = "."
 venvPath = ".venv"
+enableExperimentalFeatures = true
 reportAny = false
 reportExplicitAny = false
 reportUnreachable = false

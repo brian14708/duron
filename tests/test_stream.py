@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import random
-from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
 
 import pytest
 
 from duron import Context, RunOptions, StreamClosed, StreamWriter, fn
+from duron._core.fn import checkpoint
 from duron.contrib.storage import MemoryLogStorage
 from tests.utils import external
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 
 @pytest.mark.asyncio
@@ -70,7 +74,7 @@ async def test_run():
 
     @fn()
     async def activity(ctx: Context) -> None:
-        @external
+        @checkpoint(action_type=str, initial=lambda: "", reducer=lambda s, p: s + p)
         async def f(s: str) -> AsyncGenerator[str, str]:
             while len(s) < 100:
                 if len(s) == sleep_idx:
@@ -80,8 +84,7 @@ async def test_run():
                 all_states.append(s)
             yield ""
 
-        async with ctx.run_stream("", lambda s, p: s + p, f) as stream:
-            await stream.discard()
+        _ = await ctx.run(f)
 
     log = MemoryLogStorage()
     while True:
@@ -101,12 +104,13 @@ async def test_run():
 async def test_stream_map():
     @fn()
     async def activity(ctx: Context) -> None:
+        @checkpoint(action_type=str, initial=lambda: "", reducer=lambda s, p: s + p)
         async def f(s: str) -> AsyncGenerator[str, str]:
             while len(s) < 100:
                 chunk = chr(ord("a") + random.randint(0, 25))
                 s = yield chunk
 
-        async with ctx.run_stream("", lambda s, p: s + p, f) as stream:
+        async with ctx.run_stream(f) as stream:
             async for s in stream.map(lambda s: s.upper()):
                 assert s == s.upper()
             return
@@ -161,17 +165,18 @@ async def test_stream_peek():
 async def test_stream_cross_loop():
     @fn()
     async def activity(ctx: Context) -> list[str]:
+        @checkpoint(action_type=str, initial=lambda: "", reducer=lambda s, p: s + p)
         async def f(s: str) -> AsyncGenerator[str, str]:
             while len(s) < 5:
                 chunk = chr(ord("a") + random.randint(0, 25))
                 s = yield chunk
 
-        async with ctx.run_stream("", lambda s, p: s + p, f) as stream:
-            stream = stream.map(lambda x: x * 2)
+        async with ctx.run_stream(f) as stream:
+            s = stream.map(lambda x: x * 2)
 
             async def g() -> list[str]:
                 result: list[str] = []
-                async for x in stream:
+                async for x in s:
                     result.append(x)
                 return result
 

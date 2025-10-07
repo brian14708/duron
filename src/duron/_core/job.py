@@ -19,7 +19,6 @@ from typing import (
 
 from typing_extensions import TypedDict, assert_never
 
-from duron._core.context import Context
 from duron._core.ops import (
     Barrier,
     ExternalPromiseCreate,
@@ -176,13 +175,13 @@ class Job(Generic[_P, _T]):
     def watch_stream(
         self,
         predicate: Callable[[dict[str, JSONValue]], bool],
-    ) -> Stream[_T]:
+    ) -> Stream[_T, None]:
         if self._run is not None:
             raise RuntimeError(
                 "create_watcher() must be called before start() or resume()"
             )
 
-        observer: ObserverStream[_T] = ObserverStream()
+        observer: ObserverStream[_T, None] = ObserverStream()
         self._watchers.append((
             predicate,
             cast("StreamObserver[object]", cast("StreamObserver[_T]", observer)),
@@ -203,6 +202,8 @@ async def _job_prelude(
 ) -> _T:
     loop = asyncio.get_running_loop()
     assert isinstance(loop, EventLoop)
+    from duron._core.context import Context
+
     with Context(job_fn, loop) as ctx:
         init_params = await ctx.run(init)
         if init_params["version"] != _CURRENT_VERSION:

@@ -26,7 +26,7 @@ def test(s: nox.Session) -> None:
 
 @nox.session(python=ALL_PYTHON)
 def type_check(s: nox.Session) -> None:
-    install_deps(s, ["type-checking"])
+    install_deps(s, ["type-checking", "examples"])
     _ = s.run("mypy", ".")
     _ = s.run("basedpyright", "--venvpath", s.virtualenv.location, ".")
 

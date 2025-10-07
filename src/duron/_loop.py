@@ -378,6 +378,26 @@ def create_loop(
     return EventLoop(parent_loop, seed)  # type: ignore[abstract]
 
 
+def _copy_future_state(source: asyncio.Future[_T], dest: asyncio.Future[_T]):
+    """Internal helper to copy state from another Future.
+
+    The other Future may be a concurrent.futures.Future.
+    """
+    assert source.done()
+    if dest.cancelled():
+        return
+    assert not dest.done()
+    if source.cancelled():
+        _ = dest.cancel()
+    else:
+        exception = source.exception()
+        if exception is not None:
+            dest.set_exception(exception)
+        else:
+            result = source.result()
+            dest.set_result(result)
+
+
 def wrap_future(
     future: asyncio.Future[_T], *, loop: asyncio.AbstractEventLoop | None = None
 ) -> asyncio.Future[_T]:
@@ -388,12 +408,7 @@ def wrap_future(
     dst_future: asyncio.Future[_T] = dst_loop.create_future()
 
     def done(f: asyncio.Future[_T]) -> None:
-        if f.cancelled():
-            _ = dst_loop.call_soon(dst_future.cancel)
-        elif e := f.exception():
-            _ = dst_loop.call_soon(dst_future.set_exception, e)
-        else:
-            _ = dst_loop.call_soon(dst_future.set_result, f.result())
+        _ = dst_loop.call_soon(_copy_future_state, f, dst_future)
 
     def dst_done(f: asyncio.Future[_T]) -> None:
         if f.cancelled() and not future.done():

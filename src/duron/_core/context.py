@@ -2,25 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from collections.abc import AsyncGenerator
 from contextvars import ContextVar
 from random import Random
 from typing import (
     TYPE_CHECKING,
     Any,
-    Concatenate,
     ParamSpec,
     TypeVar,
     cast,
     final,
-    get_args,
-    get_origin,
     overload,
 )
 
+from duron._core.fn import CheckpointFn
 from duron._core.ops import Barrier, ExternalPromiseCreate, FnCall, create_op
 from duron._core.signal import create_signal
-from duron._core.stream import create_stream, resumable
+from duron._core.stream import create_stream, run_stream
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -92,9 +89,18 @@ class Context:
         *args: _P.args,
         **kwargs: _P.kwargs,
     ) -> _T: ...
+    @overload
     async def run(
         self,
-        fn: Callable[_P, Coroutine[Any, Any, _T] | _T],
+        fn: CheckpointFn[_P, _T, Any],
+        options: RunOptions[_T] | None = ...,
+        /,
+        *args: _P.args,
+        **kwargs: _P.kwargs,
+    ) -> _T: ...
+    async def run(
+        self,
+        fn: Callable[_P, Coroutine[Any, Any, _T] | _T] | CheckpointFn[_P, _T, Any],
         options: RunOptions[_T] | None = None,
         /,
         *args: _P.args,
@@ -102,6 +108,13 @@ class Context:
     ) -> _T:
         if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
+
+        if isinstance(fn, CheckpointFn):
+            async with self.run_stream(fn, options, *args, **kwargs) as stream:
+                async for _ in stream:
+                    pass
+                return await stream
+
         return_type = (
             options and options.return_type
         ) or self._task.codec.inspect_function(fn).return_type
@@ -120,28 +133,21 @@ class Context:
 
     def run_stream(
         self,
-        initial: _T,
-        reducer: Callable[[_T, _S], _T],
-        fn: Callable[Concatenate[_T, _P], AsyncGenerator[_S, _T]],
+        fn: CheckpointFn[_P, _T, _S],
         options: RunOptions[_S] | None = None,
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
-    ) -> AsyncContextManager[Stream[_S]]:
+    ) -> AsyncContextManager[Stream[_S, _T]]:
+        _ = options
         if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
-        dtype: type | None = None
-        if options and options.return_type:
-            dtype = options.return_type
-        else:
-            return_type = self._task.codec.inspect_function(fn).return_type
-            if get_origin(return_type) is AsyncGenerator:
-                dtype, _ = get_args(return_type)
-        r = resumable(
+        dtype: type | None = fn.action_type
+        r = run_stream(
             self._loop,
             dtype,
-            initial,
-            reducer,
+            fn.initial(),
+            fn.reducer,
             fn,
             *args,
             **kwargs,
@@ -154,7 +160,7 @@ class Context:
         *,
         external: bool = False,
         metadata: dict[str, JSONValue] | None = None,
-    ) -> tuple[Stream[_T], StreamWriter[_T]]:
+    ) -> tuple[Stream[_T, None], StreamWriter[_T]]:
         if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
         return await create_stream(

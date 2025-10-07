@@ -16,7 +16,7 @@ from duron._core.config import config
 from duron._core.job import Job
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    from collections.abc import AsyncGenerator, Callable, Coroutine
     from contextlib import AbstractAsyncContextManager
     from types import TracebackType
 
@@ -25,6 +25,8 @@ if TYPE_CHECKING:
     from duron.log import LogStorage
 
 
+_T = TypeVar("_T")
+_S = TypeVar("_S")
 _T_co = TypeVar("_T_co", covariant=True)
 _P = ParamSpec("_P")
 
@@ -95,6 +97,90 @@ def fn(
         fn: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]],
     ) -> Fn[_P, _T_co]:
         return Fn(codec=codec or config.codec, fn=fn)
+
+    if _fn is not None:
+        return decorate(_fn)
+    else:
+        return decorate
+
+
+@dataclass(slots=True)
+class CheckpointFn(Generic[_P, _S, _T]):
+    fn: Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]]
+    initial: Callable[[], _S]
+    reducer: Callable[[_S, _T], _S]
+    action_type: type[_T] | None
+    state_type: type[_S] | None
+
+    def __call__(
+        self, state: _S, *args: _P.args, **kwargs: _P.kwargs
+    ) -> AsyncGenerator[_T, _S]:
+        return self.fn(state, *args, **kwargs)
+
+
+def checkpoint(
+    *,
+    initial: Callable[[], _S],
+    reducer: Callable[[_S, _T], _S],
+    action_type: type[_T] | None = None,
+    state_type: type[_S] | None = None,
+) -> Callable[
+    [Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]]],
+    CheckpointFn[_P, _S, _T],
+]:
+    def decorate(
+        fn: Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]],
+    ) -> CheckpointFn[_P, _S, _T]:
+        return CheckpointFn(
+            fn=fn,
+            initial=initial,
+            reducer=reducer,
+            action_type=action_type,
+            state_type=state_type,
+        )
+
+    return decorate
+
+
+@dataclass(slots=True)
+class EffectFn(Generic[_P, _T_co]):
+    fn: Callable[_P, _T_co]
+    return_type: type[_T_co] | None = None
+
+    def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> _T_co:
+        return self.fn(*args, **kwargs)
+
+
+@overload
+def effect(
+    _fn: Callable[_P, _T_co],
+) -> EffectFn[_P, _T_co]: ...
+@overload
+def effect(
+    *,
+    return_type: type | None = ...,
+) -> Callable[
+    [Callable[_P, _T_co]],
+    EffectFn[_P, _T_co],
+]: ...
+def effect(
+    _fn: Callable[_P, _T_co] | None = None, *, return_type: type | None = None
+) -> (
+    EffectFn[_P, _T_co]
+    | Callable[
+        [Callable[_P, _T_co]],
+        EffectFn[_P, _T_co],
+    ]
+):
+    """
+    Make a function as durable, meaning its execution can be recorded and
+    replayed.
+    """
+
+    def decorate(
+        fn: Callable[_P, _T_co],
+    ) -> EffectFn[_P, _T_co]:
+        return EffectFn(fn=fn, return_type=return_type)
 
     if _fn is not None:
         return decorate(_fn)

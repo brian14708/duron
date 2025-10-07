@@ -1,5 +1,6 @@
 from ._core.config import set_config as set_config
 from ._core.context import Context as Context
+from ._core.fn import checkpoint as checkpoint
 from ._core.fn import fn as fn
 from ._core.options import RunOptions as RunOptions
 from ._core.signal import Signal as Signal

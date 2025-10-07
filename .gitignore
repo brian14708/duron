@@ -2,4 +2,5 @@
 /site
 /.venv
 /.nox
+/logs
 __pycache__
