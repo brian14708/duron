@@ -19,6 +19,7 @@ from typing import (
 
 from typing_extensions import TypedDict, assert_never
 
+from duron._core.context import Context
 from duron._core.ops import (
     Barrier,
     ExternalPromiseCreate,
@@ -35,13 +36,14 @@ from duron.typing import unspecified
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
+    from types import TracebackType
 
-    from duron._core.fn import Fn
     from duron._core.ops import (
         Op,
         StreamObserver,
     )
     from duron._core.stream import Stream
+    from duron._decorator.fn import Fn
     from duron._loop import OpFuture, WaitSet
     from duron.codec import Codec, FunctionType
     from duron.log import (
@@ -58,24 +60,24 @@ if TYPE_CHECKING:
     from duron.typing import TypeHint
 
 
-_T = TypeVar("_T")
+_T = TypeVar("_T", covariant=True)
 _P = ParamSpec("_P")
 
 _CURRENT_VERSION = 0
 
 
 @final
-class Job(Generic[_P, _T]):
-    __slots__ = ("_job_fn", "_log", "_run", "_watchers")
+class Invoke(Generic[_P, _T]):
+    __slots__ = ("_fn", "_log", "_run", "_watchers")
 
     def __init__(
         self,
-        job_fn: Fn[_P, _T],
+        fn: Fn[_P, _T],
         log: LogStorage,
     ) -> None:
-        self._job_fn = job_fn
+        self._fn = fn
         self._log = log
-        self._run: _JobRun | None = None
+        self._run: _InvokeRun | None = None
         self._watchers: list[
             tuple[
                 Callable[[dict[str, JSONValue]], bool],
@@ -83,19 +85,26 @@ class Job(Generic[_P, _T]):
             ]
         ] = []
 
+    @staticmethod
+    def invoke(
+        fn: Fn[_P, _T],
+        log: LogStorage,
+    ) -> contextlib.AbstractAsyncContextManager[Invoke[_P, _T]]:
+        return _InvokeGuard(Invoke(fn, log))
+
     async def start(self, *args: _P.args, **kwargs: _P.kwargs) -> None:
-        async def get_init() -> JobInitParams:
+        async def get_init() -> InitParams:
             return {
                 "version": _CURRENT_VERSION,
                 "args": [codec.encode_json(arg) for arg in args],
                 "kwargs": {k: codec.encode_json(v) for k, v in kwargs.items()},
             }
 
-        codec = self._job_fn.codec
-        type_info = codec.inspect_function(self._job_fn.fn)
-        job_prelude = _job_prelude(self._job_fn, type_info, get_init)
-        self._run = _JobRun(
-            job_prelude,
+        codec = self._fn.codec
+        type_info = codec.inspect_function(self._fn.fn)
+        prelude = _invoke_prelude(self._fn, type_info, get_init)
+        self._run = _InvokeRun(
+            prelude,
             self._log,
             codec,
             watchers=self._watchers,
@@ -103,15 +112,15 @@ class Job(Generic[_P, _T]):
         await self._run.resume()
 
     async def resume(self) -> None:
-        async def cb() -> JobInitParams:
+        async def cb() -> InitParams:
             raise Exception("not started")
 
-        type_info = self._job_fn.codec.inspect_function(self._job_fn.fn)
-        job = _job_prelude(self._job_fn, type_info, cb)
-        self._run = _JobRun(
-            job,
+        type_info = self._fn.codec.inspect_function(self._fn.fn)
+        prelude = _invoke_prelude(self._fn, type_info, cb)
+        self._run = _InvokeRun(
+            prelude,
             self._log,
-            self._job_fn.codec,
+            self._fn.codec,
             watchers=self._watchers,
         )
         await self._run.resume()
@@ -162,7 +171,7 @@ class Job(Generic[_P, _T]):
         value: object,
     ) -> int:
         if self._run is None:
-            raise RuntimeError("Job not started")
+            raise RuntimeError("Invokation not started")
         return await self._run.send_stream(predicate, value)
 
     async def close_stream(
@@ -171,7 +180,7 @@ class Job(Generic[_P, _T]):
         error: BaseException | None = None,
     ) -> int:
         if self._run is None:
-            raise RuntimeError("Job not started")
+            raise RuntimeError("Invokation not started")
         return await self._run.close_stream(predicate, error)
 
     def watch_stream(
@@ -191,20 +200,38 @@ class Job(Generic[_P, _T]):
         return observer
 
 
-class JobInitParams(TypedDict):
+@final
+class _InvokeGuard(Generic[_P, _T]):
+    __slots__ = ("_job",)
+
+    def __init__(self, job: Invoke[_P, _T]) -> None:
+        self._job = job
+
+    async def __aenter__(self) -> Invoke[_P, _T]:
+        return self._job
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        await self._job.close()
+
+
+class InitParams(TypedDict):
     version: int
     args: list[JSONValue]
     kwargs: dict[str, JSONValue]
 
 
-async def _job_prelude(
+async def _invoke_prelude(
     job_fn: Fn[..., _T],
     type_info: FunctionType,
-    init: Callable[[], Coroutine[Any, Any, JobInitParams]],
+    init: Callable[[], Coroutine[Any, Any, InitParams]],
 ) -> _T:
     loop = asyncio.get_running_loop()
     assert isinstance(loop, EventLoop)
-    from duron._core.context import Context
 
     with Context(job_fn, loop) as ctx:
         init_params = await ctx.run(init)
@@ -229,7 +256,7 @@ async def _job_prelude(
 
 
 @final
-class _JobRun:
+class _InvokeRun:
     __slots__ = (
         "_loop",
         "_task",

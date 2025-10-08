@@ -42,10 +42,10 @@ async def test_signal():
         return val
 
     log = MemoryLogStorage()
-    async with activity.create_job(log) as t:
+    async with activity.invoke(log) as t:
         await t.start()
         assert await t.wait() == [2, 3]
 
-    async with activity.create_job(log) as t:
+    async with activity.invoke(log) as t:
         await t.resume()
         assert await t.wait() == [2, 3]

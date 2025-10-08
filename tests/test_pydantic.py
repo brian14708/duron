@@ -43,7 +43,7 @@ async def test_pydantic_serialize():
         return PydanticPoint(x=pt.x + 5, y=pt.y + 10)
 
     log = MemoryLogStorage()
-    async with activity.create_job(log) as t:
+    async with activity.invoke(log) as t:
         await t.start()
         a = await t.wait()
         assert type(a) is PydanticPoint

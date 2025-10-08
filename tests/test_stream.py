@@ -6,13 +6,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from duron import Context, RunOptions, StreamClosed, StreamWriter, fn
-from duron._core.fn import checkpoint
+from duron import Context, RunOptions, StreamClosed, fn, op
 from duron.contrib.storage import MemoryLogStorage
-from tests.utils import external
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+
+    from duron import StreamWriter
 
 
 @pytest.mark.asyncio
@@ -37,11 +37,11 @@ async def test_stream():
         assert sum(await stream.collect()) == 4900
 
     log = MemoryLogStorage()
-    async with activity.create_job(log) as t:
+    async with activity.invoke(log) as t:
         await t.start()
         await t.wait()
 
-    async with activity.create_job(log) as t:
+    async with activity.invoke(log) as t:
         await t.resume()
         await t.wait()
 
@@ -52,7 +52,6 @@ async def test_stream_host():
     async def activity(ctx: Context) -> None:
         stream, handle = await ctx.create_stream(int, external=True)
 
-        @external
         async def task(stream: StreamWriter[int]):
             for i in range(50):
                 await stream.send(i)
@@ -62,7 +61,7 @@ async def test_stream_host():
         assert sum(await stream.collect()) == 1225
 
     log = MemoryLogStorage()
-    async with activity.create_job(log) as t:
+    async with activity.invoke(log) as t:
         await t.start()
         await t.wait()
 
@@ -74,7 +73,12 @@ async def test_run():
 
     @fn()
     async def activity(ctx: Context) -> None:
-        @checkpoint(action_type=str, initial=lambda: "", reducer=lambda s, p: s + p)
+        @op(
+            checkpoint=True,
+            action_type=str,
+            initial=lambda: "",
+            reducer=lambda s, p: s + p,
+        )
         async def f(s: str) -> AsyncGenerator[str, str]:
             while len(s) < 100:
                 if len(s) == sleep_idx:
@@ -88,7 +92,7 @@ async def test_run():
 
     log = MemoryLogStorage()
     while True:
-        async with activity.create_job(log) as t:
+        async with activity.invoke(log) as t:
             await t.start()
             try:
                 _ = await asyncio.wait_for(t.wait(), 0.1)
@@ -104,7 +108,12 @@ async def test_run():
 async def test_stream_map():
     @fn()
     async def activity(ctx: Context) -> None:
-        @checkpoint(action_type=str, initial=lambda: "", reducer=lambda s, p: s + p)
+        @op(
+            checkpoint=True,
+            action_type=str,
+            initial=lambda: "",
+            reducer=lambda s, p: s + p,
+        )
         async def f(s: str) -> AsyncGenerator[str, str]:
             while len(s) < 100:
                 chunk = chr(ord("a") + random.randint(0, 25))
@@ -116,7 +125,7 @@ async def test_stream_map():
             return
 
     log = MemoryLogStorage()
-    async with activity.create_job(log) as t:
+    async with activity.invoke(log) as t:
         await t.start()
         await t.wait()
 
@@ -151,11 +160,11 @@ async def test_stream_peek():
         return sample
 
     log = MemoryLogStorage()
-    async with activity.create_job(log) as t:
+    async with activity.invoke(log) as t:
         await t.start()
         a = await t.wait()
     for _ in range(4):
-        async with activity.create_job(log) as t:
+        async with activity.invoke(log) as t:
             await t.resume()
             b = await t.wait()
         assert a == b
@@ -165,7 +174,12 @@ async def test_stream_peek():
 async def test_stream_cross_loop():
     @fn()
     async def activity(ctx: Context) -> list[str]:
-        @checkpoint(action_type=str, initial=lambda: "", reducer=lambda s, p: s + p)
+        @op(
+            checkpoint=True,
+            action_type=str,
+            initial=lambda: "",
+            reducer=lambda s, p: s + p,
+        )
         async def f(s: str) -> AsyncGenerator[str, str]:
             while len(s) < 5:
                 chunk = chr(ord("a") + random.randint(0, 25))
@@ -184,11 +198,11 @@ async def test_stream_cross_loop():
             return result
 
     log = MemoryLogStorage()
-    async with activity.create_job(log) as t:
+    async with activity.invoke(log) as t:
         await t.start()
         a = await t.wait()
     for _ in range(4):
-        async with activity.create_job(log) as t:
+        async with activity.invoke(log) as t:
             await t.resume()
             b = await t.wait()
         assert a == b

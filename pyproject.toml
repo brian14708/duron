@@ -53,7 +53,7 @@ future-annotations = true
 
 [tool.ruff.lint.flake8-type-checking]
 runtime-evaluated-base-classes = ["typing_extensions.TypedDict"]
-runtime-evaluated-decorators = ["duron.fn", "tests.utils.external"]
+runtime-evaluated-decorators = ["duron.fn"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "typing.TypedDict".msg = "Use typing_extensions.TypedDict instead."

@@ -16,8 +16,7 @@ from pydantic import TypeAdapter
 from typing_extensions import override
 
 import duron
-from duron._core.fn import checkpoint
-from duron._core.options import RunOptions
+from duron import RunOptions, op
 from duron.codec import Codec
 from duron.contrib.storage import FileLogStorage
 
@@ -38,78 +37,14 @@ client = AsyncOpenAI()
 DEFAULT_MODEL = "gpt-5-nano"
 
 
-def reduce(
-    a: ChatCompletionStreamState | None, b: ChatCompletionChunk
-) -> ChatCompletionStreamState | None:
-    if a is None:
-        a = ChatCompletionStreamState()
-    _ = a.handle_chunk(b)
-    return a
-
-
-@checkpoint(
-    action_type=ChatCompletionChunk,
-    state_type=ChatCompletionStreamState | None,
-    initial=lambda: None,
-    reducer=reduce,
-)
-async def _completion_stream(
-    prev: ChatCompletionStreamState | None,
-    messages: list[ChatCompletionMessageParam],
-) -> AsyncGenerator[ChatCompletionChunk, ChatCompletionStreamState | None]:
-    if prev:
-        msg = prev.current_completion_snapshot.choices[0].message
-        messages = messages + [
-            {
-                "role": "assistant",
-                "content": msg.content,
-                "tool_calls": [
-                    {
-                        "id": call.id,
-                        "type": call.type,
-                        "function": {
-                            "name": call.function.name,
-                            "arguments": call.function.arguments,
-                        },
-                    }
-                    for call in msg.tool_calls
-                ]
-                if msg.tool_calls
-                else (),
-            }
-        ]
-    async for chunk in await client.chat.completions.create(
-        messages=messages,
-        model=DEFAULT_MODEL,
-        stream=True,
-    ):
-        if chunk.object:  # type: ignore[redundant-expr]
-            yield chunk
-
-
-async def completion(
-    ctx: duron.Context, messages: list[ChatCompletionMessageParam]
-) -> ParsedChatCompletionMessage[None]:
-    async with ctx.run_stream(
-        _completion_stream,
-        RunOptions(
-            metadata={"type": "chat.completions.create"},
-            return_type=ChatCompletionChunk,
-        ),
-        messages,
-    ) as stream:
-        async for _ in stream:
-            ...
-    state = await stream
-    assert state
-    return state.get_final_completion().choices[0].message
-
-
 class PydanticCodec(Codec):
     @override
     def encode_json(self, result: object) -> JSONValue:
         return cast(
-            "JSONValue", TypeAdapter(type(result)).dump_python(result, mode="json")
+            "JSONValue",
+            TypeAdapter(type(result)).dump_python(
+                result, mode="json", exclude_none=True
+            ),
         )
 
     @override
@@ -128,12 +63,11 @@ async def agent_fn(ctx: duron.Context):
             },
             {
                 "role": "user",
-                "content": "Say hello to Duron 2.",
+                "content": "Say hello to Duron.",
             },
         ],
     )
     print(completion_result.content)
-    print("Hello, Duron 2!")
 
 
 async def main():
@@ -144,9 +78,67 @@ async def main():
     args = parser.parse_args()
 
     log_storage = FileLogStorage(Path("logs") / f"{args.session_id}.json")
-    async with agent_fn.create_job(log_storage) as job:
+    async with agent_fn.invoke(log_storage) as job:
         await job.start()
         await job.wait()
+
+
+async def completion(
+    ctx: duron.Context, messages: list[ChatCompletionMessageParam]
+) -> ParsedChatCompletionMessage[None]:
+    @op(
+        checkpoint=True,
+        action_type=ChatCompletionChunk,
+        return_type=ChatCompletionStreamState | None,
+        initial=lambda: None,
+        reducer=lambda a, b: (
+            s := a or ChatCompletionStreamState(),
+            s.handle_chunk(b),
+            s,
+        )[-1],
+    )
+    async def _completion_stream(
+        prev: ChatCompletionStreamState | None,
+        messages: list[ChatCompletionMessageParam],
+    ) -> AsyncGenerator[ChatCompletionChunk, ChatCompletionStreamState | None]:
+        if prev:
+            msg = prev.current_completion_snapshot.choices[0].message
+            messages = messages + [
+                {
+                    "role": "assistant",
+                    "content": msg.content,
+                    "tool_calls": (
+                        {
+                            "id": call.id,
+                            "type": call.type,
+                            "function": {
+                                "name": call.function.name,
+                                "arguments": call.function.arguments,
+                            },
+                        }
+                        for call in msg.tool_calls
+                    )
+                    if msg.tool_calls
+                    else (),
+                }
+            ]
+        async for chunk in await client.chat.completions.create(
+            messages=messages,
+            model=DEFAULT_MODEL,
+            stream=True,
+        ):
+            if chunk.object:  # type: ignore[redundant-expr]
+                yield chunk
+
+    state = await ctx.run(
+        _completion_stream,
+        RunOptions(
+            metadata={"type": "chat.completions.create"},
+        ),
+        messages,
+    )
+    assert state
+    return state.get_final_completion().choices[0].message
 
 
 if __name__ == "__main__":

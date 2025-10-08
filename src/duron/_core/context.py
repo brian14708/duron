@@ -14,10 +14,10 @@ from typing import (
     overload,
 )
 
-from duron._core.fn import CheckpointFn
 from duron._core.ops import Barrier, ExternalPromiseCreate, FnCall, create_op
 from duron._core.signal import create_signal
 from duron._core.stream import create_stream, run_stream
+from duron._decorator.op import CheckpointOp, Op
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -26,10 +26,10 @@ if TYPE_CHECKING:
 
     from typing_extensions import AsyncContextManager
 
-    from duron._core.fn import Fn
     from duron._core.options import RunOptions
     from duron._core.signal import Signal, SignalWriter
     from duron._core.stream import Stream, StreamWriter
+    from duron._decorator.fn import Fn
     from duron._loop import EventLoop
     from duron.codec import JSONValue
 
@@ -74,8 +74,8 @@ class Context:
     @overload
     async def run(
         self,
-        fn: Callable[_P, Coroutine[Any, Any, _T]],
-        options: RunOptions[_T] | None = ...,
+        fn: Callable[_P, Coroutine[Any, Any, _T]] | Op[_P, _T],
+        options: RunOptions | None = ...,
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
@@ -83,25 +83,18 @@ class Context:
     @overload
     async def run(
         self,
-        fn: Callable[_P, _T],
-        options: RunOptions[_T] | None = ...,
-        /,
-        *args: _P.args,
-        **kwargs: _P.kwargs,
-    ) -> _T: ...
-    @overload
-    async def run(
-        self,
-        fn: CheckpointFn[_P, _T, Any],
-        options: RunOptions[_T] | None = ...,
+        fn: Callable[_P, _T] | CheckpointOp[_P, _T, Any],
+        options: RunOptions | None = ...,
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
     ) -> _T: ...
     async def run(
         self,
-        fn: Callable[_P, Coroutine[Any, Any, _T] | _T] | CheckpointFn[_P, _T, Any],
-        options: RunOptions[_T] | None = None,
+        fn: Callable[_P, Coroutine[Any, Any, _T] | _T]
+        | Op[_P, _T]
+        | CheckpointOp[_P, _T, Any],
+        options: RunOptions | None = None,
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
@@ -109,20 +102,24 @@ class Context:
         if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
 
-        if isinstance(fn, CheckpointFn):
+        if isinstance(fn, CheckpointOp):
             async with self.run_stream(fn, options, *args, **kwargs) as stream:
-                async for _ in stream:
-                    pass
+                await stream.discard()
                 return await stream
 
         return_type = (
-            options and options.return_type
-        ) or self._task.codec.inspect_function(fn).return_type
+            fn.return_type
+            if isinstance(fn, Op) and fn.return_type
+            else self._task.codec.inspect_function(
+                cast("Callable[..., object]", fn)
+            ).return_type
+        )
+
         metadata = options.metadata if options else None
         op = create_op(
             self._loop,
             FnCall(
-                callable=fn,
+                callable=fn.fn if isinstance(fn, Op) else fn,
                 args=args,
                 kwargs=kwargs,
                 return_type=return_type,
@@ -133,8 +130,8 @@ class Context:
 
     def run_stream(
         self,
-        fn: CheckpointFn[_P, _T, _S],
-        options: RunOptions[_S] | None = None,
+        fn: CheckpointOp[_P, _T, _S],
+        options: RunOptions | None = None,
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,

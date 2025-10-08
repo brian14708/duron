@@ -14,7 +14,7 @@ from duron.contrib.storage import MemoryLogStorage
 
 
 @pytest.mark.asyncio
-async def test_job():
+async def test_invoke():
     async def u() -> str:
         for _ in range(random.randint(1, 10)):
             await asyncio.sleep(0.001)
@@ -41,18 +41,18 @@ async def test_job():
     }
 
     log = MemoryLogStorage()
-    async with activity.create_job(log) as t:
+    async with activity.invoke(log) as t:
         await t.start("test")
         a = await t.wait()
     assert set(e["id"] for e in await log.entries()) == IDS
 
-    async with activity.create_job(log) as t:
+    async with activity.invoke(log) as t:
         await t.start("test")
         b = await t.wait()
     assert a == b
 
     log2 = MemoryLogStorage((await log.entries())[:-2])
-    async with activity.create_job(log2) as t:
+    async with activity.invoke(log2) as t:
         await t.start("test")
         c = await t.wait()
     assert a == c
@@ -60,7 +60,7 @@ async def test_job():
 
 
 @pytest.mark.asyncio
-async def test_job_error():
+async def test_invoke_error():
     @fn()
     async def activity(ctx: Context):
         _ = await ctx.run(lambda: asyncio.sleep(0.1))
@@ -72,11 +72,11 @@ async def test_job_error():
 
     log = MemoryLogStorage()
     with pytest.raises(check=lambda v: "test error" in str(v)):
-        async with activity.create_job(log) as t:
+        async with activity.invoke(log) as t:
             await t.start()
             await t.wait()
     with pytest.raises(check=lambda v: "test error" in str(v)):
-        async with activity.create_job(log) as t:
+        async with activity.invoke(log) as t:
             await t.start()
             await t.wait()
 
@@ -91,12 +91,12 @@ async def test_resume():
         return s
 
     log = MemoryLogStorage()
-    async with activity.create_job(log) as t:
+    async with activity.invoke(log) as t:
         await t.start("hello")
         with pytest.raises(asyncio.TimeoutError):
             _ = await asyncio.wait_for(t.wait(), 0.1)
 
-    async with activity.create_job(log) as t:
+    async with activity.invoke(log) as t:
         sleep = 0
         await t.resume()
         x = await t.wait()
@@ -113,13 +113,13 @@ async def test_cancel():
         return s
 
     log = MemoryLogStorage()
-    async with activity.create_job(log) as t:
+    async with activity.invoke(log) as t:
         await t.start("hello")
         try:
             _ = await t.wait()
         except Exception as e:
             assert "Timeout" in repr(e)
-    async with activity.create_job(log) as t:
+    async with activity.invoke(log) as t:
         await t.resume()
         try:
             _ = await t.wait()
@@ -144,7 +144,7 @@ async def test_serialize():
         return CustomPoint(x=pt.x + 5, y=pt.y + 10)
 
     log = MemoryLogStorage()
-    async with activity.create_job(log) as t:
+    async with activity.invoke(log) as t:
         await t.start()
         a = await t.wait()
         assert type(a) is CustomPoint
@@ -159,12 +159,12 @@ async def test_random():
         return ctx.random().randint(1, 100)
 
     log = MemoryLogStorage()
-    async with activity.create_job(log) as t:
+    async with activity.invoke(log) as t:
         await t.start()
         a = await t.wait()
 
     log = MemoryLogStorage()
-    async with activity.create_job(log) as t:
+    async with activity.invoke(log) as t:
         await t.start()
         b = await t.wait()
 
@@ -180,7 +180,7 @@ async def test_external_promise():
         return await b
 
     log = MemoryLogStorage()
-    async with activity.create_job(log) as t:
+    async with activity.invoke(log) as t:
         await t.start()
 
         async def do():
@@ -209,7 +209,7 @@ async def test_external_stream():
         return -1
 
     log = MemoryLogStorage()
-    async with activity.create_job(log) as t:
+    async with activity.invoke(log) as t:
         await t.start()
 
         async def do():
@@ -240,10 +240,10 @@ async def test_watch_stream():
 
     log = MemoryLogStorage()
 
-    async with activity.create_job(log) as job:
-        output_stream = job.watch_stream(lambda d: d.get("name") == "output")
+    async with activity.invoke(log) as invoke:
+        output_stream = invoke.watch_stream(lambda d: d.get("name") == "output")
 
-        await job.start()
+        await invoke.start()
 
         async def bg() -> list[int]:
             values: list[int] = []
@@ -252,6 +252,6 @@ async def test_watch_stream():
             return values
 
         b = asyncio.create_task(bg())
-        result = await job.wait()
+        result = await invoke.wait()
         assert result == 42
         assert await b == list(range(10))

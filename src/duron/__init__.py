@@ -1,7 +1,5 @@
 from ._core.config import set_config as set_config
 from ._core.context import Context as Context
-from ._core.fn import checkpoint as checkpoint
-from ._core.fn import fn as fn
 from ._core.options import RunOptions as RunOptions
 from ._core.signal import Signal as Signal
 from ._core.signal import SignalInterrupt as SignalInterrupt
@@ -9,3 +7,5 @@ from ._core.signal import SignalWriter as SignalWriter
 from ._core.stream import Stream as Stream
 from ._core.stream import StreamClosed as StreamClosed
 from ._core.stream import StreamWriter as StreamWriter
+from ._decorator.fn import fn as fn
+from ._decorator.op import op as op
