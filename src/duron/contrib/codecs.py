@@ -9,7 +9,10 @@ from typing_extensions import override
 from duron.codec import Codec
 
 if TYPE_CHECKING:
+    from typing_extensions import Any
+
     from duron.codec import JSONValue
+    from duron.typing import TypeHint
 
 
 @final
@@ -21,7 +24,7 @@ class PickleCodec(Codec):
         return base64.b64encode(pickle.dumps(result)).decode()
 
     @override
-    def decode_json(self, encoded: JSONValue, _expected_type: type | None) -> object:
+    def decode_json(self, encoded: JSONValue, _expected_type: TypeHint[Any]) -> object:
         if not isinstance(encoded, str):
             raise TypeError(f"Expected a string, got {type(encoded).__name__}")
         return pickle.loads(base64.b64decode(encoded.encode()))

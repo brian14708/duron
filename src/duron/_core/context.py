@@ -142,10 +142,9 @@ class Context:
         _ = options
         if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("Context time can only be used in the context loop")
-        dtype: type | None = fn.action_type
         r = run_stream(
             self._loop,
-            dtype,
+            fn.action_type,
             fn.initial(),
             fn.reducer,
             fn,

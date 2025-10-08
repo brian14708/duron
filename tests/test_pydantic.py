@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from pydantic import BaseModel, TypeAdapter
@@ -12,6 +12,7 @@ from duron.contrib.storage import MemoryLogStorage
 
 if TYPE_CHECKING:
     from duron.codec import JSONValue
+    from duron.typing import TypeHint
 
 
 class PydanticPoint(BaseModel):
@@ -27,7 +28,7 @@ class PydanticCodec(Codec):
         )
 
     @override
-    def decode_json(self, encoded: JSONValue, expected_type: type | None) -> object:
+    def decode_json(self, encoded: JSONValue, expected_type: TypeHint[Any]) -> object:
         return cast("object", TypeAdapter(expected_type).validate_python(encoded))
 
 

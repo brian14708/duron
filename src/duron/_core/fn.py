@@ -14,6 +14,7 @@ from typing import (
 
 from duron._core.config import config
 from duron._core.job import Job
+from duron.typing import unspecified
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Coroutine
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from duron._core.context import Context
     from duron.codec import Codec
     from duron.log import LogStorage
+    from duron.typing import TypeHint
 
 
 _T = TypeVar("_T")
@@ -109,8 +111,8 @@ class CheckpointFn(Generic[_P, _S, _T]):
     fn: Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]]
     initial: Callable[[], _S]
     reducer: Callable[[_S, _T], _S]
-    action_type: type[_T] | None
-    state_type: type[_S] | None
+    action_type: TypeHint[_T]
+    state_type: TypeHint[_S]
 
     def __call__(
         self, state: _S, *args: _P.args, **kwargs: _P.kwargs
@@ -122,8 +124,8 @@ def checkpoint(
     *,
     initial: Callable[[], _S],
     reducer: Callable[[_S, _T], _S],
-    action_type: type[_T] | None = None,
-    state_type: type[_S] | None = None,
+    action_type: TypeHint[_T] = unspecified,
+    state_type: TypeHint[_S] = unspecified,
 ) -> Callable[
     [Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]]],
     CheckpointFn[_P, _S, _T],
@@ -145,7 +147,7 @@ def checkpoint(
 @dataclass(slots=True)
 class EffectFn(Generic[_P, _T_co]):
     fn: Callable[_P, _T_co]
-    return_type: type[_T_co] | None = None
+    return_type: TypeHint[_T_co]
 
     def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> _T_co:
         return self.fn(*args, **kwargs)
@@ -158,13 +160,13 @@ def effect(
 @overload
 def effect(
     *,
-    return_type: type | None = ...,
+    return_type: TypeHint[Any] = ...,
 ) -> Callable[
     [Callable[_P, _T_co]],
     EffectFn[_P, _T_co],
 ]: ...
 def effect(
-    _fn: Callable[_P, _T_co] | None = None, *, return_type: type | None = None
+    _fn: Callable[_P, _T_co] | None = None, *, return_type: TypeHint[Any] = unspecified
 ) -> (
     EffectFn[_P, _T_co]
     | Callable[

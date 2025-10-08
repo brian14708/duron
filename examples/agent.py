@@ -28,8 +28,10 @@ if TYPE_CHECKING:
         ChatCompletionMessageParam,
         ParsedChatCompletionMessage,
     )
+    from typing_extensions import Any
 
     from duron.codec import JSONValue
+    from duron.typing import TypeHint
 
 client = AsyncOpenAI()
 
@@ -47,6 +49,7 @@ def reduce(
 
 @checkpoint(
     action_type=ChatCompletionChunk,
+    state_type=ChatCompletionStreamState | None,
     initial=lambda: None,
     reducer=reduce,
 )
@@ -110,7 +113,7 @@ class PydanticCodec(Codec):
         )
 
     @override
-    def decode_json(self, encoded: JSONValue, expected_type: type | None) -> object:
+    def decode_json(self, encoded: JSONValue, expected_type: TypeHint[Any]) -> object:
         return cast("object", TypeAdapter(expected_type).validate_python(encoded))
 
 

@@ -7,8 +7,14 @@ from typing import TYPE_CHECKING, TypeGuard, cast, final
 
 from typing_extensions import TypeAliasType, override
 
+from duron.typing import unspecified
+
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from typing_extensions import Any
+
+    from duron.typing import TypeHint
 
     JSONValue = (
         dict[str, "JSONValue"] | list["JSONValue"] | str | int | float | bool | None
@@ -35,9 +41,9 @@ def is_json_value(x: object) -> TypeGuard[JSONValue]:
 
 @dataclass(slots=True)
 class FunctionType:
-    return_type: type | None
+    return_type: TypeHint[Any]
     parameters: list[str]
-    parameter_types: dict[str, type | None]
+    parameter_types: dict[str, TypeHint[Any]]
 
 
 class Codec(ABC):
@@ -48,7 +54,7 @@ class Codec(ABC):
 
     @abstractmethod
     def decode_json(
-        self, encoded: JSONValue, expected_type: type | None, /
+        self, encoded: JSONValue, expected_type: TypeHint[Any], /
     ) -> object: ...
 
     def inspect_function(
@@ -62,11 +68,11 @@ class Codec(ABC):
         return_type = (
             sig.return_annotation
             if sig.return_annotation != inspect.Parameter.empty
-            else None
+            else unspecified
         )
 
         parameter_names: list[str] = []
-        parameter_types: dict[str, type | None] = {}
+        parameter_types: dict[str, TypeHint[Any]] = {}
         for k, p in sig.parameters.items():
             if (
                 p.kind == inspect.Parameter.VAR_POSITIONAL
@@ -76,7 +82,7 @@ class Codec(ABC):
 
             parameter_names.append(k)
             parameter_types[p.name] = (
-                p.annotation if p.annotation != inspect.Parameter.empty else None
+                p.annotation if p.annotation != inspect.Parameter.empty else unspecified
             )
 
         return FunctionType(
@@ -97,5 +103,5 @@ class DefaultCodec(Codec):
         raise TypeError(f"Result is not JSON-serializable: {result!r}")
 
     @override
-    def decode_json(self, encoded: JSONValue, _expected_type: type | None) -> object:
+    def decode_json(self, encoded: JSONValue, _expected_type: TypeHint[Any]) -> object:
         return encoded

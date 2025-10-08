@@ -31,6 +31,7 @@ from duron._core.stream import ObserverStream
 from duron._loop import EventLoop, create_loop
 from duron.codec import Codec, JSONValue
 from duron.log import is_entry
+from duron.typing import unspecified
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
         StreamCreateEntry,
         StreamEmitEntry,
     )
+    from duron.typing import TypeHint
 
 
 _T = TypeVar("_T")
@@ -213,14 +215,14 @@ async def _job_prelude(
         args = tuple(
             codec.decode_json(
                 arg,
-                type_info.parameter_types.get(type_info.parameters[i + 1])
+                type_info.parameter_types.get(type_info.parameters[i + 1], unspecified)
                 if i + 1 < len(type_info.parameters)
-                else None,
+                else unspecified,
             )
             for i, arg in enumerate(init_params["args"])
         )
         kwargs = {
-            k: codec.decode_json(v, type_info.parameter_types.get(k))
+            k: codec.decode_json(v, type_info.parameter_types.get(k, unspecified))
             for k, v in init_params["kwargs"].items()
         }
         return await job_fn.fn(ctx, *args, **kwargs)
@@ -260,16 +262,16 @@ class _JobRun:
         self._running: bytes | None = None
         self._pending_msg: list[Entry] = []
         self._pending_task: dict[
-            str, tuple[Callable[[], Coroutine[Any, Any, None]], type | None]
+            str, tuple[Callable[[], Coroutine[Any, Any, None]], TypeHint[Any]]
         ] = {}
         self._pending_ops: set[bytes] = set()
         self._now = 0
-        self._tasks: dict[str, tuple[asyncio.Future[None], type | None]] = {}
+        self._tasks: dict[str, tuple[asyncio.Future[None], TypeHint[Any]]] = {}
         self._streams: dict[
             str,
             tuple[
                 list[StreamObserver[object]],
-                type | None,
+                TypeHint[Any],
                 dict[str, JSONValue] | None,
             ],
         ] = {}
@@ -354,7 +356,7 @@ class _JobRun:
 
             id = _decode_id(e["promise_id"])
 
-            return_type = None
+            return_type: TypeHint[Any] = unspecified
             if pending_info is not None:
                 _, return_type = pending_info
             elif task_info is not None:

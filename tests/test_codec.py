@@ -4,6 +4,7 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from duron.codec import DefaultCodec, FunctionType
+from duron.typing import unspecified
 
 if TYPE_CHECKING:
     from duron.codec import Codec
@@ -32,7 +33,7 @@ def test_no_parameters_no_return_type():
     assert isinstance(result, FunctionType)
     assert result.parameters == []
     assert result.parameter_types == {}
-    assert result.return_type is None
+    assert result.return_type is unspecified
 
 
 def test_type_annotated_parameters():

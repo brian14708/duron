@@ -12,6 +12,7 @@ from typing_extensions import final, override
 
 from duron._core.ops import FnCall, StreamClose, StreamCreate, StreamEmit, create_op
 from duron._loop import wrap_future
+from duron.typing import unspecified
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Generator, Sequence
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from duron._core.context import Context
     from duron._loop import EventLoop
     from duron.codec import JSONValue
+    from duron.typing import TypeHint
 
     _P = ParamSpec("_P")
 
@@ -343,7 +345,7 @@ class _Broadcast(Generic[_T]):
 
 def run_stream(
     loop: EventLoop,
-    dtype: type | None,
+    dtype: TypeHint[Any],
     initial: _T,
     reducer: Callable[[_T, _U], _T],
     fn: Callable[Concatenate[_T, _P], AsyncGenerator[_U, _T]],
@@ -366,7 +368,7 @@ def run_stream(
 @final
 class _ResumableGuard(Generic[_U, _T]):
     def __init__(
-        self, loop: EventLoop, resumable: _StreamRun[_U, _T], dtype: type | None
+        self, loop: EventLoop, resumable: _StreamRun[_U, _T], dtype: TypeHint[Any]
     ) -> None:
         self._loop = loop
         self._stream = resumable
@@ -388,7 +390,7 @@ class _ResumableGuard(Generic[_U, _T]):
                 callable=self._stream.worker,
                 args=(sink,),
                 kwargs={},
-                return_type=None,
+                return_type=unspecified,
             ),
         )
         return self._stream

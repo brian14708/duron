@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 
     from duron._loop import EventLoop, OpFuture
     from duron.codec import JSONValue
+    from duron.typing import TypeHint
 
 
 _In = TypeVar("_In", contravariant=True)
@@ -21,7 +22,7 @@ class FnCall:
     callable: Callable[..., Coroutine[Any, Any, object] | object]
     args: tuple[object, ...]
     kwargs: dict[str, object]
-    return_type: type | None = None
+    return_type: TypeHint[Any]
     metadata: dict[str, JSONValue] | None = None
 
 
@@ -33,7 +34,7 @@ class StreamObserver(Generic[_In], Protocol):
 @dataclass(slots=True)
 class StreamCreate:
     observer: StreamObserver[Any] | None
-    dtype: type | None
+    dtype: TypeHint[Any]
     metadata: dict[str, JSONValue] | None = None
 
 
@@ -55,7 +56,7 @@ class Barrier: ...
 
 @dataclass(slots=True)
 class ExternalPromiseCreate:
-    return_type: type | None = None
+    return_type: TypeHint[Any]
     metadata: dict[str, JSONValue] | None = None
 
 
