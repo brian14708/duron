@@ -7,7 +7,7 @@ import nox
 
 nox.options.default_venv_backend = "uv"
 
-ALL_PYTHON = ["3.13", "3.12", "3.11", "3.10"]
+ALL_PYTHON = ["3.14", "3.13", "3.12", "3.11", "3.10"]
 
 
 def install_deps(s: nox.Session, groups: list[str]):

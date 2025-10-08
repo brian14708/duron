@@ -209,7 +209,10 @@ class EventLoop(AbstractEventLoop):
         )
 
     def poll_completion(self, task: Future[_T]) -> WaitSet | None:
-        old = events._get_running_loop()
+        old = events.get_running_loop()
+        old_task = asyncio.tasks.current_task(old)
+        if old_task:
+            asyncio.tasks._leave_task(old, old_task)
         events._set_running_loop(self)
         try:
             self._event.clear()
@@ -252,6 +255,8 @@ class EventLoop(AbstractEventLoop):
             )
         finally:
             events._set_running_loop(old)
+            if old_task:
+                asyncio.tasks._enter_task(old, old_task)
 
     def create_op(self, params: object, *, external: bool = False) -> OpFuture[object]:
         if external:
