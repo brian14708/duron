@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
@@ -9,13 +10,15 @@ from typing import (
     Literal,
     ParamSpec,
     TypeVar,
+    get_args,
+    get_origin,
     overload,
 )
 
-from duron.typing import unspecified
+from duron.typing import inspect_function, unspecified
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Callable, Coroutine
+    from collections.abc import Callable, Coroutine
 
     from duron.typing import TypeHint
 
@@ -32,7 +35,7 @@ class CheckpointOp(Generic[_P, _S, _T]):
     initial: Callable[[], _S]
     reducer: Callable[[_S, _T], _S]
     action_type: TypeHint[_T]
-    state_type: TypeHint[_S]
+    return_type: TypeHint[_S]
 
     def __call__(
         self,
@@ -108,12 +111,22 @@ def op(
         def decorate_ckpt(
             fn: Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]],
         ) -> CheckpointOp[_P, _S, _T]:
+            action_type_local = action_type
+            return_type_local = return_type
+            if not action_type_local or not return_type_local:
+                ret = inspect_function(fn).return_type
+                if get_origin(ret) is AsyncGenerator:
+                    yield_, send = get_args(ret)
+                    if not action_type_local:
+                        action_type_local = yield_
+                    if not return_type_local:
+                        return_type_local = send
             return CheckpointOp(
                 fn=fn,
                 initial=initial,
                 reducer=reducer,
-                action_type=action_type,
-                state_type=return_type,
+                action_type=action_type_local,
+                return_type=return_type_local,
             )
 
         return decorate_ckpt
@@ -121,7 +134,10 @@ def op(
     def decorate(
         fn: Callable[_P, Coroutine[Any, Any, _T_co]],
     ) -> Op[_P, _T_co]:
-        return Op(fn=fn, return_type=return_type)
+        return Op(
+            fn=fn,
+            return_type=return_type or inspect_function(fn).return_type,
+        )
 
     if fn is not None:
         return decorate(fn)

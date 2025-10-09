@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from types import UnionType
 from typing_extensions import TypeAliasType, TypeVar
 
@@ -23,5 +25,3 @@ else:
     from typing_extensions import TypeForm
 
     TypeHint = TypeAliasType("TypeHint", TypeForm[_T] | _Unspecified, type_params=(_T,))
-
-__all__ = ["TypeHint", "unspecified"]

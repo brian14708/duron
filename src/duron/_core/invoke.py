@@ -31,7 +31,7 @@ from duron._core.stream import ObserverStream
 from duron._loop import EventLoop, create_loop
 from duron.codec import Codec, JSONValue
 from duron.log import is_entry
-from duron.typing import unspecified
+from duron.typing import inspect_function, unspecified
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from duron._core.stream import Stream
     from duron._decorator.fn import Fn
     from duron._loop import OpFuture, WaitSet
-    from duron.codec import Codec, FunctionType
+    from duron.codec import Codec
     from duron.log import (
         BarrierEntry,
         Entry,
@@ -56,7 +56,7 @@ if TYPE_CHECKING:
         StreamCreateEntry,
         StreamEmitEntry,
     )
-    from duron.typing import TypeHint
+    from duron.typing import FunctionType, TypeHint
 
 
 _T_co = TypeVar("_T_co", covariant=True)
@@ -100,7 +100,7 @@ class Invoke(Generic[_P, _T_co]):
             }
 
         codec = self._fn.codec
-        type_info = codec.inspect_function(self._fn.fn)
+        type_info = inspect_function(self._fn.fn)
         prelude = _invoke_prelude(self._fn, type_info, get_init)
         self._run = _InvokeRun(
             prelude,
@@ -115,7 +115,7 @@ class Invoke(Generic[_P, _T_co]):
             msg = "not started"
             raise RuntimeError(msg)
 
-        type_info = self._fn.codec.inspect_function(self._fn.fn)
+        type_info = inspect_function(self._fn.fn)
         prelude = _invoke_prelude(self._fn, type_info, cb)
         self._run = _InvokeRun(
             prelude,

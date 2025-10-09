@@ -18,6 +18,7 @@ from duron._core.ops import Barrier, ExternalPromiseCreate, FnCall, create_op
 from duron._core.signal import create_signal
 from duron._core.stream import create_stream, run_stream
 from duron._decorator.op import CheckpointOp, Op
+from duron.typing import inspect_function
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -41,11 +42,11 @@ _context: ContextVar[Context | None] = ContextVar("duron_context", default=None)
 
 @final
 class Context:
-    __slots__ = ("_loop", "_task", "_token")
+    __slots__ = ("_fn", "_loop", "_token")
 
     def __init__(self, task: Fn[..., object], loop: EventLoop) -> None:
         self._loop: EventLoop = loop
-        self._task = task
+        self._fn = task
         self._token: Token[Context | None] | None = None
 
     def __enter__(self) -> Context:
@@ -109,12 +110,9 @@ class Context:
                 return await stream
 
         if isinstance(fn, Op):
-            if fn.return_type:
-                return_type = fn.return_type
-            else:
-                return_type = self._task.codec.inspect_function(fn.fn).return_type
+            return_type = fn.return_type
         else:
-            return_type = self._task.codec.inspect_function(fn).return_type
+            return_type = inspect_function(fn).return_type
 
         metadata = options.metadata if options else None
         op = create_op(

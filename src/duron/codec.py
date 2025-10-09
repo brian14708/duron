@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-import inspect
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeGuard, cast, final
 from typing_extensions import TypeAliasType, override
 
-from duron.typing import unspecified
-
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from typing_extensions import Any
 
     from duron.typing import TypeHint
@@ -37,13 +32,6 @@ def is_json_value(x: object) -> TypeGuard[JSONValue]:
     return False
 
 
-@dataclass(slots=True)
-class FunctionType:
-    return_type: TypeHint[Any]
-    parameters: list[str]
-    parameter_types: dict[str, TypeHint[Any]]
-
-
 class Codec(ABC):
     __slots__: tuple[str, ...] = ()
 
@@ -57,40 +45,6 @@ class Codec(ABC):
         expected_type: TypeHint[Any],
         /,
     ) -> object: ...
-
-    def inspect_function(  # noqa: PLR6301
-        self,
-        fn: Callable[..., object],
-    ) -> FunctionType:
-        try:
-            sig = inspect.signature(fn, eval_str=True)
-        except NameError:
-            sig = inspect.signature(fn)
-        return_type = (
-            sig.return_annotation
-            if sig.return_annotation != inspect.Parameter.empty
-            else unspecified
-        )
-
-        parameter_names: list[str] = []
-        parameter_types: dict[str, TypeHint[Any]] = {}
-        for k, p in sig.parameters.items():
-            if p.kind in {
-                inspect.Parameter.VAR_POSITIONAL,
-                inspect.Parameter.VAR_KEYWORD,
-            }:
-                continue
-
-            parameter_names.append(k)
-            parameter_types[p.name] = (
-                p.annotation if p.annotation != inspect.Parameter.empty else unspecified
-            )
-
-        return FunctionType(
-            return_type=return_type,
-            parameters=parameter_names,
-            parameter_types=parameter_types,
-        )
 
 
 @final

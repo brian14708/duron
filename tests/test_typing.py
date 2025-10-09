@@ -1,21 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING
 
-from duron.codec import DefaultCodec, FunctionType
-
-if TYPE_CHECKING:
-    from duron.codec import Codec
-
-codec: Codec = DefaultCodec()
+from duron.typing import FunctionType, inspect_function
 
 
 def test_no_parameters() -> None:
     def simple_func() -> int:
         return 42
 
-    result = codec.inspect_function(simple_func)
+    result = inspect_function(simple_func)
 
     assert isinstance(result, FunctionType)
     assert result.parameters == []
@@ -27,7 +21,7 @@ def test_no_parameters_no_return_type() -> None:
     def simple_func() -> None:
         pass
 
-    result = codec.inspect_function(simple_func)
+    result = inspect_function(simple_func)
 
     assert isinstance(result, FunctionType)
     assert result.parameters == []
@@ -39,7 +33,7 @@ def test_type_annotated_parameters() -> None:
     def typed_func(_x: int, _y: str, _z: float) -> bool:
         return True
 
-    result = codec.inspect_function(typed_func)
+    result = inspect_function(typed_func)
 
     assert result.parameters == ["_x", "_y", "_z"]
     assert result.parameter_types == {"_x": int, "_y": str, "_z": float}
@@ -50,7 +44,7 @@ def test_return_type_annotation() -> None:
     def func_with_return() -> dict[str, int]:
         return {}
 
-    result = codec.inspect_function(func_with_return)
+    result = inspect_function(func_with_return)
 
     assert result.parameters == []
     assert result.parameter_types == {}
@@ -61,7 +55,7 @@ def test_complex_type_annotations() -> None:
     def complex_func(_x: int | str, _y: list[dict[str, int]]) -> tuple[int, ...]:
         return (1, 2, 3)
 
-    result = codec.inspect_function(complex_func)
+    result = inspect_function(complex_func)
 
     assert result.parameters == ["_x", "_y"]
     assert result.parameter_types == {"_x": int | str, "_y": list[dict[str, int]]}
@@ -72,7 +66,7 @@ def test_async_function() -> None:
     async def async_func(_a: int, _b: str) -> bool:  # noqa: RUF029
         return True
 
-    result = codec.inspect_function(async_func)
+    result = inspect_function(async_func)
 
     assert result.parameters == ["_a", "_b"]
     assert result.parameter_types == {"_a": int, "_b": str}
@@ -83,7 +77,7 @@ def test_varargs_and_kwargs() -> None:
     def func_with_varargs(_a: int, *_args: str, **_kwargs: bool) -> None:
         pass
 
-    result = codec.inspect_function(func_with_varargs)
+    result = inspect_function(func_with_varargs)
 
     assert result.parameters == ["_a"]
     assert result.parameter_types == {"_a": int}
@@ -94,7 +88,7 @@ def test_positional_only_and_keyword_only() -> None:
     def func_with_special_args(_a: int, /, _b: str, *, _c: float) -> bool:
         return True
 
-    result = codec.inspect_function(func_with_special_args)
+    result = inspect_function(func_with_special_args)
 
     assert result.parameters == ["_a", "_b", "_c"]
     assert result.parameter_types == {"_a": int, "_b": str, "_c": float}
@@ -105,7 +99,7 @@ def test_iterator() -> None:
     async def generator() -> AsyncGenerator[int]:  # noqa: RUF029
         yield 1
 
-    result = codec.inspect_function(generator)
+    result = inspect_function(generator)
 
     assert result.parameters == []
     assert result.parameter_types == {}
