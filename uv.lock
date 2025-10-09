@@ -339,6 +339,7 @@ docs = [
 examples = [
     { name = "openai" },
     { name = "pydantic" },
+    { name = "rich" },
 ]
 lint = [
     { name = "ruff" },
@@ -367,6 +368,7 @@ docs = [
 examples = [
     { name = "openai", specifier = ">=2.2.0" },
     { name = "pydantic", specifier = ">=2.11.9" },
+    { name = "rich", specifier = ">=14.1.0" },
 ]
 lint = [{ name = "ruff", specifier = ">=0.12.8" }]
 type-checking = [

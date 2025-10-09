@@ -108,13 +108,13 @@ class Context:
                 await stream.discard()
                 return await stream
 
-        return_type = (
-            fn.return_type
-            if isinstance(fn, Op) and fn.return_type
-            else self._task.codec.inspect_function(
-                cast("Callable[..., object]", fn),
-            ).return_type
-        )
+        if isinstance(fn, Op):
+            if fn.return_type:
+                return_type = fn.return_type
+            else:
+                return_type = self._task.codec.inspect_function(fn.fn).return_type
+        else:
+            return_type = self._task.codec.inspect_function(fn).return_type
 
         metadata = options.metadata if options else None
         op = create_op(
