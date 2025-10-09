@@ -10,9 +10,13 @@ from collections import deque
 from dataclasses import dataclass
 from hashlib import blake2b
 from heapq import heappop, heappush
-from typing import TYPE_CHECKING, Generic, overload
+from typing import TYPE_CHECKING, Generic
 from typing_extensions import (
+    Any,
     TypeVar,
+    TypeVarTuple,
+    Unpack,
+    overload,
     override,
 )
 
@@ -23,11 +27,6 @@ if TYPE_CHECKING:
     from asyncio.futures import Future
     from collections.abc import Callable, Coroutine, Generator
     from contextvars import Context
-    from typing_extensions import (
-        Any,
-        TypeVarTuple,
-        Unpack,
-    )
 
     _Ts = TypeVarTuple("_Ts")
 
@@ -355,7 +354,7 @@ class EventLoop(asyncio.AbstractEventLoop):
 
 def _mix_id(a: bytes, b: int) -> bytes:
     if b == -1:
-        return blake2b(b"\xff\xff\xff\xff" + a, digest_size=12).digest()
+        return blake2b(a, digest_size=12).digest()
     return blake2b(b.to_bytes(4, "little") + a, digest_size=12).digest()
 
 

@@ -4,8 +4,8 @@ import asyncio
 import sys
 from asyncio.exceptions import CancelledError
 from collections import deque
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
-from typing_extensions import final
+from typing import TYPE_CHECKING, Generic
+from typing_extensions import Any, TypeVar, final
 
 from duron._core.ops import Barrier, StreamClose, StreamCreate, StreamEmit, create_op
 from duron._loop import wrap_future
@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
     from duron._loop import EventLoop
     from duron.codec import JSONValue
+    from duron.typing._hint import TypeHint
 
 _In_contra = TypeVar("_In_contra", contravariant=True)
 
@@ -113,7 +114,7 @@ class Signal(Generic[_In_contra]):
 
 async def create_signal(
     loop: EventLoop,
-    dtype: type[_In_contra],
+    dtype: TypeHint[_In_contra],
     *,
     metadata: dict[str, JSONValue] | None = None,
 ) -> tuple[Signal[_In_contra], SignalWriter[_In_contra]]:

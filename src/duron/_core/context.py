@@ -4,12 +4,12 @@ import asyncio
 import binascii
 from contextvars import ContextVar
 from random import Random
-from typing import (
-    TYPE_CHECKING,
+from typing import TYPE_CHECKING, cast
+from typing_extensions import (
     Any,
+    AsyncContextManager,
     ParamSpec,
     TypeVar,
-    cast,
     final,
     overload,
 )
@@ -24,7 +24,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
     from contextvars import Token
     from types import TracebackType
-    from typing_extensions import AsyncContextManager
 
     from duron._core.options import RunOptions
     from duron._core.signal import Signal, SignalWriter
@@ -32,6 +31,7 @@ if TYPE_CHECKING:
     from duron._decorator.fn import Fn
     from duron._loop import EventLoop
     from duron.codec import JSONValue
+    from duron.typing import TypeHint
 
     _T = TypeVar("_T")
     _S = TypeVar("_S")
@@ -152,7 +152,7 @@ class Context:
 
     async def create_stream(
         self,
-        dtype: type[_T],
+        dtype: TypeHint[_T],
         *,
         external: bool = False,
         metadata: dict[str, JSONValue] | None = None,
@@ -169,7 +169,7 @@ class Context:
 
     async def create_signal(
         self,
-        dtype: type[_T],
+        dtype: TypeHint[_T],
         *,
         metadata: dict[str, JSONValue] | None = None,
     ) -> tuple[Signal[_T], SignalWriter[_T]]:

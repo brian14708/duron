@@ -3,9 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
-    Any,
     Concatenate,
     Generic,
+    cast,
+    get_args,
+    get_origin,
+)
+from typing_extensions import (
+    Any,
+    AsyncContextManager,
     ParamSpec,
     TypeVar,
     overload,
@@ -13,14 +19,17 @@ from typing import (
 
 from duron._core.config import config
 from duron._core.invoke import Invoke
+from duron._core.signal import Signal
+from duron._core.stream import Stream, StreamWriter
+from duron.typing._inspect import inspect_function
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
-    from contextlib import AbstractAsyncContextManager
 
     from duron._core.context import Context
     from duron.codec import Codec
     from duron.log import LogStorage
+    from duron.typing import TypeHint
 
 
 _T_co = TypeVar("_T_co", covariant=True)
@@ -31,6 +40,7 @@ _P = ParamSpec("_P")
 class Fn(Generic[_P, _T_co]):
     codec: Codec
     fn: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]]
+    inject: list[tuple[str, type, TypeHint[Any]]]
 
     def __call__(
         self,
@@ -40,7 +50,7 @@ class Fn(Generic[_P, _T_co]):
     ) -> Coroutine[Any, Any, _T_co]:
         return self.fn(ctx, *args, **kwargs)
 
-    def invoke(self, log: LogStorage) -> AbstractAsyncContextManager[Invoke[_P, _T_co]]:
+    def invoke(self, log: LogStorage) -> AsyncContextManager[Invoke[_P, _T_co]]:
         return Invoke[_P, _T_co].invoke(self, log)
 
 
@@ -72,8 +82,28 @@ def fn(
     def decorate(
         fn: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]],
     ) -> Fn[_P, _T_co]:
-        return Fn(codec=codec or config.codec, fn=fn)
+        info = inspect_function(fn)
+        inject: list[tuple[str, type, TypeHint[Any]]] = []
+        for name, param in info.parameter_types.items():
+            ty = _special_type(param)
+            if ty:
+                inject.append((name, *ty))
+        inject.sort()
+        return Fn(codec=codec or config.codec, fn=fn, inject=inject)
 
     if f is not None:
         return decorate(f)
     return decorate
+
+
+def _special_type(
+    tp: TypeHint[Any],
+) -> tuple[type, TypeHint[Any]] | None:
+    origin = get_origin(tp)
+    if origin is Stream:
+        return (Stream, cast("TypeHint[Any]", get_args(tp)[0]))
+    if origin is Signal:
+        return (Signal, cast("TypeHint[Any]", get_args(tp)[0]))
+    if origin is StreamWriter:
+        return (StreamWriter, cast("TypeHint[Any]", get_args(tp)[0]))
+    return None

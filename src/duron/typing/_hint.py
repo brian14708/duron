@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from types import UnionType
-from typing_extensions import TypeAliasType, TypeVar
+from typing import Final, cast
+from typing_extensions import Any, TypeAliasType, TypeVar
 
 _T = TypeVar("_T")
 
@@ -11,7 +12,8 @@ class _Unspecified:
         return False
 
 
-unspecified = _Unspecified()
+Unspecified: Final = _Unspecified()
+Deferred: Final = cast("Any", ...)
 
 
 MYPY = False

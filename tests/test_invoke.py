@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from duron import Context, fn
+from duron import Context, Deferred, Stream, StreamWriter, fn
 from duron.contrib.codecs import PickleCodec
 from duron.contrib.storage import MemoryLogStorage
 
@@ -31,13 +31,13 @@ async def test_invoke() -> None:
 
     ids = {
         "+qPYuDgKBdMkb8ME",
+        "20QZakraLA2aFVh0",
         "9nLMU+itD7QHcCsf",
         "BCLA1azFK4LrrEHg",
         "D7qSBNZIThKa2P+H",
-        "VdptC8Lv0z2kPe3n",
-        "rThvjdqQNneQA3Am",
-        "syoQHz+dg0KA3xJY",
-        "uJ/iXS2GC5Hz6v1R",
+        "d0eMKz6qFm4C+TYX",
+        "tlmy+UdKzdxIIykQ",
+        "vP2AH9GHFTbZRJQ7",
     }
 
     log = MemoryLogStorage()
@@ -198,10 +198,9 @@ async def test_external_promise() -> None:
 @pytest.mark.asyncio
 async def test_external_stream() -> None:
     @fn
-    async def activity(ctx: Context) -> int:
-        stream, _ = await ctx.create_stream(int, metadata={"name": "test"})
+    async def activity(_ctx: Context, test: Stream[int] = Deferred) -> int:
         t = 0
-        async for value in stream:
+        async for value in test:
             t += value
             if value == -1:
                 return t
@@ -209,22 +208,44 @@ async def test_external_stream() -> None:
 
     log = MemoryLogStorage()
     async with activity.invoke(log) as t:
+        test: StreamWriter[int] = t.open_stream("test", "w")
         await t.start()
 
         async def do() -> None:
-            while True:
-                n = await t.send_stream(lambda d: d.get("name") == "test", 0)
-                if n == 0:
-                    await asyncio.sleep(0.1)
-                else:
-                    break
+            await test.send(0)
             for i in range(10):
-                n = await t.send_stream(lambda d: d.get("name") == "test", i)
-            n = await t.send_stream(lambda d: d.get("name") == "test", -1)
+                await test.send(i)
+            await test.send(-1)
 
         bg = asyncio.create_task(do())
         assert await t.wait() == 44
         await bg
+
+
+@pytest.mark.asyncio
+async def test_external_stream_write() -> None:
+    @fn
+    async def activity(_ctx: Context, writer: StreamWriter[int] = Deferred) -> int:
+        for i in range(10):
+            await writer.send(i)
+        await writer.close()
+        return 42
+
+    log = MemoryLogStorage()
+
+    async with activity.invoke(log) as invoke:
+        output_stream = invoke.open_stream("writer", "r")
+
+        await invoke.start()
+
+        async def bg() -> list[int]:
+            values: list[int] = [value async for value in output_stream]
+            return values
+
+        b = asyncio.create_task(bg())
+        result = await invoke.wait()
+        assert result == 42
+        assert await b == list(range(10))
 
 
 @pytest.mark.asyncio

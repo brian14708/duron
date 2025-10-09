@@ -16,9 +16,9 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pydantic>=2.11.9",
-    "pytest>=7.0",
     "pytest-asyncio>=0.21",
     "pytest-codspeed>=4.1.1",
+    "pytest>=7.0",
 ]
 type-checking = [
     "basedmypy>=2.10.0",
@@ -28,14 +28,14 @@ lint = [
     "ruff>=0.12.8",
 ]
 docs = [
-    "mkdocs>=1.6.1",
     "mkdocs-material>=9.6.18",
     "mkdocs-mermaid2-plugin>=1.2.1",
+    "mkdocs>=1.6.1",
     "mkdocstrings[python]>=0.30.0",
 ]
 examples = [
-    "pydantic>=2.11.9",
     "openai>=2.2.0",
+    "pydantic>=2.11.9",
     "rich>=14.1.0",
 ]
 
@@ -60,6 +60,7 @@ extra-standard-library = ["typing_extensions"]
 [tool.ruff.lint.flake8-type-checking]
 runtime-evaluated-base-classes = ["typing_extensions.TypedDict"]
 runtime-evaluated-decorators = ["duron.fn", "duron.op"]
+exempt-modules = ["typing", "typing_extensions"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "typing.TypedDict".msg = "Use typing_extensions.TypedDict instead."

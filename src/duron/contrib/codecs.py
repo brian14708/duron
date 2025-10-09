@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import binascii
 import pickle  # noqa: S403
-from typing import TYPE_CHECKING, final
-from typing_extensions import override
+from typing import TYPE_CHECKING
+from typing_extensions import Any, final, override
 
 from duron.codec import Codec
 
 if TYPE_CHECKING:
-    from typing_extensions import Any
-
     from duron.codec import JSONValue
     from duron.typing import TypeHint
 

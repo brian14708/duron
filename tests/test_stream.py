@@ -4,7 +4,7 @@ import asyncio
 import operator
 import random
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -12,6 +12,8 @@ from duron import Context, RunOptions, StreamClosed, fn, op
 from duron.contrib.storage import MemoryLogStorage
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from duron import StreamWriter
 
 
@@ -75,9 +77,8 @@ async def test_run() -> None:
     async def activity(ctx: Context) -> None:
         @op(
             checkpoint=True,
-            action_type=str,
-            initial=lambda: "",
-            reducer=operator.add,
+            initial=str,
+            reducer=cast("Callable[[str, str], str]", operator.add),
         )
         async def f(s: str) -> AsyncGenerator[str, str]:
             while len(s) < 100:
@@ -110,9 +111,8 @@ async def test_stream_map() -> None:
     async def activity(ctx: Context) -> None:
         @op(
             checkpoint=True,
-            action_type=str,
-            initial=lambda: "",
-            reducer=operator.add,
+            initial=str,
+            reducer=cast("Callable[[str, str], str]", operator.add),
         )
         async def f(s: str) -> AsyncGenerator[str, str]:
             while len(s) < 100:
@@ -177,9 +177,8 @@ async def test_stream_cross_loop() -> None:
     async def activity(ctx: Context) -> list[str]:
         @op(
             checkpoint=True,
-            action_type=str,
-            initial=lambda: "",
-            reducer=operator.add,
+            initial=str,
+            reducer=cast("Callable[[str, str], str]", operator.add),
         )
         async def f(s: str) -> AsyncGenerator[str, str]:
             while len(s) < 5:

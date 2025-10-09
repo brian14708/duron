@@ -6,17 +6,16 @@ import contextlib
 import os
 import time
 from hashlib import blake2b
-from typing import (
-    TYPE_CHECKING,
+from typing import TYPE_CHECKING, Generic, Literal, cast
+from typing_extensions import (
     Any,
-    Generic,
     ParamSpec,
+    TypedDict,
     TypeVar,
-    cast,
+    assert_never,
     final,
     overload,
 )
-from typing_extensions import TypedDict, assert_never
 
 from duron._core.context import Context
 from duron._core.ops import (
@@ -27,11 +26,12 @@ from duron._core.ops import (
     StreamCreate,
     StreamEmit,
 )
-from duron._core.stream import ObserverStream
+from duron._core.signal import Signal
+from duron._core.stream import ObserverStream, Stream, StreamWriter
 from duron._loop import EventLoop, create_loop
 from duron.codec import Codec, JSONValue
 from duron.log import is_entry
-from duron.typing import inspect_function, unspecified
+from duron.typing import Unspecified, inspect_function
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -41,7 +41,6 @@ if TYPE_CHECKING:
         Op,
         StreamObserver,
     )
-    from duron._core.stream import Stream
     from duron._decorator.fn import Fn
     from duron._loop import OpFuture, WaitSet
     from duron.codec import Codec
@@ -60,6 +59,7 @@ if TYPE_CHECKING:
 
 
 _T_co = TypeVar("_T_co", covariant=True)
+_T = TypeVar("_T")
 _P = ParamSpec("_P")
 
 _CURRENT_VERSION = 0
@@ -168,25 +168,29 @@ class Invoke(Generic[_P, _T_co]):
             msg = "Either result or error must be provided"
             raise ValueError(msg)
 
-    async def send_stream(
-        self,
-        predicate: Callable[[dict[str, JSONValue]], bool],
-        value: object,
-    ) -> int:
-        if self._run is None:
-            msg = "Invokation not started"
+    @overload
+    def open_stream(self, name: str, mode: Literal["w"]) -> StreamWriter[Any]: ...
+    @overload
+    def open_stream(self, name: str, mode: Literal["r"]) -> Stream[Any, None]: ...
+    def open_stream(
+        self, name: str, mode: Literal["w", "r"]
+    ) -> StreamWriter[Any] | Stream[Any, None]:
+        if self._run is not None:
+            msg = "open_stream() must be called before start() or resume()"
             raise RuntimeError(msg)
-        return await self._run.send_stream(predicate, value)
+        for n, _, _ in self._fn.inject:
+            if name == n:
+                break
+        else:
+            msg = f"Stream parameter '{name}' not found"
+            raise ValueError(msg)
+        if mode == "r":
 
-    async def close_stream(
-        self,
-        predicate: Callable[[dict[str, JSONValue]], bool],
-        error: BaseException | None = None,
-    ) -> int:
-        if self._run is None:
-            msg = "Invokation not started"
-            raise RuntimeError(msg)
-        return await self._run.close_stream(predicate, error)
+            def pred(md: dict[str, JSONValue]) -> bool:
+                return md.get("param.name") == name
+
+            return self.watch_stream(pred)
+        return _StreamWriter(self, name)
 
     def watch_stream(
         self,
@@ -194,9 +198,7 @@ class Invoke(Generic[_P, _T_co]):
     ) -> Stream[_T_co, None]:
         if self._run is not None:
             msg = "create_watcher() must be called before start() or resume()"
-            raise RuntimeError(
-                msg,
-            )
+            raise RuntimeError(msg)
 
         observer: ObserverStream[_T_co, None] = ObserverStream()
         self._watchers.append((
@@ -204,6 +206,12 @@ class Invoke(Generic[_P, _T_co]):
             cast("StreamObserver[object]", cast("StreamObserver[_T_co]", observer)),
         ))
         return observer
+
+    def get_run(self) -> _InvokeRun:
+        if self._run is None:
+            msg = "Job not started"
+            raise RuntimeError(msg)
+        return self._run
 
 
 @final
@@ -244,22 +252,45 @@ async def _invoke_prelude(
         if init_params["version"] != _CURRENT_VERSION:
             msg = "version mismatch"
             raise RuntimeError(msg)
+        extra_kwargs: dict[str, object] = {}
+        for name, type_, dtype in job_fn.inject:
+            if type_ is Stream:
+                extra_kwargs[name], _ = await ctx.create_stream(
+                    dtype,
+                    metadata={
+                        "param.name": name,
+                    },
+                )
+            elif type_ is Signal:
+                extra_kwargs[name], _ = await ctx.create_signal(
+                    dtype,
+                    metadata={
+                        "param.name": name,
+                    },
+                )
+            elif type_ is StreamWriter:
+                _, extra_kwargs[name] = await ctx.create_stream(
+                    dtype,
+                    metadata={
+                        "param.name": name,
+                    },
+                )
         codec = job_fn.codec
 
         args = tuple(
             codec.decode_json(
                 arg,
-                type_info.parameter_types.get(type_info.parameters[i + 1], unspecified)
+                type_info.parameter_types.get(type_info.parameters[i + 1], Unspecified)
                 if i + 1 < len(type_info.parameters)
-                else unspecified,
+                else Unspecified,
             )
             for i, arg in enumerate(init_params["args"])
         )
         kwargs = {
-            k: codec.decode_json(v, type_info.parameter_types.get(k, unspecified))
-            for k, v in init_params["kwargs"].items()
+            k: codec.decode_json(v, type_info.parameter_types.get(k, Unspecified))
+            for k, v in sorted(init_params["kwargs"].items())
         }
-        return await job_fn.fn(ctx, *args, **kwargs)
+        return await job_fn.fn(ctx, *args, **extra_kwargs, **kwargs)
 
 
 @final
@@ -394,7 +425,7 @@ class _InvokeRun:
 
             id_ = _decode_id(e["promise_id"])
 
-            return_type: TypeHint[Any] = unspecified
+            return_type: TypeHint[Any] = Unspecified
             if pending_info is not None:
                 _, return_type = pending_info
             elif task_info is not None:
@@ -679,7 +710,7 @@ class _InvokeRun:
 def _encode_id(id_: bytes, *, ack: bool = False) -> str:
     if ack:
         id_ = blake2b(
-            b"\x01\x00\x00\x00" + id_,
+            id_,
             digest_size=12,
         ).digest()
     return base64.b64encode(id_).decode()
@@ -705,3 +736,30 @@ def _decode_error(error_info: ErrorInfo) -> BaseException:
     if error_info["code"] == -2:
         return asyncio.CancelledError()
     return Exception(f"[{error_info['code']}] {error_info['message']}")
+
+
+@final
+class _StreamWriter(Generic[_T]):
+    __slots__ = ("_invoke", "_name")
+
+    def __init__(self, invoke: Invoke[..., Any], name: str) -> None:
+        self._invoke = invoke
+        self._name = name
+
+    async def send(self, value: _T) -> None:
+        def pred(md: dict[str, JSONValue]) -> bool:
+            return md.get("param.name") == self._name
+
+        while (  # noqa: ASYNC110
+            await self._invoke.get_run().send_stream(pred, value) == 0
+        ):
+            await asyncio.sleep(0.1)
+
+    async def close(self, error: BaseException | None = None) -> None:
+        def pred(md: dict[str, JSONValue]) -> bool:
+            return md.get("param.name") == self._name
+
+        while (  # noqa: ASYNC110
+            await self._invoke.get_run().close_stream(pred, error) == 0
+        ):
+            await asyncio.sleep(0.1)

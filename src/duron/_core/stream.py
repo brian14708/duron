@@ -6,18 +6,24 @@ from abc import ABC, abstractmethod
 from asyncio.exceptions import CancelledError
 from collections import deque
 from collections.abc import Awaitable
-from typing import TYPE_CHECKING, Any, Concatenate, Generic, Protocol, TypeVar, cast
-from typing_extensions import final, override
+from typing import TYPE_CHECKING, Concatenate, Generic, cast
+from typing_extensions import (
+    Any,
+    ParamSpec,
+    Protocol,
+    TypeVar,
+    final,
+    override,
+)
 
 from duron._core.ops import FnCall, StreamClose, StreamCreate, StreamEmit, create_op
 from duron._loop import wrap_future
-from duron.typing import unspecified
+from duron.typing import Unspecified
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Generator, Sequence
     from contextlib import AbstractAsyncContextManager
     from types import TracebackType
-    from typing_extensions import ParamSpec
 
     from duron._core.context import Context
     from duron._loop import EventLoop
@@ -27,7 +33,7 @@ if TYPE_CHECKING:
     _P = ParamSpec("_P")
 
 _T = TypeVar("_T")
-_S = TypeVar("_S")
+_S_co = TypeVar("_S_co", covariant=True, default=None)
 _U = TypeVar("_U")
 _In_contra = TypeVar("_In_contra", contravariant=True)
 
@@ -83,7 +89,7 @@ class _ExternalWriter(Generic[_In_contra]):
         )
 
 
-class Stream(ABC, Awaitable[_S], Generic[_T, _S]):
+class Stream(ABC, Awaitable[_S_co], Generic[_T, _S_co]):
     @abstractmethod
     async def _start(self) -> None: ...
     @abstractmethod
@@ -113,7 +119,7 @@ class Stream(ABC, Awaitable[_S], Generic[_T, _S]):
         finally:
             await self._shutdown()
 
-    async def __aenter__(self) -> StreamOp[_T, _S]:
+    async def __aenter__(self) -> StreamOp[_T, _S_co]:
         assert not self._started  # noqa: S101
         self._started = True
         await self._start()
@@ -139,7 +145,7 @@ class Stream(ABC, Awaitable[_S], Generic[_T, _S]):
 
     # stream methods
 
-    def map(self, fn: Callable[[_T], _U]) -> Stream[_U, _S]:
+    def map(self, fn: Callable[[_T], _U]) -> Stream[_U, _S_co]:
         return _Map(self, fn)
 
     def broadcast(
@@ -150,8 +156,8 @@ class Stream(ABC, Awaitable[_S], Generic[_T, _S]):
 
 
 @final
-class StreamOp(Generic[_T, _S]):
-    def __init__(self, stream: Stream[_T, _S]) -> None:
+class StreamOp(Generic[_T, _S_co]):
+    def __init__(self, stream: Stream[_T, _S_co]) -> None:
         self._stream = stream
 
     async def next(self) -> tuple[int, _T]:
@@ -168,7 +174,7 @@ class StreamOp(Generic[_T, _S]):
 
 async def create_stream(
     loop: EventLoop,
-    dtype: type[_T],
+    dtype: TypeHint[_T],
     *,
     external: bool = False,
     metadata: dict[str, JSONValue] | None = None,
@@ -212,13 +218,13 @@ class EmptyStream(Exception):  # noqa: N818
     __slots__ = ()
 
 
-class ObserverStream(Stream[_T, _S], Generic[_T, _S]):
+class ObserverStream(Stream[_T, _S_co], Generic[_T, _S_co]):
     def __init__(self) -> None:
         super().__init__()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._event: asyncio.Event | None = None
         self._buffer: deque[tuple[int, _T | StreamClosed]] = deque()
-        self._waiter: Awaitable[_S] | None = None
+        self._waiter: Awaitable[_S_co] | None = None
 
     @override
     async def _start(self) -> None:
@@ -270,7 +276,7 @@ class ObserverStream(Stream[_T, _S], Generic[_T, _S]):
         self._send_close(offset, exc)
 
     @override
-    def __await__(self) -> Generator[Any, Any, _S]:
+    def __await__(self) -> Generator[Any, Any, _S_co]:
         if self._waiter is None:
             msg = "Stream is not started"
             raise RuntimeError(msg)
@@ -278,8 +284,8 @@ class ObserverStream(Stream[_T, _S], Generic[_T, _S]):
 
 
 @final
-class _Map(Stream[_U, _S], Generic[_T, _U, _S]):
-    def __init__(self, stream: Stream[_T, _S], fn: Callable[[_T], _U]) -> None:
+class _Map(Stream[_U, _S_co], Generic[_T, _U, _S_co]):
+    def __init__(self, stream: Stream[_T, _S_co], fn: Callable[[_T], _U]) -> None:
         super().__init__()
         self._stream = stream
         self._fn = fn
@@ -303,7 +309,7 @@ class _Map(Stream[_U, _S], Generic[_T, _U, _S]):
         return await self._stream._shutdown()  # noqa: SLF001
 
     @override
-    def __await__(self) -> Generator[Any, Any, _S]:
+    def __await__(self) -> Generator[Any, Any, _S_co]:
         return self._stream.__await__()
 
 
@@ -393,7 +399,7 @@ class _ResumableGuard(Generic[_U, _T]):
                 callable=self._stream.worker,
                 args=(sink,),
                 kwargs={},
-                return_type=unspecified,
+                return_type=Unspecified,
             ),
         )
         return self._stream

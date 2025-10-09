@@ -9,3 +9,4 @@ from ._core.stream import StreamClosed as StreamClosed
 from ._core.stream import StreamWriter as StreamWriter
 from ._decorator.fn import fn as fn
 from ._decorator.op import op as op
+from .typing import Deferred as Deferred

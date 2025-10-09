@@ -15,7 +15,7 @@ from typing import (
     overload,
 )
 
-from duron.typing import inspect_function, unspecified
+from duron.typing import Unspecified, inspect_function
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -70,7 +70,6 @@ def op(
 @overload
 def op(
     *,
-    return_type: TypeHint[Any] = ...,
     checkpoint: Literal[False] = ...,
     metadata: dict[str, JSONValue] | None = ...,
 ) -> Callable[
@@ -83,8 +82,6 @@ def op(
     checkpoint: Literal[True],
     initial: Callable[[], _S],
     reducer: Callable[[_S, _T], _S],
-    return_type: TypeHint[_S] = ...,
-    action_type: TypeHint[_T] = ...,
     metadata: dict[str, JSONValue] | None = ...,
 ) -> Callable[
     [Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]]],
@@ -94,13 +91,11 @@ def op(
     fn: Callable[_P, Coroutine[Any, Any, _T_co]] | None = None,
     /,
     *,
-    return_type: TypeHint[Any] = unspecified,
     metadata: dict[str, JSONValue] | None = None,
     # checkpoint parameters
     checkpoint: bool = False,
     initial: Callable[[], _S] | None = None,
     reducer: Callable[[_S, _T], _S] | None = None,
-    action_type: TypeHint[_T] = unspecified,
 ) -> (
     Op[_P, _T_co]
     | Callable[
@@ -127,22 +122,17 @@ def op(
         def decorate_ckpt(
             fn: Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]],
         ) -> CheckpointOp[_P, _S, _T]:
-            action_type_local = action_type
-            return_type_local = return_type
-            if not action_type_local or not return_type_local:
-                ret = inspect_function(fn).return_type
-                if get_origin(ret) is AsyncGenerator:
-                    yield_, send = get_args(ret)
-                    if not action_type_local:
-                        action_type_local = yield_
-                    if not return_type_local:
-                        return_type_local = send
+            return_type: TypeHint[_S] = Unspecified
+            action_type: TypeHint[_T] = Unspecified
+            ret = inspect_function(fn).return_type
+            if get_origin(ret) is AsyncGenerator:
+                action_type, return_type = get_args(ret)
             return CheckpointOp(
                 fn=fn,
                 initial=initial,
                 reducer=reducer,
-                action_type=action_type_local,
-                return_type=return_type_local,
+                action_type=action_type,
+                return_type=return_type,
                 metadata=metadata,
             )
 
@@ -153,7 +143,7 @@ def op(
     ) -> Op[_P, _T_co]:
         return Op(
             fn=fn,
-            return_type=return_type or inspect_function(fn).return_type,
+            return_type=inspect_function(fn).return_type,
             metadata=metadata,
         )
 
