@@ -20,6 +20,7 @@ from duron.typing import inspect_function, unspecified
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
+    from duron.codec import JSONValue
     from duron.typing import TypeHint
 
 
@@ -36,6 +37,7 @@ class CheckpointOp(Generic[_P, _S, _T]):
     reducer: Callable[[_S, _T], _S]
     action_type: TypeHint[_T]
     return_type: TypeHint[_S]
+    metadata: dict[str, JSONValue] | None
 
     def __call__(
         self,
@@ -50,6 +52,7 @@ class CheckpointOp(Generic[_P, _S, _T]):
 class Op(Generic[_P, _T_co]):
     fn: Callable[_P, Coroutine[Any, Any, _T_co]]
     return_type: TypeHint[Any]
+    metadata: dict[str, JSONValue] | None
 
     def __call__(
         self,
@@ -69,6 +72,7 @@ def op(
     *,
     return_type: TypeHint[Any] = ...,
     checkpoint: Literal[False] = ...,
+    metadata: dict[str, JSONValue] | None = ...,
 ) -> Callable[
     [Callable[_P, Coroutine[Any, Any, _T_co]]],
     Op[_P, _T_co],
@@ -81,6 +85,7 @@ def op(
     reducer: Callable[[_S, _T], _S],
     return_type: TypeHint[_S] = ...,
     action_type: TypeHint[_T] = ...,
+    metadata: dict[str, JSONValue] | None = ...,
 ) -> Callable[
     [Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]]],
     CheckpointOp[_P, _S, _T],
@@ -90,6 +95,7 @@ def op(
     /,
     *,
     return_type: TypeHint[Any] = unspecified,
+    metadata: dict[str, JSONValue] | None = None,
     # checkpoint parameters
     checkpoint: bool = False,
     initial: Callable[[], _S] | None = None,
@@ -106,7 +112,17 @@ def op(
         CheckpointOp[_P, _S, _T],
     ]
 ):
-    if checkpoint and initial and reducer:
+    if fn is not None:
+        return Op(
+            fn=fn,
+            return_type=inspect_function(fn).return_type,
+            metadata=None,
+        )
+
+    if checkpoint:
+        if not initial or not reducer:
+            msg = "initial and reducer must be provided for checkpoint ops"
+            raise ValueError(msg)
 
         def decorate_ckpt(
             fn: Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]],
@@ -127,6 +143,7 @@ def op(
                 reducer=reducer,
                 action_type=action_type_local,
                 return_type=return_type_local,
+                metadata=metadata,
             )
 
         return decorate_ckpt
@@ -137,8 +154,7 @@ def op(
         return Op(
             fn=fn,
             return_type=return_type or inspect_function(fn).return_type,
+            metadata=metadata,
         )
 
-    if fn is not None:
-        return decorate(fn)
     return decorate

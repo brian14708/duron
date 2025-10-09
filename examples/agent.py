@@ -20,7 +20,6 @@ from pydantic import BaseModel, Field, TypeAdapter
 from rich.console import Console
 
 import duron
-from duron import RunOptions
 from duron.codec import Codec
 from duron.contrib.storage import FileLogStorage
 
@@ -158,7 +157,9 @@ async def completion(
     ctx: duron.Context,
     messages: list[ChatCompletionMessageParam],
 ) -> ChatCompletion:
-    @duron.op
+    @duron.op(
+        metadata={"type": "chat.completions.create"},
+    )
     async def _completion(
         messages: list[ChatCompletionMessageParam],
     ) -> ChatCompletion:
@@ -186,9 +187,7 @@ async def completion(
 
     return await ctx.run(
         _completion,
-        RunOptions(
-            metadata={"type": "chat.completions.create"},
-        ),
+        None,
         messages,
     )
 

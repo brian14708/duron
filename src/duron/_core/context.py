@@ -111,10 +111,11 @@ class Context:
 
         if isinstance(fn, Op):
             return_type = fn.return_type
+            metadata = fn.metadata
         else:
             return_type = inspect_function(fn).return_type
+            metadata = None
 
-        metadata = options.metadata if options else None
         op = create_op(
             self._loop,
             FnCall(
@@ -122,7 +123,7 @@ class Context:
                 args=args,
                 kwargs=kwargs,
                 return_type=return_type,
-                metadata=metadata,
+                metadata=_merge(options.metadata if options else None, metadata),
             ),
         )
         return cast("_T", await op)
@@ -218,3 +219,13 @@ class Context:
             msg = "Context random can only be used in the context loop"
             raise RuntimeError(msg)
         return Random(self._loop.generate_op_id())  # noqa: S311
+
+
+def _merge(
+    d1: dict[str, JSONValue] | None, d2: dict[str, JSONValue] | None
+) -> dict[str, JSONValue] | None:
+    if d1 is None:
+        return d2
+    if d2 is None:
+        return d1
+    return {**d1, **d2}
