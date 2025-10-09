@@ -289,7 +289,7 @@ class _InvokeRun:
         ]
         | None = None,
     ) -> None:
-        self._loop = create_loop(asyncio.get_event_loop(), b"")
+        self._loop = create_loop(asyncio.get_running_loop(), b"")
         self._task = self._loop.create_task(task)
         self._log = log
         self._codec = codec
@@ -370,14 +370,18 @@ class _InvokeRun:
         while True:
             self._loop.tick(self.now())
             result = self._loop.poll_completion(self._task)
-            if result is None or self._pending_ops.issuperset(o.id for o in result.ops):
+            if result is None:
                 return result
 
+            new_ops = False
             for s in result.ops:
                 sid = s.id
                 if sid not in self._pending_ops:
                     self._pending_ops.add(sid)
                     await self.enqueue_op(sid, s)
+                    new_ops = True
+            if not new_ops:
+                return result
 
     async def handle_message(
         self,
@@ -489,7 +493,7 @@ class _InvokeRun:
                 async def cb() -> None:
                     entry: PromiseCompleteEntry = {
                         "ts": self.now(),
-                        "id": _encode_id(id_, 1),
+                        "id": _encode_id(id_, ack=True),
                         "type": "promise/complete",
                         "promise_id": _encode_id(id_),
                     }
@@ -604,7 +608,7 @@ class _InvokeRun:
             raise ValueError(msg)
         entry: PromiseCompleteEntry = {
             "ts": self.now(),
-            "id": _encode_id(_decode_id(id_), 1),
+            "id": _encode_id(_decode_id(id_), ack=True),
             "type": "promise/complete",
             "promise_id": id_,
         }
@@ -672,10 +676,10 @@ class _InvokeRun:
         return cnt
 
 
-def _encode_id(id_: bytes, flag: int = 0) -> str:
-    if flag != 0:
+def _encode_id(id_: bytes, *, ack: bool = False) -> str:
+    if ack:
         id_ = blake2b(
-            flag.to_bytes(4, "little", signed=True) + id_,
+            b"\x01\x00\x00\x00" + id_,
             digest_size=12,
         ).digest()
     return base64.b64encode(id_).decode()

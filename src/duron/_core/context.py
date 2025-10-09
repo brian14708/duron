@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import base64
+import binascii
 from contextvars import ContextVar
 from random import Random
 from typing import (
@@ -192,7 +192,10 @@ class Context:
             self._loop,
             ExternalPromiseCreate(metadata=metadata, return_type=dtype),
         )
-        return (base64.b64encode(fut.id).decode(), cast("asyncio.Future[_T]", fut))
+        return (
+            binascii.b2a_base64(fut.id, newline=False).decode(),
+            cast("asyncio.Future[_T]", fut),
+        )
 
     async def barrier(self) -> int:
         if asyncio.get_running_loop() is not self._loop:

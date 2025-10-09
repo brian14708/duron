@@ -252,3 +252,19 @@ async def test_watch_stream() -> None:
         result = await invoke.wait()
         assert result == 42
         assert await b == list(range(10))
+
+
+@fn
+async def activity(ctx: Context) -> int:
+    for _i in range(100):
+        _ = await ctx.barrier()
+    return 42
+
+
+@pytest.mark.benchmark
+@pytest.mark.asyncio
+async def test_performance() -> None:
+    log = MemoryLogStorage()
+    async with activity.invoke(log) as invoke:
+        await invoke.start()
+        _ = await invoke.wait()

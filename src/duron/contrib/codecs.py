@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import base64
+import binascii
 import pickle  # noqa: S403
 from typing import TYPE_CHECKING, final
 from typing_extensions import override
@@ -20,11 +20,11 @@ class PickleCodec(Codec):
 
     @override
     def encode_json(self, result: object) -> str:
-        return base64.b64encode(pickle.dumps(result)).decode()
+        return binascii.b2a_base64(pickle.dumps(result), newline=False).decode()
 
     @override
     def decode_json(self, encoded: JSONValue, _expected_type: TypeHint[Any]) -> object:
         if not isinstance(encoded, str):
             msg = f"Expected a string, got {type(encoded).__name__}"
             raise TypeError(msg)
-        return pickle.loads(base64.b64decode(encoded.encode()))  # noqa: S301
+        return pickle.loads(binascii.a2b_base64(encoded.encode()))  # noqa: S301

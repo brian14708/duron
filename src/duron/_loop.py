@@ -3,21 +3,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
-import heapq
 import logging
 import os
-from asyncio import (
-    AbstractEventLoop,
-    CancelledError,
-    Handle,
-    Task,
-    TimerHandle,
-    events,
-)
+from asyncio import events, tasks
 from collections import deque
 from dataclasses import dataclass
 from hashlib import blake2b
-from typing import TYPE_CHECKING, Generic, cast, overload
+from heapq import heappop, heappush
+from typing import TYPE_CHECKING, Generic, overload
 from typing_extensions import (
     TypeVar,
     override,
@@ -56,7 +49,9 @@ class OpFuture(asyncio.Future[_T], Generic[_T]):
     id: bytes
     params: object
 
-    def __init__(self, id_: bytes, params: object, loop: AbstractEventLoop) -> None:
+    def __init__(
+        self, id_: bytes, params: object, loop: asyncio.AbstractEventLoop
+    ) -> None:
         super().__init__(loop=loop)
         self.id = id_
         self.params = params
@@ -65,7 +60,7 @@ class OpFuture(asyncio.Future[_T], Generic[_T]):
 @dataclass(slots=True)
 class WaitSet:
     ops: list[OpFuture[object]]
-    timer: float | None
+    timer: int | None
     event: asyncio.Event
 
     async def block(self, now_us: int) -> None:
@@ -84,7 +79,7 @@ class _TaskCtx:
     seq: int = 0
 
 
-class EventLoop(AbstractEventLoop):
+class EventLoop(asyncio.AbstractEventLoop):
     __slots__: tuple[str, ...] = (
         "_closed",
         "_ctx",
@@ -99,18 +94,18 @@ class EventLoop(AbstractEventLoop):
     )
 
     def __init__(self, host: asyncio.AbstractEventLoop, seed: bytes) -> None:
-        self._ready: deque[Handle] = deque()
+        self._ready: deque[asyncio.Handle] = deque()
         self._debug: bool = False
         self._host: asyncio.AbstractEventLoop = host
         self._exc_handler: (
-            Callable[[AbstractEventLoop, dict[str, object]], object] | None
+            Callable[[asyncio.AbstractEventLoop, dict[str, object]], object] | None
         ) = None
         self._ops: dict[bytes, OpFuture[object]] = {}
         self._ctx: _TaskCtx = _TaskCtx(parent_id=seed)
         self._now_us: int = 0
         self._closed: bool = False
         self._event: asyncio.Event = asyncio.Event()  # loop = _host
-        self._timers: list[TimerHandle] = []
+        self._timers: list[asyncio.TimerHandle] = []
 
     def generate_op_id(self) -> bytes:
         ctx = _task_ctx.get(self._ctx)
@@ -126,8 +121,8 @@ class EventLoop(AbstractEventLoop):
         callback: Callable[[Unpack[_Ts]], object],
         *args: Unpack[_Ts],
         context: Context | None = None,
-    ) -> Handle:
-        h = Handle(
+    ) -> asyncio.Handle:
+        h = asyncio.Handle(
             callback,
             args,
             self,
@@ -145,15 +140,15 @@ class EventLoop(AbstractEventLoop):
         callback: Callable[[Unpack[_Ts]], object],
         *args: Unpack[_Ts],
         context: Context | None = None,
-    ) -> TimerHandle:
-        th = TimerHandle(
+    ) -> asyncio.TimerHandle:
+        th = asyncio.TimerHandle(
             int(when * 1e6),
             callback,
             args,
             loop=self,
             context=context,
         )
-        heapq.heappush(self._timers, th)
+        heappush(self._timers, th)
         if asyncio.get_running_loop() is self._host:
             self._event.set()
         return th
@@ -165,15 +160,15 @@ class EventLoop(AbstractEventLoop):
         callback: Callable[[Unpack[_Ts]], object],
         *args: Unpack[_Ts],
         context: Context | None = None,
-    ) -> TimerHandle:
-        th = TimerHandle(
+    ) -> asyncio.TimerHandle:
+        th = asyncio.TimerHandle(
             self.time_us() + int(delay * 1e6),
             callback,
             args,
             loop=self,
             context=context,
         )
-        heapq.heappush(self._timers, th)
+        heappush(self._timers, th)
         if asyncio.get_running_loop() is self._host:
             self._event.set()
         return th
@@ -196,46 +191,44 @@ class EventLoop(AbstractEventLoop):
     def create_task(
         self,
         coro: _TaskCompatibleCoro[_T],
-        *,
-        context: Context | None = None,
         **kwargs: Any,
-    ) -> Task[_T]:
-        ctx = _context_new_task(context, self.generate_op_id())
-        return ctx.run(
-            cast("type[Task[_T]]", Task),
+    ) -> asyncio.Task[_T]:
+        token = _task_ctx.set(_TaskCtx(parent_id=self.generate_op_id()))
+        task = asyncio.Task(
             coro,
             loop=self,
             **kwargs,
         )
+        _task_ctx.reset(token)
+        return task
 
     def poll_completion(self, task: Future[_T]) -> WaitSet | None:
-        old = events.get_running_loop()
-        old_task = asyncio.tasks.current_task(old)
-        if old_task:
-            asyncio.tasks._leave_task(old, old_task)  # noqa: SLF001
+        now = self.time_us()
+        self._event.clear()
+        if prev_task := tasks.current_task():
+            tasks._leave_task(self._host, prev_task)  # noqa: SLF001
         events._set_running_loop(self)  # noqa: SLF001
         try:
-            self._event.clear()
-            now = self.time_us()
-            deadline: float | None = None
+            timers = self._timers
+            ready = self._ready
             while True:
-                deadline = None
-                while self._timers:
-                    ht = self._timers[0]
-                    if ht.cancelled():
-                        _ = heapq.heappop(self._timers)
-                    elif ht.when() <= now:
-                        _ = heapq.heappop(self._timers)
-                        self._ready.append(ht)
+                deadline: int | None = None
+                while timers:
+                    ht = timers[0]
+                    t = int(ht.when())
+                    if ht._cancelled:  # noqa: SLF001
+                        _ = heappop(timers)
+                    elif t <= now:
+                        _ = heappop(timers)
+                        ready.append(ht)
                     else:
-                        deadline = ht.when()
+                        deadline = t
                         break
 
-                if not self._ready:
+                if not ready:
                     break
-                while self._ready:
-                    h = self._ready.popleft()
-                    if h.cancelled():
+                while ready:
+                    if (h := ready.popleft())._cancelled:  # noqa: SLF001
                         continue
                     try:
                         h._run()  # noqa: SLF001
@@ -249,14 +242,14 @@ class EventLoop(AbstractEventLoop):
             if task.done():
                 return None
             return WaitSet(
-                ops=list(self._ops.values()),
+                ops=[*self._ops.values()],
                 timer=deadline,
                 event=self._event,
             )
         finally:
-            events._set_running_loop(old)  # noqa: SLF001
-            if old_task:
-                asyncio.tasks._enter_task(old, old_task)  # noqa: SLF001
+            events._set_running_loop(self._host)  # noqa: SLF001
+            if prev_task:
+                tasks._enter_task(self._host, prev_task)  # noqa: SLF001
 
     def create_op(self, params: object, *, external: bool = False) -> OpFuture[object]:
         if external:
@@ -293,23 +286,14 @@ class EventLoop(AbstractEventLoop):
             if op.done():
                 return
             tid = _mix_id(op.id, -1)
+            token = _task_ctx.set(_TaskCtx(parent_id=tid))
             if exception is None:
-                _ = self.call_soon(
-                    op.set_result,
-                    result,
-                    context=_context_new_task(None, tid),
-                )
-            elif type(exception) is CancelledError:
-                _ = self.call_soon(
-                    op.cancel,
-                    context=_context_new_task(None, tid),
-                )
+                _ = self.call_soon(op.set_result, result)
+            elif type(exception) is asyncio.CancelledError:
+                _ = self.call_soon(op.cancel)
             else:
-                _ = self.call_soon(
-                    op.set_exception,
-                    exception,
-                    context=_context_new_task(None, tid),
-                )
+                _ = self.call_soon(op.set_exception, exception)
+            _task_ctx.reset(token)
 
     @override
     def is_closed(self) -> bool:
@@ -318,7 +302,7 @@ class EventLoop(AbstractEventLoop):
     @override
     def close(self) -> None:
         while self._timers:
-            th = heapq.heappop(self._timers)
+            th = heappop(self._timers)
             th.cancel()
         while self._ready:
             h = self._ready.popleft()
@@ -345,7 +329,8 @@ class EventLoop(AbstractEventLoop):
     @override
     def set_exception_handler(
         self,
-        handler: Callable[[AbstractEventLoop, dict[str, object]], object] | None,
+        handler: Callable[[asyncio.AbstractEventLoop, dict[str, object]], object]
+        | None,
     ) -> None:
         self._exc_handler = handler
 
@@ -364,18 +349,14 @@ class EventLoop(AbstractEventLoop):
     async def shutdown_default_executor(self) -> None:
         pass
 
-    def _timer_handle_cancelled(self, _th: TimerHandle) -> None:
+    def _timer_handle_cancelled(self, _th: asyncio.TimerHandle) -> None:
         pass
 
 
-def _context_new_task(context: Context | None, task_id: bytes) -> Context:
-    base = context.copy() if context is not None else contextvars.copy_context()
-    _ = base.run(_task_ctx.set, _TaskCtx(parent_id=task_id))
-    return base
-
-
 def _mix_id(a: bytes, b: int) -> bytes:
-    return blake2b(b.to_bytes(4, "little", signed=True) + a, digest_size=12).digest()
+    if b == -1:
+        return blake2b(b"\xff\xff\xff\xff" + a, digest_size=12).digest()
+    return blake2b(b.to_bytes(4, "little") + a, digest_size=12).digest()
 
 
 def create_loop(
@@ -392,13 +373,10 @@ def _copy_future_state(source: asyncio.Future[_T], dest: asyncio.Future[_T]) -> 
     assert not dest.done()  # noqa: S101
     if source.cancelled():
         _ = dest.cancel()
+    elif (exception := source.exception()) is not None:
+        dest.set_exception(exception)
     else:
-        exception = source.exception()
-        if exception is not None:
-            dest.set_exception(exception)
-        else:
-            result = source.result()
-            dest.set_result(result)
+        dest.set_result(source.result())
 
 
 def wrap_future(

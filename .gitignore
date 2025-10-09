@@ -2,5 +2,6 @@
 /site
 /.venv
 /.nox
+/.codspeed
 /logs
 __pycache__

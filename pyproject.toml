@@ -18,6 +18,7 @@ dev = [
     "pydantic>=2.11.9",
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
+    "pytest-codspeed>=4.1.1",
 ]
 type-checking = [
     "basedmypy>=2.10.0",
