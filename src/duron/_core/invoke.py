@@ -16,7 +16,6 @@ from typing import (
     final,
     overload,
 )
-
 from typing_extensions import TypedDict, assert_never
 
 from duron._core.context import Context
@@ -60,19 +59,19 @@ if TYPE_CHECKING:
     from duron.typing import TypeHint
 
 
-_T = TypeVar("_T", covariant=True)
+_T_co = TypeVar("_T_co", covariant=True)
 _P = ParamSpec("_P")
 
 _CURRENT_VERSION = 0
 
 
 @final
-class Invoke(Generic[_P, _T]):
+class Invoke(Generic[_P, _T_co]):
     __slots__ = ("_fn", "_log", "_run", "_watchers")
 
     def __init__(
         self,
-        fn: Fn[_P, _T],
+        fn: Fn[_P, _T_co],
         log: LogStorage,
     ) -> None:
         self._fn = fn
@@ -87,13 +86,13 @@ class Invoke(Generic[_P, _T]):
 
     @staticmethod
     def invoke(
-        fn: Fn[_P, _T],
+        fn: Fn[_P, _T_co],
         log: LogStorage,
-    ) -> contextlib.AbstractAsyncContextManager[Invoke[_P, _T]]:
+    ) -> contextlib.AbstractAsyncContextManager[Invoke[_P, _T_co]]:
         return _InvokeGuard(Invoke(fn, log))
 
     async def start(self, *args: _P.args, **kwargs: _P.kwargs) -> None:
-        async def get_init() -> InitParams:
+        def get_init() -> InitParams:
             return {
                 "version": _CURRENT_VERSION,
                 "args": [codec.encode_json(arg) for arg in args],
@@ -112,8 +111,9 @@ class Invoke(Generic[_P, _T]):
         await self._run.resume()
 
     async def resume(self) -> None:
-        async def cb() -> InitParams:
-            raise Exception("not started")
+        def cb() -> InitParams:
+            msg = "not started"
+            raise RuntimeError(msg)
 
         type_info = self._fn.codec.inspect_function(self._fn.fn)
         prelude = _invoke_prelude(self._fn, type_info, cb)
@@ -125,10 +125,11 @@ class Invoke(Generic[_P, _T]):
         )
         await self._run.resume()
 
-    async def wait(self) -> _T:
+    async def wait(self) -> _T_co:
         if self._run is None:
-            raise RuntimeError("Job not started")
-        return cast("_T", await self._run.run())
+            msg = "Job not started"
+            raise RuntimeError(msg)
+        return cast("_T_co", await self._run.run())
 
     async def close(self) -> None:
         if self._run:
@@ -138,32 +139,34 @@ class Invoke(Generic[_P, _T]):
     @overload
     async def complete_promise(
         self,
-        id: str,
+        id_: str,
         *,
         result: object,
     ) -> None: ...
     @overload
     async def complete_promise(
         self,
-        id: str,
+        id_: str,
         *,
         error: BaseException,
     ) -> None: ...
     async def complete_promise(
         self,
-        id: str,
+        id_: str,
         *,
         result: object | None = None,
         error: BaseException | None = None,
     ) -> None:
         if self._run is None:
-            raise RuntimeError("Job not started")
+            msg = "Job not started"
+            raise RuntimeError(msg)
         if error is not None:
-            await self._run.complete_external_promise(id, error=error)
+            await self._run.complete_external_promise(id_, error=error)
         elif result is not None:
-            await self._run.complete_external_promise(id, result=result)
+            await self._run.complete_external_promise(id_, result=result)
         else:
-            raise ValueError("Either result or error must be provided")
+            msg = "Either result or error must be provided"
+            raise ValueError(msg)
 
     async def send_stream(
         self,
@@ -171,7 +174,8 @@ class Invoke(Generic[_P, _T]):
         value: object,
     ) -> int:
         if self._run is None:
-            raise RuntimeError("Invokation not started")
+            msg = "Invokation not started"
+            raise RuntimeError(msg)
         return await self._run.send_stream(predicate, value)
 
     async def close_stream(
@@ -180,34 +184,36 @@ class Invoke(Generic[_P, _T]):
         error: BaseException | None = None,
     ) -> int:
         if self._run is None:
-            raise RuntimeError("Invokation not started")
+            msg = "Invokation not started"
+            raise RuntimeError(msg)
         return await self._run.close_stream(predicate, error)
 
     def watch_stream(
         self,
         predicate: Callable[[dict[str, JSONValue]], bool],
-    ) -> Stream[_T, None]:
+    ) -> Stream[_T_co, None]:
         if self._run is not None:
+            msg = "create_watcher() must be called before start() or resume()"
             raise RuntimeError(
-                "create_watcher() must be called before start() or resume()"
+                msg,
             )
 
-        observer: ObserverStream[_T, None] = ObserverStream()
+        observer: ObserverStream[_T_co, None] = ObserverStream()
         self._watchers.append((
             predicate,
-            cast("StreamObserver[object]", cast("StreamObserver[_T]", observer)),
+            cast("StreamObserver[object]", cast("StreamObserver[_T_co]", observer)),
         ))
         return observer
 
 
 @final
-class _InvokeGuard(Generic[_P, _T]):
+class _InvokeGuard(Generic[_P, _T_co]):
     __slots__ = ("_job",)
 
-    def __init__(self, job: Invoke[_P, _T]) -> None:
+    def __init__(self, job: Invoke[_P, _T_co]) -> None:
         self._job = job
 
-    async def __aenter__(self) -> Invoke[_P, _T]:
+    async def __aenter__(self) -> Invoke[_P, _T_co]:
         return self._job
 
     async def __aexit__(
@@ -226,17 +232,18 @@ class InitParams(TypedDict):
 
 
 async def _invoke_prelude(
-    job_fn: Fn[..., _T],
+    job_fn: Fn[..., _T_co],
     type_info: FunctionType,
-    init: Callable[[], Coroutine[Any, Any, InitParams]],
-) -> _T:
+    init: Callable[[], InitParams],
+) -> _T_co:
     loop = asyncio.get_running_loop()
-    assert isinstance(loop, EventLoop)
+    assert isinstance(loop, EventLoop)  # noqa: S101
 
     with Context(job_fn, loop) as ctx:
         init_params = await ctx.run(init)
         if init_params["version"] != _CURRENT_VERSION:
-            raise Exception("version mismatch")
+            msg = "version mismatch"
+            raise RuntimeError(msg)
         codec = job_fn.codec
 
         args = tuple(
@@ -258,17 +265,17 @@ async def _invoke_prelude(
 @final
 class _InvokeRun:
     __slots__ = (
-        "_loop",
-        "_task",
-        "_log",
         "_codec",
-        "_running",
-        "_pending_msg",
-        "_pending_task",
-        "_pending_ops",
+        "_log",
+        "_loop",
         "_now",
-        "_tasks",
+        "_pending_msg",
+        "_pending_ops",
+        "_pending_task",
+        "_running",
         "_streams",
+        "_task",
+        "_tasks",
         "_watchers",
     )
 
@@ -289,7 +296,8 @@ class _InvokeRun:
         self._running: bytes | None = None
         self._pending_msg: list[Entry] = []
         self._pending_task: dict[
-            str, tuple[Callable[[], Coroutine[Any, Any, None]], TypeHint[Any]]
+            str,
+            tuple[Callable[[], Coroutine[Any, Any, None]], TypeHint[Any]],
         ] = {}
         self._pending_ops: set[bytes] = set()
         self._now = 0
@@ -324,7 +332,7 @@ class _InvokeRun:
 
     async def resume(self) -> None:
         recvd_msgs: set[str] = set()
-        async for o, entry in self._log.stream(None, False):
+        async for o, entry in self._log.stream(None, live=False):
             ts = entry["ts"]
             self._now = max(self._now, ts)
             _ = await self._step()
@@ -333,10 +341,9 @@ class _InvokeRun:
                 _ = await self._step()
             recvd_msgs.add(entry["id"])
 
-        msgs: list[Entry] = []
-        for msg in self._pending_msg:
-            if msg["id"] not in recvd_msgs:
-                msgs.append(msg)
+        msgs: list[Entry] = [
+            msg for msg in self._pending_msg if msg["id"] not in recvd_msgs
+        ]
         self._pending_msg = msgs
 
     async def run(self) -> object:
@@ -381,7 +388,7 @@ class _InvokeRun:
             pending_info = self._pending_task.pop(e["promise_id"], None)
             task_info = self._tasks.get(e["promise_id"], None)
 
-            id = _decode_id(e["promise_id"])
+            id_ = _decode_id(e["promise_id"])
 
             return_type: TypeHint[Any] = unspecified
             if pending_info is not None:
@@ -389,37 +396,43 @@ class _InvokeRun:
             elif task_info is not None:
                 _, return_type = task_info
             else:
-                raise AssertionError("unreachable")
+                msg = "unreachable"
+                raise AssertionError(msg)
 
             if "error" in e:
                 self._loop.post_completion(
-                    id,
+                    id_,
                     exception=_decode_error(e["error"]),
                 )
-                self._pending_ops.discard(id)
+                self._pending_ops.discard(id_)
             elif "result" in e:
                 try:
                     result = self._codec.decode_json(e["result"], return_type)
-                    self._loop.post_completion(id, result=result)
-                except Exception as exc:
+                    self._loop.post_completion(id_, result=result)
+                except Exception as exc:  # noqa: BLE001
                     self._loop.post_completion(
-                        id,
+                        id_,
                         exception=exc,
                     )
-                self._pending_ops.discard(id)
+                self._pending_ops.discard(id_)
             else:
-                raise ValueError(f"Invalid promise/complete entry: {e!r}")
+                msg = f"Invalid promise/complete entry: {e!r}"
+                raise ValueError(msg)
         elif e["type"] == "stream/create":
-            id = _decode_id(e["id"])
+            id_ = _decode_id(e["id"])
             if e["id"] not in self._streams:
-                self._loop.post_completion(id, exception=ValueError("Stream not found"))
+                self._loop.post_completion(
+                    id_, exception=ValueError("Stream not found")
+                )
             else:
-                self._loop.post_completion(id, result=e["id"])
-            self._pending_ops.discard(id)
+                self._loop.post_completion(id_, result=e["id"])
+            self._pending_ops.discard(id_)
         elif e["type"] == "stream/emit":
-            id = _decode_id(e["id"])
+            id_ = _decode_id(e["id"])
             if e["stream_id"] not in self._streams:
-                self._loop.post_completion(id, exception=ValueError("Stream not found"))
+                self._loop.post_completion(
+                    id_, exception=ValueError("Stream not found")
+                )
             else:
                 obs, tv, _ = self._streams[e["stream_id"]]
                 for ob in obs:
@@ -427,15 +440,17 @@ class _InvokeRun:
                         offset,
                         self._codec.decode_json(e["value"], tv),
                     )
-                self._loop.post_completion(id, result=None)
-            self._pending_ops.discard(id)
+                self._loop.post_completion(id_, result=None)
+            self._pending_ops.discard(id_)
         elif e["type"] == "stream/complete":
-            id = _decode_id(e["id"])
+            id_ = _decode_id(e["id"])
             if e["stream_id"] not in self._streams:
-                self._loop.post_completion(id, exception=ValueError("Stream not found"))
+                self._loop.post_completion(
+                    id_, exception=ValueError("Stream not found")
+                )
             else:
                 obs, _, _ = self._streams[e["stream_id"]]
-                self._loop.post_completion(id, result=None)
+                self._loop.post_completion(id_, result=None)
                 for ob in obs:
                     if "error" in e:
                         ob.on_close(offset, _decode_error(e["error"]))
@@ -443,13 +458,13 @@ class _InvokeRun:
                         ob.on_close(offset, None)
 
                 _ = self._streams.pop(e["stream_id"], None)
-            self._pending_ops.discard(id)
+            self._pending_ops.discard(id_)
         elif e["type"] == "barrier":
-            id = _decode_id(e["id"])
-            self._loop.post_completion(id, result=offset)
-            self._pending_ops.discard(id)
+            id_ = _decode_id(e["id"])
+            self._loop.post_completion(id_, result=offset)
+            self._pending_ops.discard(id_)
 
-    async def enqueue_log(self, entry: Entry, flush: bool = False):
+    async def enqueue_log(self, entry: Entry, *, flush: bool = False) -> None:
         if not self._running:
             self._pending_msg.append(entry)
         else:
@@ -458,13 +473,13 @@ class _InvokeRun:
                 await self._log.flush(self._running)
             await self.handle_message(offset, entry)
 
-    async def enqueue_op(self, id: bytes, fut: OpFuture[object]) -> None:
+    async def enqueue_op(self, id_: bytes, fut: OpFuture[object]) -> None:
         op = cast("Op", fut.params)
         match op:
             case FnCall():
                 promise_create_entry: PromiseCreateEntry = {
                     "ts": self.now(),
-                    "id": _encode_id(id),
+                    "id": _encode_id(id_),
                     "type": "promise/create",
                 }
                 if op.metadata:
@@ -474,16 +489,16 @@ class _InvokeRun:
                 async def cb() -> None:
                     entry: PromiseCompleteEntry = {
                         "ts": self.now(),
-                        "id": _encode_id(id, 1),
+                        "id": _encode_id(id_, 1),
                         "type": "promise/complete",
-                        "promise_id": _encode_id(id),
+                        "promise_id": _encode_id(id_),
                     }
                     try:
                         result = op.callable(*op.args, **op.kwargs)
                         if asyncio.iscoroutine(result):
                             result = await result
                         entry["result"] = self._codec.encode_json(result)
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001
                         entry["error"] = _encode_error(e)
                     except asyncio.CancelledError as e:
                         entry["error"] = _encode_error(e)
@@ -502,14 +517,14 @@ class _InvokeRun:
                                 _ = task.get_loop().call_soon(task.cancel)
 
                 fut.add_done_callback(done)
-                sid = _encode_id(id)
+                sid = _encode_id(id_)
                 if self._running:
                     self._tasks[sid] = (asyncio.create_task(cb()), op.return_type)
                 else:
                     self._pending_task[sid] = (cb, op.return_type)
 
             case StreamCreate():
-                stream_id = _encode_id(id)
+                stream_id = _encode_id(id_)
 
                 # Determine which observer to use
                 ob = [op.observer] if op.observer else []
@@ -533,7 +548,7 @@ class _InvokeRun:
             case StreamEmit():
                 stream_emit_entry: StreamEmitEntry = {
                     "ts": self.now(),
-                    "id": _encode_id(id),
+                    "id": _encode_id(id_),
                     "stream_id": op.stream_id,
                     "type": "stream/emit",
                     "value": self._codec.encode_json(op.value),
@@ -543,7 +558,7 @@ class _InvokeRun:
                 if op.exception:
                     stream_close_entry_err: StreamCompleteEntry = {
                         "ts": self.now(),
-                        "id": _encode_id(id),
+                        "id": _encode_id(id_),
                         "stream_id": op.stream_id,
                         "type": "stream/complete",
                         "error": _encode_error(op.exception),
@@ -552,7 +567,7 @@ class _InvokeRun:
                 else:
                     stream_close_entry: StreamCompleteEntry = {
                         "ts": self.now(),
-                        "id": _encode_id(id),
+                        "id": _encode_id(id_),
                         "stream_id": op.stream_id,
                         "type": "stream/complete",
                     }
@@ -560,44 +575,46 @@ class _InvokeRun:
             case Barrier():
                 barrier_entry: BarrierEntry = {
                     "ts": self.now(),
-                    "id": _encode_id(id),
+                    "id": _encode_id(id_),
                     "type": "barrier",
                 }
                 await self.enqueue_log(barrier_entry, flush=True)
             case ExternalPromiseCreate():
                 promise_create_entry = {
                     "ts": self.now(),
-                    "id": _encode_id(id),
+                    "id": _encode_id(id_),
                     "type": "promise/create",
                 }
                 if op.metadata:
                     promise_create_entry["metadata"] = op.metadata
-                self._tasks[_encode_id(id)] = (asyncio.Future(), op.return_type)
+                self._tasks[_encode_id(id_)] = (asyncio.Future(), op.return_type)
                 await self.enqueue_log(promise_create_entry)
             case _:
                 assert_never(op)
 
     async def complete_external_promise(
         self,
-        id: str,
+        id_: str,
         *,
         result: object | None = None,
         error: BaseException | None = None,
     ) -> None:
-        if id not in self._tasks:
-            raise ValueError("Promise not found")
+        if id_ not in self._tasks:
+            msg = "Promise not found"
+            raise ValueError(msg)
         entry: PromiseCompleteEntry = {
             "ts": self.now(),
-            "id": _encode_id(_decode_id(id), 1),
+            "id": _encode_id(_decode_id(id_), 1),
             "type": "promise/complete",
-            "promise_id": id,
+            "promise_id": id_,
         }
         if error is not None:
             entry["error"] = _encode_error(error)
         elif result is not None:
             entry["result"] = self._codec.encode_json(result)
         else:
-            raise ValueError("Either result or error must be provided")
+            msg = "Either result or error must be provided"
+            raise ValueError(msg)
         await self.enqueue_log(entry)
 
     async def send_stream(
@@ -655,12 +672,13 @@ class _InvokeRun:
         return cnt
 
 
-def _encode_id(id: bytes, flag: int = 0) -> str:
+def _encode_id(id_: bytes, flag: int = 0) -> str:
     if flag != 0:
-        id = blake2b(
-            flag.to_bytes(4, "little", signed=True) + id, digest_size=12
+        id_ = blake2b(
+            flag.to_bytes(4, "little", signed=True) + id_,
+            digest_size=12,
         ).digest()
-    return base64.b64encode(id).decode()
+    return base64.b64encode(id_).decode()
 
 
 def _decode_id(encoded: str) -> bytes:

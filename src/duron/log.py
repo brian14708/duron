@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Literal
-
 from typing_extensions import NotRequired, TypedDict
 
 from duron.codec import JSONValue
@@ -84,17 +83,21 @@ def is_entry(entry: Entry | AnyEntry) -> TypeGuard[Entry]:
 class LogStorage(ABC):
     @abstractmethod
     def stream(
-        self, start: int | None, live: bool, /
+        self,
+        start: int | None,
+        /,
+        *,
+        live: bool,
     ) -> AsyncGenerator[tuple[int, AnyEntry], None]: ...
 
     @abstractmethod
     async def acquire_lease(self) -> bytes: ...
 
     @abstractmethod
-    async def release_lease(self, token: bytes, /): ...
+    async def release_lease(self, token: bytes, /) -> None: ...
 
     @abstractmethod
     async def append(self, token: bytes, entry: Entry, /) -> int: ...
 
     @abstractmethod
-    async def flush(self, token: bytes, /): ...
+    async def flush(self, token: bytes, /) -> None: ...

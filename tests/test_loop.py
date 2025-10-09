@@ -2,20 +2,21 @@ import asyncio
 import contextlib
 import random
 import time
-
-import pytest
 from typing_extensions import overload
 
-from duron._loop import create_loop
+import pytest
+
+from duron._loop import create_loop  # noqa: PLC2701
 
 
 @pytest.mark.asyncio
-async def test_timer():
+async def test_timer() -> None:
     async def timer() -> int:
         await asyncio.sleep(0.1)
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(
-                asyncio.wait_for(asyncio.sleep(10000), timeout=0.2), timeout=10000
+                asyncio.wait_for(asyncio.sleep(10000), timeout=0.2),
+                timeout=10000,
             )
         return 0
 
@@ -28,11 +29,11 @@ async def test_timer():
     assert tsk.result() == 0
 
 
-async def op_single() -> set[bytes]:
-    async def op1(x: int):
+def op_single() -> set[bytes]:
+    async def op1(x: int) -> None:
         _ = await loop.create_op(x)
 
-    async def op():
+    async def op() -> None:
         first = asyncio.create_task(op1(1))
         _ = await asyncio.gather(
             loop.create_op(2),
@@ -55,16 +56,13 @@ async def op_single() -> set[bytes]:
     def tick(n: int, expect: set[int] | None) -> list[bytes] | None:
         waitset = loop.poll_completion(tsk)
         if expect:
-            assert (
-                waitset
-                and len(waitset.ops) == n
-                and set(o.params for o in waitset.ops).issubset(expect)
-            )
+            assert waitset
+            assert len(waitset.ops) == n
+            assert {o.params for o in waitset.ops}.issubset(expect)
             ids.update(o.id for o in waitset.ops)
-            return list(o.id for o in waitset.ops)
-        else:
-            assert waitset is None
-            return None
+            return [o.id for o in waitset.ops]
+        assert waitset is None
+        return None
 
     for i in range(5, 0, -1):
         ws = tick(i, {1, 2, 3, 4, 5})
@@ -77,8 +75,8 @@ async def op_single() -> set[bytes]:
 
 
 @pytest.mark.asyncio
-async def test_op():
-    BASELINE = {
+async def test_op() -> None:  # noqa: RUF029
+    baseline = {
         b"\x89U\x82\xd9\xe9\xa1\x01\x0fb\xab}\xba",
         b"\xa2VE\xcb\xf3\x81\x82\xe75@\xe9\xdf",
         b"\xb2\x1d\xb3\xd5c\xe3J\no\xa6U\x18",
@@ -87,4 +85,4 @@ async def test_op():
         b"\xc6\xbbEu\xdf\xd1uc\xf5M\x11'",
     }
     for _ in range(4):
-        assert await op_single() == BASELINE
+        assert op_single() == baseline

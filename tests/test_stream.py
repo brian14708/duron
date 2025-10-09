@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import operator
 import random
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 import pytest
@@ -10,18 +12,16 @@ from duron import Context, RunOptions, StreamClosed, fn, op
 from duron.contrib.storage import MemoryLogStorage
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
-
     from duron import StreamWriter
 
 
 @pytest.mark.asyncio
-async def test_stream():
+async def test_stream() -> None:
     @fn()
     async def activity(ctx: Context) -> None:
         stream, handle = await ctx.create_stream(int)
 
-        async def f():
+        async def f() -> None:
             for i in range(50):
                 x = ctx.random().randint(1, 10)
                 await asyncio.sleep(0.001 * x)
@@ -47,12 +47,12 @@ async def test_stream():
 
 
 @pytest.mark.asyncio
-async def test_stream_host():
+async def test_stream_host() -> None:
     @fn()
     async def activity(ctx: Context) -> None:
         stream, handle = await ctx.create_stream(int, external=True)
 
-        async def task(stream: StreamWriter[int]):
+        async def task(stream: StreamWriter[int]) -> None:
             for i in range(50):
                 await stream.send(i)
             await stream.close()
@@ -67,7 +67,7 @@ async def test_stream_host():
 
 
 @pytest.mark.asyncio
-async def test_run():
+async def test_run() -> None:
     sleep_idx = 3
     all_states: list[str] = []
 
@@ -77,7 +77,7 @@ async def test_run():
             checkpoint=True,
             action_type=str,
             initial=lambda: "",
-            reducer=lambda s, p: s + p,
+            reducer=operator.add,
         )
         async def f(s: str) -> AsyncGenerator[str, str]:
             while len(s) < 100:
@@ -105,19 +105,20 @@ async def test_run():
 
 
 @pytest.mark.asyncio
-async def test_stream_map():
+async def test_stream_map() -> None:
     @fn()
     async def activity(ctx: Context) -> None:
         @op(
             checkpoint=True,
             action_type=str,
             initial=lambda: "",
-            reducer=lambda s, p: s + p,
+            reducer=operator.add,
         )
         async def f(s: str) -> AsyncGenerator[str, str]:
             while len(s) < 100:
                 chunk = chr(ord("a") + random.randint(0, 25))
                 s = yield chunk
+                await asyncio.sleep(0)
 
         async with ctx.run_stream(f) as stream:
             async for s in stream.map(lambda s: s.upper()):
@@ -131,12 +132,12 @@ async def test_stream_map():
 
 
 @pytest.mark.asyncio
-async def test_stream_peek():
+async def test_stream_peek() -> None:
     @fn()
     async def activity(ctx: Context) -> list[int]:
         stream, write = await ctx.create_stream(int, external=True)
 
-        async def f():
+        async def f() -> None:
             for i in range(30):
                 await asyncio.sleep(random.random() * 0.001)
                 await write.send(i)
@@ -171,31 +172,29 @@ async def test_stream_peek():
 
 
 @pytest.mark.asyncio
-async def test_stream_cross_loop():
+async def test_stream_cross_loop() -> None:
     @fn()
     async def activity(ctx: Context) -> list[str]:
         @op(
             checkpoint=True,
             action_type=str,
             initial=lambda: "",
-            reducer=lambda s, p: s + p,
+            reducer=operator.add,
         )
         async def f(s: str) -> AsyncGenerator[str, str]:
             while len(s) < 5:
                 chunk = chr(ord("a") + random.randint(0, 25))
                 s = yield chunk
+                await asyncio.sleep(0)
 
         async with ctx.run_stream(f) as stream:
             s = stream.map(lambda x: x * 2)
 
             async def g() -> list[str]:
-                result: list[str] = []
-                async for x in s:
-                    result.append(x)
+                result: list[str] = [x async for x in s]
                 return result
 
-            result = await ctx.run(g)
-            return result
+            return await ctx.run(g)
 
     log = MemoryLogStorage()
     async with activity.invoke(log) as t:

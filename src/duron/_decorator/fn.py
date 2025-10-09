@@ -33,7 +33,10 @@ class Fn(Generic[_P, _T_co]):
     fn: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]]
 
     def __call__(
-        self, ctx: Context, *args: _P.args, **kwargs: _P.kwargs
+        self,
+        ctx: Context,
+        *args: _P.args,
+        **kwargs: _P.kwargs,
     ) -> Coroutine[Any, Any, _T_co]:
         return self.fn(ctx, *args, **kwargs)
 
@@ -48,7 +51,8 @@ def fn(
 ) -> Fn[_P, _T_co]: ...
 @overload
 def fn(
-    *, codec: Codec | None = None
+    *,
+    codec: Codec | None = None,
 ) -> Callable[
     [Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]]],
     Fn[_P, _T_co],
@@ -65,11 +69,6 @@ def fn(
         Fn[_P, _T_co],
     ]
 ):
-    """
-    Make a function as durable, meaning its execution can be recorded and
-    replayed.
-    """
-
     def decorate(
         fn: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]],
     ) -> Fn[_P, _T_co]:
@@ -77,5 +76,4 @@ def fn(
 
     if f is not None:
         return decorate(f)
-    else:
-        return decorate
+    return decorate

@@ -5,7 +5,6 @@ import json
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, cast, final
-
 from typing_extensions import override
 
 from duron.log import LogStorage
@@ -18,13 +17,13 @@ if TYPE_CHECKING:
 
 @final
 class FileLogStorage(LogStorage):
-    __slots__ = ("_log_file", "_leases", "_lock")
+    __slots__ = ("_leases", "_lock", "_log_file")
 
     _log_file: Path
     _leases: bytes | None
     _lock: asyncio.Lock
 
-    def __init__(self, log_file: str | Path):
+    def __init__(self, log_file: str | Path) -> None:
         self._log_file = Path(log_file)
         self._log_file.parent.mkdir(parents=True, exist_ok=True)
         self._leases = None
@@ -32,14 +31,18 @@ class FileLogStorage(LogStorage):
 
     @override
     async def stream(
-        self, start: int | None, live: bool
+        self,
+        start: int | None,
+        /,
+        *,
+        live: bool,
     ) -> AsyncGenerator[tuple[int, AnyEntry], None]:
         if not self._log_file.exists():
             return
 
         start_offset: int = start if start is not None else 0
 
-        with open(self._log_file, "rb") as f:
+        with Path(self._log_file).open("rb") as f:  # noqa: ASYNC230
             # Seek to start offset
             _ = f.seek(start_offset)
 
@@ -96,29 +99,30 @@ class FileLogStorage(LogStorage):
     async def append(self, token: bytes, entry: Entry) -> int:
         async with self._lock:
             if token != self._leases:
-                raise ValueError("Invalid lease token")
+                msg = "Invalid lease token"
+                raise ValueError(msg)
 
-            with open(self._log_file, "a") as f:
+            with Path(self._log_file).open("a", encoding="utf-8") as f:  # noqa: ASYNC230
                 offset = f.tell()
                 json.dump(entry, f, separators=(",", ":"))
                 _ = f.write("\n")
                 return offset
 
     @override
-    async def flush(self, token: bytes):
+    async def flush(self, token: bytes) -> None:
         pass
 
 
 @final
 class MemoryLogStorage(LogStorage):
-    __slots__ = ("_entries", "_leases", "_lock", "_condition")
+    __slots__ = ("_condition", "_entries", "_leases", "_lock")
 
     _entries: list[AnyEntry]
     _leases: bytes | None
     _lock: asyncio.Lock
     _condition: asyncio.Condition
 
-    def __init__(self, entries: list[AnyEntry] | None = None):
+    def __init__(self, entries: list[AnyEntry] | None = None) -> None:
         self._entries = entries or []
         self._leases = None
         self._lock = asyncio.Lock()
@@ -126,7 +130,11 @@ class MemoryLogStorage(LogStorage):
 
     @override
     async def stream(
-        self, start: int | None, live: bool
+        self,
+        start: int | None,
+        /,
+        *,
+        live: bool,
     ) -> AsyncGenerator[tuple[int, AnyEntry], None]:
         start_index: int = start + 1 if start is not None else 0
 
@@ -175,7 +183,8 @@ class MemoryLogStorage(LogStorage):
     async def append(self, token: bytes, entry: Entry) -> int:
         async with self._condition:
             if token != self._leases:
-                raise ValueError("Invalid lease token")
+                msg = "Invalid lease token"
+                raise ValueError(msg)
 
             offset = len(self._entries)
             self._entries.append(cast("AnyEntry", cast("object", entry)))
@@ -183,7 +192,7 @@ class MemoryLogStorage(LogStorage):
             return offset
 
     @override
-    async def flush(self, token: bytes):
+    async def flush(self, token: bytes) -> None:
         pass
 
     async def entries(self) -> list[AnyEntry]:

@@ -18,7 +18,6 @@ from collections import deque
 from dataclasses import dataclass
 from hashlib import blake2b
 from typing import TYPE_CHECKING, Generic, cast, overload
-
 from typing_extensions import (
     TypeVar,
     override,
@@ -31,7 +30,6 @@ if TYPE_CHECKING:
     from asyncio.futures import Future
     from collections.abc import Callable, Coroutine, Generator
     from contextvars import Context
-
     from typing_extensions import (
         Any,
         TypeVarTuple,
@@ -52,15 +50,15 @@ logger = logging.getLogger(__name__)
 _task_ctx: contextvars.ContextVar[_TaskCtx] = contextvars.ContextVar("duron_task")
 
 
-class OpFuture(Generic[_T], asyncio.Future[_T]):
+class OpFuture(asyncio.Future[_T], Generic[_T]):
     __slots__: tuple[str, ...] = ("id", "params")
 
     id: bytes
     params: object
 
-    def __init__(self, id: bytes, params: object, loop: AbstractEventLoop) -> None:
+    def __init__(self, id_: bytes, params: object, loop: AbstractEventLoop) -> None:
         super().__init__(loop=loop)
-        self.id = id
+        self.id = id_
         self.params = params
 
 
@@ -74,9 +72,9 @@ class WaitSet:
         if self.timer is None:
             _ = await self.event.wait()
             return
-        with contextlib.suppress(asyncio.TimeoutError):
-            t = (self.timer - now_us) / 1e6
-            if t > 0:
+        t = (self.timer - now_us) / 1e6
+        if t > 0:
+            with contextlib.suppress(asyncio.TimeoutError):
                 _ = await asyncio.wait_for(self.event.wait(), timeout=t)
 
 
@@ -88,15 +86,15 @@ class _TaskCtx:
 
 class EventLoop(AbstractEventLoop):
     __slots__: tuple[str, ...] = (
-        "_ready",
-        "_debug",
-        "_host",
-        "_exc_handler",
-        "_ops",
-        "_ctx",
-        "_now_us",
         "_closed",
+        "_ctx",
+        "_debug",
         "_event",
+        "_exc_handler",
+        "_host",
+        "_now_us",
+        "_ops",
+        "_ready",
         "_timers",
     )
 
@@ -199,21 +197,23 @@ class EventLoop(AbstractEventLoop):
         self,
         coro: _TaskCompatibleCoro[_T],
         *,
-        name: str | None = None,
         context: Context | None = None,
         **kwargs: Any,
     ) -> Task[_T]:
-        ctx = self._context_new_task(context, self.generate_op_id())
+        ctx = _context_new_task(context, self.generate_op_id())
         return ctx.run(
-            cast("type[Task[_T]]", Task), coro, name=name, loop=self, **kwargs
+            cast("type[Task[_T]]", Task),
+            coro,
+            loop=self,
+            **kwargs,
         )
 
     def poll_completion(self, task: Future[_T]) -> WaitSet | None:
         old = events.get_running_loop()
         old_task = asyncio.tasks.current_task(old)
         if old_task:
-            asyncio.tasks._leave_task(old, old_task)
-        events._set_running_loop(self)
+            asyncio.tasks._leave_task(old, old_task)  # noqa: SLF001
+        events._set_running_loop(self)  # noqa: SLF001
         try:
             self._event.clear()
             now = self.time_us()
@@ -238,8 +238,8 @@ class EventLoop(AbstractEventLoop):
                     if h.cancelled():
                         continue
                     try:
-                        h._run()
-                    except Exception as exc:
+                        h._run()  # noqa: SLF001
+                    except Exception as exc:  # noqa: BLE001
                         self.call_exception_handler({
                             "message": "exception in callback",
                             "exception": exc,
@@ -254,42 +254,42 @@ class EventLoop(AbstractEventLoop):
                 event=self._event,
             )
         finally:
-            events._set_running_loop(old)
+            events._set_running_loop(old)  # noqa: SLF001
             if old_task:
-                asyncio.tasks._enter_task(old, old_task)
+                asyncio.tasks._enter_task(old, old_task)  # noqa: SLF001
 
     def create_op(self, params: object, *, external: bool = False) -> OpFuture[object]:
         if external:
-            id = os.urandom(12)
+            id_ = os.urandom(12)
             self._event.set()
         else:
-            id = self.generate_op_id()
-        op_fut: OpFuture[object] = OpFuture(id, params, self)
-        self._ops[id] = op_fut
+            id_ = self.generate_op_id()
+        op_fut: OpFuture[object] = OpFuture(id_, params, self)
+        self._ops[id_] = op_fut
         return op_fut
 
     @overload
     def post_completion(
         self,
-        id: bytes,
+        id_: bytes,
         *,
         result: object,
     ) -> None: ...
     @overload
     def post_completion(
         self,
-        id: bytes,
+        id_: bytes,
         *,
         exception: BaseException,
     ) -> None: ...
     def post_completion(
         self,
-        id: bytes,
+        id_: bytes,
         *,
         result: object = None,
         exception: BaseException | None = None,
     ) -> None:
-        if op := self._ops.pop(id, None):
+        if op := self._ops.pop(id_, None):
             if op.done():
                 return
             tid = _mix_id(op.id, -1)
@@ -297,18 +297,18 @@ class EventLoop(AbstractEventLoop):
                 _ = self.call_soon(
                     op.set_result,
                     result,
-                    context=self._context_new_task(None, tid),
+                    context=_context_new_task(None, tid),
                 )
             elif type(exception) is CancelledError:
                 _ = self.call_soon(
                     op.cancel,
-                    context=self._context_new_task(None, tid),
+                    context=_context_new_task(None, tid),
                 )
             else:
                 _ = self.call_soon(
                     op.set_exception,
                     exception,
-                    context=self._context_new_task(None, tid),
+                    context=_context_new_task(None, tid),
                 )
 
     @override
@@ -344,7 +344,8 @@ class EventLoop(AbstractEventLoop):
 
     @override
     def set_exception_handler(
-        self, handler: Callable[[AbstractEventLoop, dict[str, object]], object] | None
+        self,
+        handler: Callable[[AbstractEventLoop, dict[str, object]], object] | None,
     ) -> None:
         self._exc_handler = handler
 
@@ -356,20 +357,21 @@ class EventLoop(AbstractEventLoop):
             _ = self._exc_handler(self, context)
 
     @override
-    async def shutdown_asyncgens(self):
+    async def shutdown_asyncgens(self) -> None:
         pass
 
     @override
-    async def shutdown_default_executor(self):
+    async def shutdown_default_executor(self) -> None:
         pass
 
     def _timer_handle_cancelled(self, _th: TimerHandle) -> None:
         pass
 
-    def _context_new_task(self, context: Context | None, task_id: bytes) -> Context:
-        base = context.copy() if context is not None else contextvars.copy_context()
-        _ = base.run(_task_ctx.set, _TaskCtx(parent_id=task_id))
-        return base
+
+def _context_new_task(context: Context | None, task_id: bytes) -> Context:
+    base = context.copy() if context is not None else contextvars.copy_context()
+    _ = base.run(_task_ctx.set, _TaskCtx(parent_id=task_id))
+    return base
 
 
 def _mix_id(a: bytes, b: int) -> bytes:
@@ -383,15 +385,11 @@ def create_loop(
     return EventLoop(parent_loop, seed)  # type: ignore[abstract]
 
 
-def _copy_future_state(source: asyncio.Future[_T], dest: asyncio.Future[_T]):
-    """Internal helper to copy state from another Future.
-
-    The other Future may be a concurrent.futures.Future.
-    """
-    assert source.done()
+def _copy_future_state(source: asyncio.Future[_T], dest: asyncio.Future[_T]) -> None:
+    assert source.done()  # noqa: S101
     if dest.cancelled():
         return
-    assert not dest.done()
+    assert not dest.done()  # noqa: S101
     if source.cancelled():
         _ = dest.cancel()
     else:
@@ -404,7 +402,9 @@ def _copy_future_state(source: asyncio.Future[_T], dest: asyncio.Future[_T]):
 
 
 def wrap_future(
-    future: asyncio.Future[_T], *, loop: asyncio.AbstractEventLoop | None = None
+    future: asyncio.Future[_T],
+    *,
+    loop: asyncio.AbstractEventLoop | None = None,
 ) -> asyncio.Future[_T]:
     src_loop = future.get_loop()
     dst_loop = loop or asyncio.get_running_loop()

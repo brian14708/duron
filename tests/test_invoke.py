@@ -14,7 +14,7 @@ from duron.contrib.storage import MemoryLogStorage
 
 
 @pytest.mark.asyncio
-async def test_invoke():
+async def test_invoke() -> None:
     async def u() -> str:
         for _ in range(random.randint(1, 10)):
             await asyncio.sleep(0.001)
@@ -29,7 +29,7 @@ async def test_invoke():
         _ = await ctx.run(lambda: asyncio.sleep(0.1))
         return i + ":".join(x)
 
-    IDS = {
+    ids = {
         "+qPYuDgKBdMkb8ME",
         "9nLMU+itD7QHcCsf",
         "BCLA1azFK4LrrEHg",
@@ -44,7 +44,7 @@ async def test_invoke():
     async with activity.invoke(log) as t:
         await t.start("test")
         a = await t.wait()
-    assert set(e["id"] for e in await log.entries()) == IDS
+    assert {e["id"] for e in await log.entries()} == ids
 
     async with activity.invoke(log) as t:
         await t.start("test")
@@ -56,33 +56,34 @@ async def test_invoke():
         await t.start("test")
         c = await t.wait()
     assert a == c
-    assert set(e["id"] for e in await log2.entries()) == IDS
+    assert {e["id"] for e in await log2.entries()} == ids
 
 
 @pytest.mark.asyncio
-async def test_invoke_error():
+async def test_invoke_error() -> None:
     @fn()
-    async def activity(ctx: Context):
+    async def activity(ctx: Context) -> None:
         _ = await ctx.run(lambda: asyncio.sleep(0.1))
 
-        async def error():
-            raise ValueError("test error")
+        def error() -> int:
+            msg = "test error"
+            raise ValueError(msg)
 
         _ = await ctx.run(error)
 
     log = MemoryLogStorage()
-    with pytest.raises(check=lambda v: "test error" in str(v)):
-        async with activity.invoke(log) as t:
-            await t.start()
+    async with activity.invoke(log) as t:
+        await t.start()
+        with pytest.raises(Exception, match="test error"):
             await t.wait()
-    with pytest.raises(check=lambda v: "test error" in str(v)):
-        async with activity.invoke(log) as t:
-            await t.start()
+    async with activity.invoke(log) as t:
+        await t.start()
+        with pytest.raises(Exception, match="test error"):
             await t.wait()
 
 
 @pytest.mark.asyncio
-async def test_resume():
+async def test_resume() -> None:
     sleep = 9999
 
     @fn()
@@ -104,10 +105,10 @@ async def test_resume():
 
 
 @pytest.mark.asyncio
-async def test_cancel():
+async def test_cancel() -> None:
     @fn()
     async def activity(ctx: Context, s: str) -> str:
-        with contextlib.suppress(BaseException):
+        with contextlib.suppress(asyncio.TimeoutError):
             _ = await asyncio.wait_for(ctx.run(lambda: asyncio.sleep(9999)), 0.1)
         _ = await asyncio.wait_for(ctx.run(lambda: asyncio.sleep(9999)), 0.1)
         return s
@@ -115,16 +116,12 @@ async def test_cancel():
     log = MemoryLogStorage()
     async with activity.invoke(log) as t:
         await t.start("hello")
-        try:
+        with pytest.raises(asyncio.TimeoutError):
             _ = await t.wait()
-        except Exception as e:
-            assert "Timeout" in repr(e)
     async with activity.invoke(log) as t:
         await t.resume()
-        try:
+        with pytest.raises(asyncio.TimeoutError):
             _ = await t.wait()
-        except Exception as e:
-            assert "Timeout" in repr(e)
 
 
 @dataclass
@@ -134,7 +131,7 @@ class CustomPoint:
 
 
 @pytest.mark.asyncio
-async def test_serialize():
+async def test_serialize() -> None:
     @fn(codec=PickleCodec())
     async def activity(ctx: Context) -> CustomPoint:
         def new_pt() -> CustomPoint:
@@ -148,14 +145,16 @@ async def test_serialize():
         await t.start()
         a = await t.wait()
         assert type(a) is CustomPoint
-        assert a.x == 6 and a.y == 12
+        assert a.x == 6
+        assert a.y == 12
 
 
 @pytest.mark.asyncio
-async def test_random():
+async def test_random() -> None:
     @fn()
     async def activity(ctx: Context) -> int:
         assert ctx.time_ns() == ctx.time_ns()
+        await asyncio.sleep(0)
         return ctx.random().randint(1, 100)
 
     log = MemoryLogStorage()
@@ -172,7 +171,7 @@ async def test_random():
 
 
 @pytest.mark.asyncio
-async def test_external_promise():
+async def test_external_promise() -> None:
     @fn
     async def activity(ctx: Context) -> int:
         a, b = await ctx.create_promise(int)
@@ -183,12 +182,12 @@ async def test_external_promise():
     async with activity.invoke(log) as t:
         await t.start()
 
-        async def do():
+        async def do() -> None:
             while True:
                 try:
                     await t.complete_promise("9mcIBsvU2ej9uDsV", result=9)
                     break
-                except Exception:
+                except ValueError:
                     await asyncio.sleep(0.1)
 
         bg = asyncio.create_task(do())
@@ -197,7 +196,7 @@ async def test_external_promise():
 
 
 @pytest.mark.asyncio
-async def test_external_stream():
+async def test_external_stream() -> None:
     @fn
     async def activity(ctx: Context) -> int:
         stream, _ = await ctx.create_stream(int, metadata={"name": "test"})
@@ -212,7 +211,7 @@ async def test_external_stream():
     async with activity.invoke(log) as t:
         await t.start()
 
-        async def do():
+        async def do() -> None:
             while True:
                 n = await t.send_stream(lambda d: d.get("name") == "test", 0)
                 if n == 0:
@@ -229,7 +228,7 @@ async def test_external_stream():
 
 
 @pytest.mark.asyncio
-async def test_watch_stream():
+async def test_watch_stream() -> None:
     @fn
     async def activity(ctx: Context) -> int:
         _, sink = await ctx.create_stream(int, metadata={"name": "output"})
@@ -246,9 +245,7 @@ async def test_watch_stream():
         await invoke.start()
 
         async def bg() -> list[int]:
-            values: list[int] = []
-            async for value in output_stream:
-                values.append(value)
+            values: list[int] = [value async for value in output_stream]
             return values
 
         b = asyncio.create_task(bg())

@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
     from contextvars import Token
     from types import TracebackType
-
     from typing_extensions import AsyncContextManager
 
     from duron._core.options import RunOptions
@@ -50,7 +49,7 @@ class Context:
         self._token: Token[Context | None] | None = None
 
     def __enter__(self) -> Context:
-        assert self._token is None, "Context is already active"
+        assert self._token is None, "Context is already active"  # noqa: S101
         token = _context.set(self)
         self._token = token
         return self
@@ -60,7 +59,7 @@ class Context:
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
-    ):
+    ) -> None:
         if self._token:
             _context.reset(self._token)
 
@@ -68,7 +67,8 @@ class Context:
     def current() -> Context:
         ctx = _context.get()
         if ctx is None:
-            raise RuntimeError("No duron context is active")
+            msg = "No duron context is active"
+            raise RuntimeError(msg)
         return ctx
 
     @overload
@@ -100,7 +100,8 @@ class Context:
         **kwargs: _P.kwargs,
     ) -> _T:
         if asyncio.get_running_loop() is not self._loop:
-            raise RuntimeError("Context time can only be used in the context loop")
+            msg = "Context time can only be used in the context loop"
+            raise RuntimeError(msg)
 
         if isinstance(fn, CheckpointOp):
             async with self.run_stream(fn, options, *args, **kwargs) as stream:
@@ -111,7 +112,7 @@ class Context:
             fn.return_type
             if isinstance(fn, Op) and fn.return_type
             else self._task.codec.inspect_function(
-                cast("Callable[..., object]", fn)
+                cast("Callable[..., object]", fn),
             ).return_type
         )
 
@@ -138,8 +139,9 @@ class Context:
     ) -> AsyncContextManager[Stream[_S, _T]]:
         _ = options
         if asyncio.get_running_loop() is not self._loop:
-            raise RuntimeError("Context time can only be used in the context loop")
-        r = run_stream(
+            msg = "Context time can only be used in the context loop"
+            raise RuntimeError(msg)
+        return run_stream(
             self._loop,
             fn.action_type,
             fn.initial(),
@@ -148,7 +150,6 @@ class Context:
             *args,
             **kwargs,
         )
-        return r
 
     async def create_stream(
         self,
@@ -158,9 +159,13 @@ class Context:
         metadata: dict[str, JSONValue] | None = None,
     ) -> tuple[Stream[_T, None], StreamWriter[_T]]:
         if asyncio.get_running_loop() is not self._loop:
-            raise RuntimeError("Context time can only be used in the context loop")
+            msg = "Context time can only be used in the context loop"
+            raise RuntimeError(msg)
         return await create_stream(
-            self._loop, dtype, external=external, metadata=metadata
+            self._loop,
+            dtype,
+            external=external,
+            metadata=metadata,
         )
 
     async def create_signal(
@@ -170,7 +175,8 @@ class Context:
         metadata: dict[str, JSONValue] | None = None,
     ) -> tuple[Signal[_T], SignalWriter[_T]]:
         if asyncio.get_running_loop() is not self._loop:
-            raise RuntimeError("Context time can only be used in the context loop")
+            msg = "Context time can only be used in the context loop"
+            raise RuntimeError(msg)
         return await create_signal(self._loop, dtype, metadata=metadata)
 
     async def create_promise(
@@ -180,28 +186,34 @@ class Context:
         metadata: dict[str, JSONValue] | None = None,
     ) -> tuple[str, asyncio.Future[_T]]:
         if asyncio.get_running_loop() is not self._loop:
-            raise RuntimeError("Context time can only be used in the context loop")
+            msg = "Context time can only be used in the context loop"
+            raise RuntimeError(msg)
         fut = create_op(
-            self._loop, ExternalPromiseCreate(metadata=metadata, return_type=dtype)
+            self._loop,
+            ExternalPromiseCreate(metadata=metadata, return_type=dtype),
         )
         return (base64.b64encode(fut.id).decode(), cast("asyncio.Future[_T]", fut))
 
     async def barrier(self) -> int:
         if asyncio.get_running_loop() is not self._loop:
-            raise RuntimeError("Context time can only be used in the context loop")
+            msg = "Context time can only be used in the context loop"
+            raise RuntimeError(msg)
         return await create_op(self._loop, Barrier())
 
     def time(self) -> float:
         if asyncio.get_running_loop() is not self._loop:
-            raise RuntimeError("Context time can only be used in the context loop")
+            msg = "Context time can only be used in the context loop"
+            raise RuntimeError(msg)
         return self._loop.time()
 
     def time_ns(self) -> int:
         if asyncio.get_running_loop() is not self._loop:
-            raise RuntimeError("Context time can only be used in the context loop")
+            msg = "Context time can only be used in the context loop"
+            raise RuntimeError(msg)
         return self._loop.time_us() * 1_000
 
     def random(self) -> Random:
         if asyncio.get_running_loop() is not self._loop:
-            raise RuntimeError("Context random can only be used in the context loop")
-        return Random(self._loop.generate_op_id())
+            msg = "Context random can only be used in the context loop"
+            raise RuntimeError(msg)
+        return Random(self._loop.generate_op_id())  # noqa: S311

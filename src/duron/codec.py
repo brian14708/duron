@@ -4,14 +4,12 @@ import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeGuard, cast, final
-
 from typing_extensions import TypeAliasType, override
 
 from duron.typing import unspecified
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
     from typing_extensions import Any
 
     from duron.typing import TypeHint
@@ -54,10 +52,13 @@ class Codec(ABC):
 
     @abstractmethod
     def decode_json(
-        self, encoded: JSONValue, expected_type: TypeHint[Any], /
+        self,
+        encoded: JSONValue,
+        expected_type: TypeHint[Any],
+        /,
     ) -> object: ...
 
-    def inspect_function(
+    def inspect_function(  # noqa: PLR6301
         self,
         fn: Callable[..., object],
     ) -> FunctionType:
@@ -74,10 +75,10 @@ class Codec(ABC):
         parameter_names: list[str] = []
         parameter_types: dict[str, TypeHint[Any]] = {}
         for k, p in sig.parameters.items():
-            if (
-                p.kind == inspect.Parameter.VAR_POSITIONAL
-                or p.kind == inspect.Parameter.VAR_KEYWORD
-            ):
+            if p.kind in {
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            }:
                 continue
 
             parameter_names.append(k)
@@ -100,7 +101,8 @@ class DefaultCodec(Codec):
     def encode_json(self, result: object) -> JSONValue:
         if is_json_value(result):
             return result
-        raise TypeError(f"Result is not JSON-serializable: {result!r}")
+        msg = f"Result is not JSON-serializable: {result!r}"
+        raise TypeError(msg)
 
     @override
     def decode_json(self, encoded: JSONValue, _expected_type: TypeHint[Any]) -> object:

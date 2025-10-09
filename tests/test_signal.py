@@ -10,14 +10,14 @@ from duron.contrib.storage import MemoryLogStorage
 
 
 @pytest.mark.asyncio
-async def test_signal():
+async def test_signal() -> None:
     @fn()
     async def activity(ctx: Context) -> list[int]:
         signal, handle = await ctx.create_signal(int)
 
         await handle.trigger(1)
 
-        async def trigger():
+        async def trigger() -> None:
             await asyncio.sleep(0.1)
             await handle.trigger(2)
             await asyncio.sleep(0.1)

@@ -5,7 +5,6 @@ import sys
 from asyncio.exceptions import CancelledError
 from collections import deque
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
-
 from typing_extensions import final
 
 from duron._core.ops import Barrier, StreamClose, StreamCreate, StreamEmit, create_op
@@ -17,29 +16,29 @@ if TYPE_CHECKING:
     from duron._loop import EventLoop
     from duron.codec import JSONValue
 
-_In = TypeVar("_In", contravariant=True)
+_In_contra = TypeVar("_In_contra", contravariant=True)
 
 
-class SignalInterrupt(Exception):
-    def __init__(self, *args: object, value: Any) -> None:
+class SignalInterrupt(Exception):  # noqa: N818
+    def __init__(self, *args: object, value: object) -> None:
         super().__init__(*args)
-        self.value: Any = value
+        self.value: object = value
 
 
 @final
-class SignalWriter(Generic[_In]):
-    __slots__ = ("_stream_id", "_loop")
+class SignalWriter(Generic[_In_contra]):
+    __slots__ = ("_loop", "_stream_id")
 
-    def __init__(self, id: str, loop: EventLoop) -> None:
-        self._stream_id = id
+    def __init__(self, stream_id: str, loop: EventLoop) -> None:
+        self._stream_id = stream_id
         self._loop = loop
 
-    async def trigger(self, value: _In, /) -> None:
+    async def trigger(self, value: _In_contra, /) -> None:
         await wrap_future(
             create_op(
                 self._loop,
                 StreamEmit(stream_id=self._stream_id, value=value),
-            )
+            ),
         )
 
     async def close(self, /) -> None:
@@ -47,7 +46,7 @@ class SignalWriter(Generic[_In]):
             create_op(
                 self._loop,
                 StreamClose(stream_id=self._stream_id, exception=None),
-            )
+            ),
         )
 
 
@@ -55,18 +54,18 @@ _SENTINAL = object()
 
 
 @final
-class Signal(Generic[_In]):
+class Signal(Generic[_In_contra]):
     def __init__(self, loop: EventLoop) -> None:
         self._loop = loop
         # task -> [offset, refcnt]
         self._tasks: dict[asyncio.Task[Any], tuple[int, int]] = {}
-        self._trigger: deque[tuple[int, _In]] = deque()
+        self._trigger: deque[tuple[int, _In_contra]] = deque()
 
     async def __aenter__(self) -> None:
         task = asyncio.current_task()
         if task is None:
             return
-        assert task.get_loop() == self._loop
+        assert task.get_loop() == self._loop  # noqa: S101
         offset = await create_op(self._loop, Barrier())
         for toffset, value in self._trigger:
             if toffset > offset:
@@ -91,11 +90,12 @@ class Signal(Generic[_In]):
         for toffset, value in self._trigger:
             if offset_start < toffset < offset_end:
                 if sys.version_info >= (3, 11) and exc_type is CancelledError:
-                    assert exc_value and exc_value.args[0] is _SENTINAL
+                    assert exc_value  # noqa: S101
+                    assert exc_value.args[0] is _SENTINAL  # noqa: S101
                     _ = task.uncancel()
                 raise SignalInterrupt(value=value)
 
-    def on_next(self, offset: int, value: _In) -> None:
+    def on_next(self, offset: int, value: _In_contra) -> None:
         self._trigger.append((offset, value))
         for t, (toffset, _refcnt) in self._tasks.items():
             if toffset < offset:
@@ -105,7 +105,7 @@ class Signal(Generic[_In]):
         pass
 
     def _flush(self) -> None:
-        assert len(self._tasks) > 0
+        assert len(self._tasks) > 0  # noqa: S101
         min_offset = min(offset for offset, _ in self._tasks.values())
         while self._trigger and self._trigger[0][0] < min_offset:
             _ = self._trigger.popleft()
@@ -113,12 +113,12 @@ class Signal(Generic[_In]):
 
 async def create_signal(
     loop: EventLoop,
-    dtype: type[_In],
+    dtype: type[_In_contra],
     *,
     metadata: dict[str, JSONValue] | None = None,
-) -> tuple[Signal[_In], SignalWriter[_In]]:
-    assert asyncio.get_running_loop() is loop
-    s: Signal[_In] = Signal(loop)
+) -> tuple[Signal[_In_contra], SignalWriter[_In_contra]]:
+    assert asyncio.get_running_loop() is loop  # noqa: S101
+    s: Signal[_In_contra] = Signal(loop)
     sid = await create_op(
         loop,
         StreamCreate(

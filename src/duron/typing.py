@@ -1,5 +1,4 @@
 from types import UnionType
-
 from typing_extensions import TypeAliasType, TypeVar
 
 _T = TypeVar("_T")
@@ -16,7 +15,9 @@ unspecified = _Unspecified()
 MYPY = False
 if MYPY:
     TypeHint = TypeAliasType(
-        "TypeHint", type[_T] | _Unspecified | UnionType, type_params=(_T,)
+        "TypeHint",
+        type[_T] | _Unspecified | UnionType,
+        type_params=(_T,),
     )
 else:
     from typing_extensions import TypeForm

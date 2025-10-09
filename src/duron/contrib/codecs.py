@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import base64
-import pickle
+import pickle  # noqa: S403
 from typing import TYPE_CHECKING, final
-
 from typing_extensions import override
 
 from duron.codec import Codec
@@ -26,5 +25,6 @@ class PickleCodec(Codec):
     @override
     def decode_json(self, encoded: JSONValue, _expected_type: TypeHint[Any]) -> object:
         if not isinstance(encoded, str):
-            raise TypeError(f"Expected a string, got {type(encoded).__name__}")
-        return pickle.loads(base64.b64decode(encoded.encode()))
+            msg = f"Expected a string, got {type(encoded).__name__}"
+            raise TypeError(msg)
+        return pickle.loads(base64.b64decode(encoded.encode()))  # noqa: S301

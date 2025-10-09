@@ -1,4 +1,5 @@
-::: duron
-options:
-show_if_no_docstring: true
-members: true
+## ::: duron
+
+    options:
+        show_if_no_docstring: true
+        members: true

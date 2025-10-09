@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar
-
 from typing_extensions import overload
 
 if TYPE_CHECKING:
@@ -14,7 +13,7 @@ if TYPE_CHECKING:
     from duron.typing import TypeHint
 
 
-_In = TypeVar("_In", contravariant=True)
+_In_contra = TypeVar("_In_contra", contravariant=True)
 
 
 @dataclass(slots=True)
@@ -26,8 +25,8 @@ class FnCall:
     metadata: dict[str, JSONValue] | None = None
 
 
-class StreamObserver(Generic[_In], Protocol):
-    def on_next(self, log_offset: int, value: _In, /) -> None: ...
+class StreamObserver(Protocol, Generic[_In_contra]):
+    def on_next(self, log_offset: int, value: _In_contra, /) -> None: ...
     def on_close(self, log_offset: int, error: BaseException | None, /) -> None: ...
 
 

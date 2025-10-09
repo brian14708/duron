@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
+from typing_extensions import override
 
 from openai import AsyncOpenAI
-from openai.lib.streaming.chat import (
-    ChatCompletionStreamState,
-)
+from openai.lib.streaming.chat import ChatCompletionStreamState
 from openai.types.chat import (
     ChatCompletionChunk,
+    ChatCompletionMessageParam,
 )
 from pydantic import TypeAdapter
-from typing_extensions import override
 
 import duron
 from duron import RunOptions, op
@@ -21,13 +21,11 @@ from duron.codec import Codec
 from duron.contrib.storage import FileLogStorage
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from typing import Any
 
     from openai.types.chat import (
-        ChatCompletionMessageParam,
         ParsedChatCompletionMessage,
     )
-    from typing_extensions import Any
 
     from duron.codec import JSONValue
     from duron.typing import TypeHint
@@ -43,7 +41,9 @@ class PydanticCodec(Codec):
         return cast(
             "JSONValue",
             TypeAdapter(type(result)).dump_python(
-                result, mode="json", exclude_none=True
+                result,
+                mode="json",
+                exclude_none=True,
             ),
         )
 
@@ -53,8 +53,8 @@ class PydanticCodec(Codec):
 
 
 @duron.fn(codec=PydanticCodec())
-async def agent_fn(ctx: duron.Context):
-    completion_result = await completion(
+async def agent_fn(ctx: duron.Context) -> None:
+    result = await completion(
         ctx,
         messages=[
             {
@@ -67,13 +67,16 @@ async def agent_fn(ctx: duron.Context):
             },
         ],
     )
-    print(completion_result.content)
+    print(result.content)
 
 
-async def main():
+async def main() -> None:
     parser = argparse.ArgumentParser(description="Duron Agent Example")
     _ = parser.add_argument(
-        "--session-id", type=str, required=True, help="Session ID for log storage"
+        "--session-id",
+        type=str,
+        required=True,
+        help="Session ID for log storage",
     )
     args = parser.parse_args()
 
@@ -84,7 +87,8 @@ async def main():
 
 
 async def completion(
-    ctx: duron.Context, messages: list[ChatCompletionMessageParam]
+    ctx: duron.Context,
+    messages: list[ChatCompletionMessageParam],
 ) -> ParsedChatCompletionMessage[None]:
     @op(
         checkpoint=True,
@@ -103,7 +107,8 @@ async def completion(
     ) -> AsyncGenerator[ChatCompletionChunk, ChatCompletionStreamState | None]:
         if prev:
             msg = prev.current_completion_snapshot.choices[0].message
-            messages = messages + [
+            messages = [
+                *messages,
                 {
                     "role": "assistant",
                     "content": msg.content,
@@ -120,7 +125,7 @@ async def completion(
                     )
                     if msg.tool_calls
                     else (),
-                }
+                },
             ]
         async for chunk in await client.chat.completions.create(
             messages=messages,
@@ -137,7 +142,7 @@ async def completion(
         ),
         messages,
     )
-    assert state
+    assert state  # noqa: S101
     return state.get_final_completion().choices[0].message
 
 

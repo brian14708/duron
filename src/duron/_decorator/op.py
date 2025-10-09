@@ -35,7 +35,10 @@ class CheckpointOp(Generic[_P, _S, _T]):
     state_type: TypeHint[_S]
 
     def __call__(
-        self, state: _S, *args: _P.args, **kwargs: _P.kwargs
+        self,
+        state: _S,
+        *args: _P.args,
+        **kwargs: _P.kwargs,
     ) -> AsyncGenerator[_T, _S]:
         return self.fn(state, *args, **kwargs)
 
@@ -46,7 +49,9 @@ class Op(Generic[_P, _T_co]):
     return_type: TypeHint[Any]
 
     def __call__(
-        self, *args: _P.args, **kwargs: _P.kwargs
+        self,
+        *args: _P.args,
+        **kwargs: _P.kwargs,
     ) -> Coroutine[Any, Any, _T_co]:
         return self.fn(*args, **kwargs)
 
@@ -60,7 +65,7 @@ def op(
 def op(
     *,
     return_type: TypeHint[Any] = ...,
-    checkpoint: Literal[False],
+    checkpoint: Literal[False] = ...,
 ) -> Callable[
     [Callable[_P, Coroutine[Any, Any, _T_co]]],
     Op[_P, _T_co],
@@ -74,7 +79,8 @@ def op(
     return_type: TypeHint[_S] = ...,
     action_type: TypeHint[_T] = ...,
 ) -> Callable[
-    [Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]]], CheckpointOp[_P, _S, _T]
+    [Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]]],
+    CheckpointOp[_P, _S, _T],
 ]: ...
 def op(
     fn: Callable[_P, Coroutine[Any, Any, _T_co]] | None = None,
@@ -82,7 +88,7 @@ def op(
     *,
     return_type: TypeHint[Any] = unspecified,
     # checkpoint parameters
-    checkpoint: Literal[True] | Literal[False] = False,
+    checkpoint: bool = False,
     initial: Callable[[], _S] | None = None,
     reducer: Callable[[_S, _T], _S] | None = None,
     action_type: TypeHint[_T] = unspecified,
@@ -119,5 +125,4 @@ def op(
 
     if fn is not None:
         return decorate(fn)
-    else:
-        return decorate
+    return decorate

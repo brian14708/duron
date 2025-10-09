@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
+from typing_extensions import override
 
 import pytest
 from pydantic import BaseModel, TypeAdapter
-from typing_extensions import override
 
 from duron import Context, fn
 from duron.codec import Codec
@@ -24,7 +24,8 @@ class PydanticCodec(Codec):
     @override
     def encode_json(self, result: object) -> JSONValue:
         return cast(
-            "JSONValue", TypeAdapter(type(result)).dump_python(result, mode="json")
+            "JSONValue",
+            TypeAdapter(type(result)).dump_python(result, mode="json"),
         )
 
     @override
@@ -33,10 +34,10 @@ class PydanticCodec(Codec):
 
 
 @pytest.mark.asyncio
-async def test_pydantic_serialize():
+async def test_pydantic_serialize() -> None:
     @fn(codec=PydanticCodec())
     async def activity(ctx: Context) -> PydanticPoint:
-        async def new_pt() -> PydanticPoint:
+        def new_pt() -> PydanticPoint:
             return PydanticPoint(x=1, y=2)
 
         pt = await ctx.run(new_pt)
@@ -47,4 +48,5 @@ async def test_pydantic_serialize():
         await t.start()
         a = await t.wait()
         assert type(a) is PydanticPoint
-        assert a.x == 6 and a.y == 12
+        assert a.x == 6
+        assert a.y == 12
