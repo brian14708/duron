@@ -18,7 +18,6 @@ from duron._core.ops import Barrier, ExternalPromiseCreate, FnCall, create_op
 from duron._core.signal import create_signal
 from duron._core.stream import create_stream, run_stream
 from duron._decorator.op import CheckpointOp, Op
-from duron.log import encode_id
 from duron.typing import inspect_function
 
 if TYPE_CHECKING:
@@ -185,7 +184,7 @@ class Context:
             ExternalPromiseCreate(metadata=self._get_metadata(None), return_type=dtype),
         )
         return (
-            encode_id(fut.id),
+            fut.id,
             cast("asyncio.Future[_T]", fut),
         )
 

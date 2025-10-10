@@ -29,7 +29,7 @@ async def test_timer() -> None:
     assert tsk.result() == 0
 
 
-def op_single() -> set[bytes]:
+def op_single() -> set[str]:
     async def op1(x: int) -> None:
         _ = await loop.create_op(x)
 
@@ -44,16 +44,16 @@ def op_single() -> set[bytes]:
         await first
         _ = await loop.create_op(6)
 
-    ids: set[bytes] = set()
+    ids: set[str] = set()
     loop = create_loop(asyncio.get_event_loop())
     loop.tick(time.time_ns() // 1000)
     tsk = loop.create_task(op())
 
     @overload
-    def tick(n: int, expect: set[int]) -> list[bytes]: ...
+    def tick(n: int, expect: set[int]) -> list[str]: ...
     @overload
     def tick(n: int, expect: None) -> None: ...
-    def tick(n: int, expect: set[int] | None) -> list[bytes] | None:
+    def tick(n: int, expect: set[int] | None) -> list[str] | None:
         waitset = loop.poll_completion(tsk)
         if expect:
             assert waitset
@@ -77,12 +77,12 @@ def op_single() -> set[bytes]:
 @pytest.mark.asyncio
 async def test_op() -> None:  # noqa: RUF029
     baseline = {
-        b"\tD\xea@/\x91\xbd\xa7\x91\x9d\x16y",
-        b"*M\x95\x15_\xafX\xa1\xa0\xd6\xf4S",
-        b"\x947\x8er\xa1\xa2\xb3\x1c\xef8\xfe\xde",
-        b"\xa8Cc_8\xdf\x99WFK9W",
-        b"\xc33\xea\x8f]\x1c^\x8b]n\xa3r",
-        b"\xc9\x9dA\x14\xb7*\xb9X\x99$D\x02",
+        "CUTqQC+RvaeRnRZ5",
+        "Kk2VFV+vWKGg1vRT",
+        "lDeOcqGisxzvOP7e",
+        "qENjXzjfmVdGSzlX",
+        "wzPqj10cXotdbqNy",
+        "yZ1BFLcquViZJEQC",
     }
     for _ in range(4):
         assert op_single() == baseline

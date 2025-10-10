@@ -107,17 +107,14 @@ class LogStorage(ABC):
     async def flush(self, token: bytes, /) -> None: ...
 
 
-def encode_id(raw: bytes) -> str:
-    return binascii.b2a_base64(raw, newline=False).decode()
+def random_id() -> str:
+    return binascii.b2a_base64(os.urandom(12), newline=False).decode()
 
 
-def decode_id(encoded: str) -> bytes:
-    return binascii.a2b_base64(encoded)
-
-
-def random_id() -> bytes:
-    return os.urandom(12)
-
-
-def derive_id(base: bytes, *, context: bytes = b"", key: bytes = b"") -> bytes:
-    return blake2b(base, salt=context, key=key, digest_size=12).digest()
+def derive_id(base: str, *, context: bytes = b"", key: bytes = b"") -> str:
+    return binascii.b2a_base64(
+        blake2b(
+            binascii.a2b_base64(base), salt=context, key=key, digest_size=12
+        ).digest(),
+        newline=False,
+    ).decode()

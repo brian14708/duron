@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from duron import Context, Deferred, Stream, StreamWriter, fn
+from duron import Context, Defer, Stream, StreamWriter, fn
 from duron.contrib.codecs import PickleCodec
 from duron.contrib.storage import MemoryLogStorage
 
@@ -186,7 +186,7 @@ async def test_external_promise() -> None:
 @pytest.mark.asyncio
 async def test_external_stream() -> None:
     @fn
-    async def activity(_ctx: Context, test: Stream[int] = Deferred) -> int:
+    async def activity(_ctx: Context, test: Stream[int] = Defer) -> int:
         t = 0
         async for value in test:
             t += value
@@ -213,7 +213,7 @@ async def test_external_stream() -> None:
 @pytest.mark.asyncio
 async def test_external_stream_write() -> None:
     @fn
-    async def activity(_ctx: Context, writer: StreamWriter[int] = Deferred) -> int:
+    async def activity(_ctx: Context, writer: StreamWriter[int] = Defer) -> int:
         for i in range(10):
             await writer.send(i)
         await writer.close()

@@ -7,6 +7,7 @@ import logging
 from asyncio import events, tasks
 from collections import deque
 from dataclasses import dataclass
+from hashlib import blake2b
 from heapq import heappop, heappush
 from typing import TYPE_CHECKING, Generic
 from typing_extensions import (
@@ -45,11 +46,11 @@ _task_ctx: contextvars.ContextVar[_TaskCtx] = contextvars.ContextVar("duron_task
 class OpFuture(asyncio.Future[_T], Generic[_T]):
     __slots__: tuple[str, ...] = ("id", "params")
 
-    id: bytes
+    id: str
     params: object
 
     def __init__(
-        self, id_: bytes, params: object, loop: asyncio.AbstractEventLoop
+        self, id_: str, params: object, loop: asyncio.AbstractEventLoop
     ) -> None:
         super().__init__(loop=loop)
         self.id = id_
@@ -74,7 +75,7 @@ class WaitSet:
 
 @dataclass(slots=True)
 class _TaskCtx:
-    parent_id: bytes
+    parent_id: str
     seq: int = 0
 
 
@@ -99,8 +100,8 @@ class EventLoop(asyncio.AbstractEventLoop):
         self._exc_handler: (
             Callable[[asyncio.AbstractEventLoop, dict[str, object]], object] | None
         ) = None
-        self._ops: dict[bytes, OpFuture[object]] = {}
-        self._ctx: _TaskCtx = _TaskCtx(parent_id=b"")
+        self._ops: dict[str, OpFuture[object]] = {}
+        self._ctx: _TaskCtx = _TaskCtx(parent_id="")
         self._key: bytes = b""
         self._now_us: int = 0
         self._closed: bool = False
@@ -108,9 +109,10 @@ class EventLoop(asyncio.AbstractEventLoop):
         self._timers: list[asyncio.TimerHandle] = []
 
     def set_key(self, key: bytes) -> None:
-        self._key = derive_id(key, key=self._key)
+        # Derive a fixed-length key from the provided key
+        self._key = blake2b(key, digest_size=16, key=self._key).digest()
 
-    def generate_op_id(self) -> bytes:
+    def generate_op_id(self) -> str:
         ctx = _task_ctx.get(self._ctx)
         ctx.seq += 1
         return derive_id(
@@ -266,20 +268,20 @@ class EventLoop(asyncio.AbstractEventLoop):
     @overload
     def post_completion(
         self,
-        id_: bytes,
+        id_: str,
         *,
         result: object,
     ) -> None: ...
     @overload
     def post_completion(
         self,
-        id_: bytes,
+        id_: str,
         *,
         exception: BaseException,
     ) -> None: ...
     def post_completion(
         self,
-        id_: bytes,
+        id_: str,
         *,
         result: object = None,
         exception: BaseException | None = None,

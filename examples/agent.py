@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, TypeAdapter
 from rich.console import Console
 
 import duron
-from duron import Deferred, Signal, SignalInterrupt, Stream, StreamWriter
+from duron import Defer, Signal, SignalInterrupt, Stream, StreamWriter
 from duron.codec import Codec
 from duron.contrib.storage import FileLogStorage
 
@@ -53,9 +53,9 @@ class PydanticCodec(Codec):
 @duron.fn(codec=PydanticCodec())
 async def agent_fn(
     ctx: duron.Context,
-    input_: Stream[str] = Deferred,
-    signal: Signal[None] = Deferred,
-    output: StreamWriter[tuple[str, str]] = Deferred,
+    input_: Stream[str] = Defer,
+    signal: Signal[None] = Defer,
+    output: StreamWriter[tuple[str, str]] = Defer,
 ) -> None:
     history: list[ChatCompletionMessageParam] = [
         {
