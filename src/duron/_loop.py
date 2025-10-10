@@ -4,11 +4,9 @@ import asyncio
 import contextlib
 import contextvars
 import logging
-import os
 from asyncio import events, tasks
 from collections import deque
 from dataclasses import dataclass
-from hashlib import blake2b
 from heapq import heappop, heappush
 from typing import TYPE_CHECKING, Generic
 from typing_extensions import (
@@ -19,6 +17,8 @@ from typing_extensions import (
     overload,
     override,
 )
+
+from duron.log import derive_id, random_id
 
 _T = TypeVar("_T")
 
@@ -108,15 +108,14 @@ class EventLoop(asyncio.AbstractEventLoop):
         self._timers: list[asyncio.TimerHandle] = []
 
     def set_key(self, key: bytes) -> None:
-        self._key = key
+        self._key = derive_id(key, key=self._key)
 
     def generate_op_id(self) -> bytes:
         ctx = _task_ctx.get(self._ctx)
         ctx.seq += 1
-        return _mix_id(ctx.parent_id, self._key, ctx.seq - 1)
-
-    def host_loop(self) -> asyncio.AbstractEventLoop:
-        return self._host
+        return derive_id(
+            ctx.parent_id, context=(ctx.seq - 1).to_bytes(4, "big"), key=self._key
+        )
 
     @override
     def call_soon(
@@ -256,7 +255,7 @@ class EventLoop(asyncio.AbstractEventLoop):
 
     def create_op(self, params: object, *, external: bool = False) -> OpFuture[object]:
         if external:
-            id_ = os.urandom(12)
+            id_ = random_id()
             self._event.set()
         else:
             id_ = self.generate_op_id()
@@ -288,7 +287,7 @@ class EventLoop(asyncio.AbstractEventLoop):
         if op := self._ops.pop(id_, None):
             if op.done():
                 return
-            tid = _mix_id(op.id, self._key, -1)
+            tid = derive_id(op.id, key=self._key)
             token = _task_ctx.set(_TaskCtx(parent_id=tid))
             if exception is None:
                 _ = self.call_soon(op.set_result, result)
@@ -354,12 +353,6 @@ class EventLoop(asyncio.AbstractEventLoop):
 
     def _timer_handle_cancelled(self, _th: asyncio.TimerHandle) -> None:
         pass
-
-
-def _mix_id(a: bytes, key: bytes, b: int) -> bytes:
-    if b == -1:
-        return blake2b(a, key=key, digest_size=12).digest()
-    return blake2b(b.to_bytes(4, "little") + a, key=key, digest_size=12).digest()
 
 
 def create_loop(

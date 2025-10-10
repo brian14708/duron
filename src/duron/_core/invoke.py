@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import binascii
 import contextlib
-import os
 import time
-from hashlib import blake2b
 from typing import TYPE_CHECKING, Generic, Literal, cast
 from typing_extensions import (
     Any,
@@ -31,7 +28,7 @@ from duron._core.signal import Signal
 from duron._core.stream import ObserverStream, Stream, StreamWriter
 from duron._loop import EventLoop, create_loop
 from duron.codec import Codec, JSONValue
-from duron.log import is_entry
+from duron.log import decode_id, derive_id, encode_id, is_entry, random_id
 from duron.typing import Unspecified, inspect_function
 
 if TYPE_CHECKING:
@@ -257,7 +254,7 @@ async def _invoke_prelude(
         if init_params["version"] != _CURRENT_VERSION:
             msg = "version mismatch"
             raise RuntimeError(msg)
-        loop.set_key(_decode_id(init_params["seed"]))
+        loop.set_key(decode_id(init_params["seed"]))
         extra_kwargs: dict[str, object] = {}
         for name, type_, dtype in job_fn.inject:
             with ctx.metadata({"param.name": name}):
@@ -423,7 +420,7 @@ class _InvokeRun:
             pending_info = self._pending_task.pop(e["promise_id"], None)
             task_info = self._tasks.get(e["promise_id"], None)
 
-            id_ = _decode_id(e["promise_id"])
+            id_ = decode_id(e["promise_id"])
 
             return_type: TypeHint[Any] = Unspecified
             if pending_info is not None:
@@ -454,7 +451,7 @@ class _InvokeRun:
                 msg = f"Invalid promise/complete entry: {e!r}"
                 raise ValueError(msg)
         elif e["type"] == "stream/create":
-            id_ = _decode_id(e["id"])
+            id_ = decode_id(e["id"])
             if e["id"] not in self._streams:
                 self._loop.post_completion(
                     id_, exception=ValueError("Stream not found")
@@ -463,7 +460,7 @@ class _InvokeRun:
                 self._loop.post_completion(id_, result=e["id"])
             self._pending_ops.discard(id_)
         elif e["type"] == "stream/emit":
-            id_ = _decode_id(e["id"])
+            id_ = decode_id(e["id"])
             if e["stream_id"] not in self._streams:
                 self._loop.post_completion(
                     id_, exception=ValueError("Stream not found")
@@ -478,7 +475,7 @@ class _InvokeRun:
                 self._loop.post_completion(id_, result=None)
             self._pending_ops.discard(id_)
         elif e["type"] == "stream/complete":
-            id_ = _decode_id(e["id"])
+            id_ = decode_id(e["id"])
             if e["stream_id"] not in self._streams:
                 self._loop.post_completion(
                     id_, exception=ValueError("Stream not found")
@@ -495,7 +492,7 @@ class _InvokeRun:
                 _ = self._streams.pop(e["stream_id"], None)
             self._pending_ops.discard(id_)
         elif e["type"] == "barrier":
-            id_ = _decode_id(e["id"])
+            id_ = decode_id(e["id"])
             self._loop.post_completion(id_, result=offset)
             self._pending_ops.discard(id_)
 
@@ -524,7 +521,7 @@ class _InvokeRun:
             case FnCall():
                 promise_create_entry: PromiseCreateEntry = {
                     "ts": self.now(),
-                    "id": _encode_id(id_),
+                    "id": encode_id(id_),
                     "type": "promise/create",
                 }
                 if op.metadata:
@@ -538,11 +535,12 @@ class _InvokeRun:
                 await self.enqueue_log(promise_create_entry)
 
                 async def cb() -> None:
+                    now_us = self.now()
                     entry: PromiseCompleteEntry = {
-                        "ts": self.now(),
-                        "id": _encode_id(id_, ack=True),
+                        "ts": now_us,
+                        "id": encode_id(derive_id(id_)),
                         "type": "promise/complete",
-                        "promise_id": _encode_id(id_),
+                        "promise_id": encode_id(id_),
                     }
                     try:
                         result = op.callable(*op.args, **op.kwargs)
@@ -558,7 +556,7 @@ class _InvokeRun:
 
                 def done(f: OpFuture[object]) -> None:
                     if f.cancelled():
-                        sid = _encode_id(f.id)
+                        sid = encode_id(f.id)
                         if self._pending_task.get(sid, None):
                             # pending task cancelled
                             pass
@@ -568,14 +566,14 @@ class _InvokeRun:
                                 _ = task.get_loop().call_soon(task.cancel)
 
                 fut.add_done_callback(done)
-                sid = _encode_id(id_)
+                sid = encode_id(id_)
                 if self._running:
                     self._tasks[sid] = (asyncio.create_task(cb()), op.return_type)
                 else:
                     self._pending_task[sid] = (cb, op.return_type)
 
             case StreamCreate():
-                stream_id = _encode_id(id_)
+                stream_id = encode_id(id_)
 
                 # Determine which observer to use
                 ob = [op.observer] if op.observer else []
@@ -599,7 +597,7 @@ class _InvokeRun:
             case StreamEmit():
                 stream_emit_entry: StreamEmitEntry = {
                     "ts": self.now(),
-                    "id": _encode_id(id_),
+                    "id": encode_id(id_),
                     "stream_id": op.stream_id,
                     "type": "stream/emit",
                     "value": self._codec.encode_json(op.value),
@@ -609,7 +607,7 @@ class _InvokeRun:
                 if op.exception:
                     stream_close_entry_err: StreamCompleteEntry = {
                         "ts": self.now(),
-                        "id": _encode_id(id_),
+                        "id": encode_id(id_),
                         "stream_id": op.stream_id,
                         "type": "stream/complete",
                         "error": _encode_error(op.exception),
@@ -618,7 +616,7 @@ class _InvokeRun:
                 else:
                     stream_close_entry: StreamCompleteEntry = {
                         "ts": self.now(),
-                        "id": _encode_id(id_),
+                        "id": encode_id(id_),
                         "stream_id": op.stream_id,
                         "type": "stream/complete",
                     }
@@ -626,19 +624,19 @@ class _InvokeRun:
             case Barrier():
                 barrier_entry: BarrierEntry = {
                     "ts": self.now(),
-                    "id": _encode_id(id_),
+                    "id": encode_id(id_),
                     "type": "barrier",
                 }
                 await self.enqueue_log(barrier_entry, flush=True)
             case ExternalPromiseCreate():
                 promise_create_entry = {
                     "ts": self.now(),
-                    "id": _encode_id(id_),
+                    "id": encode_id(id_),
                     "type": "promise/create",
                 }
                 if op.metadata:
                     promise_create_entry["metadata"] = op.metadata
-                self._tasks[_encode_id(id_)] = (asyncio.Future(), op.return_type)
+                self._tasks[encode_id(id_)] = (asyncio.Future(), op.return_type)
                 await self.enqueue_log(promise_create_entry)
             case _:
                 assert_never(op)
@@ -653,9 +651,10 @@ class _InvokeRun:
         if id_ not in self._tasks:
             msg = "Promise not found"
             raise ValueError(msg)
+        now_us = self.now()
         entry: PromiseCompleteEntry = {
-            "ts": self.now(),
-            "id": _encode_id(_decode_id(id_), ack=True),
+            "ts": now_us,
+            "id": encode_id(derive_id(decode_id(id_))),
             "type": "promise/complete",
             "promise_id": id_,
         }
@@ -723,21 +722,8 @@ class _InvokeRun:
         return cnt
 
 
-def _encode_id(id_: bytes, *, ack: bool = False) -> str:
-    if ack:
-        id_ = blake2b(
-            id_,
-            digest_size=12,
-        ).digest()
-    return binascii.b2a_base64(id_, newline=False).decode()
-
-
-def _decode_id(encoded: str) -> bytes:
-    return binascii.a2b_base64(encoded)
-
-
 def _generate_id() -> str:
-    return _encode_id(os.urandom(12))
+    return encode_id(random_id())
 
 
 def _encode_error(error: BaseException) -> ErrorInfo:
