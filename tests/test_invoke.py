@@ -29,22 +29,10 @@ async def test_invoke() -> None:
         _ = await ctx.run(lambda: asyncio.sleep(0.1))
         return i + ":".join(x)
 
-    ids = {
-        "+qPYuDgKBdMkb8ME",
-        "20QZakraLA2aFVh0",
-        "9nLMU+itD7QHcCsf",
-        "BCLA1azFK4LrrEHg",
-        "D7qSBNZIThKa2P+H",
-        "d0eMKz6qFm4C+TYX",
-        "tlmy+UdKzdxIIykQ",
-        "vP2AH9GHFTbZRJQ7",
-    }
-
     log = MemoryLogStorage()
     async with activity.invoke(log) as t:
         await t.start("test")
         a = await t.wait()
-    assert {e["id"] for e in await log.entries()} == ids
 
     async with activity.invoke(log) as t:
         await t.start("test")
@@ -56,7 +44,6 @@ async def test_invoke() -> None:
         await t.start("test")
         c = await t.wait()
     assert a == c
-    assert {e["id"] for e in await log2.entries()} == ids
 
 
 @pytest.mark.asyncio
@@ -162,7 +149,6 @@ async def test_random() -> None:
         await t.start()
         a = await t.wait()
 
-    log = MemoryLogStorage()
     async with activity.invoke(log) as t:
         await t.start()
         b = await t.wait()
@@ -172,10 +158,12 @@ async def test_random() -> None:
 
 @pytest.mark.asyncio
 async def test_external_promise() -> None:
+    v: dict[str, str] = {}
+
     @fn
     async def activity(ctx: Context) -> int:
         a, b = await ctx.create_promise(int)
-        assert a == "9mcIBsvU2ej9uDsV"
+        v["data"] = a
         return await b
 
     log = MemoryLogStorage()
@@ -184,11 +172,11 @@ async def test_external_promise() -> None:
 
         async def do() -> None:
             while True:
-                try:
-                    await t.complete_promise("9mcIBsvU2ej9uDsV", result=9)
-                    break
-                except ValueError:
-                    await asyncio.sleep(0.1)
+                if v.get("data") is None:
+                    await asyncio.sleep(0.01)
+                    continue
+                await t.complete_promise(v["data"], result=9)
+                break
 
         bg = asyncio.create_task(do())
         assert await t.wait() == 9

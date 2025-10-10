@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import contextlib
 import os
 import time
@@ -97,6 +98,7 @@ class Invoke(Generic[_P, _T_co]):
                 "version": _CURRENT_VERSION,
                 "args": [codec.encode_json(arg) for arg in args],
                 "kwargs": {k: codec.encode_json(v) for k, v in kwargs.items()},
+                "seed": binascii.b2a_base64(os.urandom(12), newline=False).decode(),
             }
 
         codec = self._fn.codec
@@ -237,6 +239,7 @@ class InitParams(TypedDict):
     version: int
     args: list[JSONValue]
     kwargs: dict[str, JSONValue]
+    seed: str
 
 
 async def _invoke_prelude(
@@ -252,6 +255,7 @@ async def _invoke_prelude(
         if init_params["version"] != _CURRENT_VERSION:
             msg = "version mismatch"
             raise RuntimeError(msg)
+        loop.set_key(binascii.a2b_base64(init_params["seed"]))
         extra_kwargs: dict[str, object] = {}
         for name, type_, dtype in job_fn.inject:
             if type_ is Stream:
@@ -320,7 +324,7 @@ class _InvokeRun:
         ]
         | None = None,
     ) -> None:
-        self._loop = create_loop(asyncio.get_running_loop(), b"")
+        self._loop = create_loop(asyncio.get_running_loop())
         self._task = self._loop.create_task(task)
         self._log = log
         self._codec = codec

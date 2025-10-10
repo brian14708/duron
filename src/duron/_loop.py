@@ -92,7 +92,7 @@ class EventLoop(asyncio.AbstractEventLoop):
         "_timers",
     )
 
-    def __init__(self, host: asyncio.AbstractEventLoop, seed: bytes) -> None:
+    def __init__(self, host: asyncio.AbstractEventLoop) -> None:
         self._ready: deque[asyncio.Handle] = deque()
         self._debug: bool = False
         self._host: asyncio.AbstractEventLoop = host
@@ -100,16 +100,20 @@ class EventLoop(asyncio.AbstractEventLoop):
             Callable[[asyncio.AbstractEventLoop, dict[str, object]], object] | None
         ) = None
         self._ops: dict[bytes, OpFuture[object]] = {}
-        self._ctx: _TaskCtx = _TaskCtx(parent_id=seed)
+        self._ctx: _TaskCtx = _TaskCtx(parent_id=b"")
+        self._key: bytes = b""
         self._now_us: int = 0
         self._closed: bool = False
         self._event: asyncio.Event = asyncio.Event()  # loop = _host
         self._timers: list[asyncio.TimerHandle] = []
 
+    def set_key(self, key: bytes) -> None:
+        self._key = key
+
     def generate_op_id(self) -> bytes:
         ctx = _task_ctx.get(self._ctx)
         ctx.seq += 1
-        return _mix_id(ctx.parent_id, ctx.seq - 1)
+        return _mix_id(ctx.parent_id, self._key, ctx.seq - 1)
 
     def host_loop(self) -> asyncio.AbstractEventLoop:
         return self._host
@@ -284,7 +288,7 @@ class EventLoop(asyncio.AbstractEventLoop):
         if op := self._ops.pop(id_, None):
             if op.done():
                 return
-            tid = _mix_id(op.id, -1)
+            tid = _mix_id(op.id, self._key, -1)
             token = _task_ctx.set(_TaskCtx(parent_id=tid))
             if exception is None:
                 _ = self.call_soon(op.set_result, result)
@@ -352,17 +356,16 @@ class EventLoop(asyncio.AbstractEventLoop):
         pass
 
 
-def _mix_id(a: bytes, b: int) -> bytes:
+def _mix_id(a: bytes, key: bytes, b: int) -> bytes:
     if b == -1:
-        return blake2b(a, digest_size=12).digest()
-    return blake2b(b.to_bytes(4, "little") + a, digest_size=12).digest()
+        return blake2b(a, key=key, digest_size=12).digest()
+    return blake2b(b.to_bytes(4, "little") + a, key=key, digest_size=12).digest()
 
 
 def create_loop(
     parent_loop: asyncio.AbstractEventLoop,
-    seed: bytes,
 ) -> EventLoop:
-    return EventLoop(parent_loop, seed)  # type: ignore[abstract]
+    return EventLoop(parent_loop)  # type: ignore[abstract]
 
 
 def _copy_future_state(source: asyncio.Future[_T], dest: asyncio.Future[_T]) -> None:

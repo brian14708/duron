@@ -20,7 +20,7 @@ async def test_timer() -> None:
             )
         return 0
 
-    loop = create_loop(asyncio.get_event_loop(), b"")
+    loop = create_loop(asyncio.get_event_loop())
     loop.tick(time.time_ns())
     tsk = loop.create_task(timer())
     while (waitset := loop.poll_completion(tsk)) is not None:
@@ -45,7 +45,7 @@ def op_single() -> set[bytes]:
         _ = await loop.create_op(6)
 
     ids: set[bytes] = set()
-    loop = create_loop(asyncio.get_event_loop(), b"tsk")
+    loop = create_loop(asyncio.get_event_loop())
     loop.tick(time.time_ns())
     tsk = loop.create_task(op())
 
@@ -77,12 +77,12 @@ def op_single() -> set[bytes]:
 @pytest.mark.asyncio
 async def test_op() -> None:  # noqa: RUF029
     baseline = {
-        b"\x89U\x82\xd9\xe9\xa1\x01\x0fb\xab}\xba",
-        b"\xa2VE\xcb\xf3\x81\x82\xe75@\xe9\xdf",
-        b"\xb2\x1d\xb3\xd5c\xe3J\no\xa6U\x18",
-        b"\xe7y\tDQ-\xe8\xfb\x9dBX\xde",
-        b"\t\xf9?\xf8kJ\xd4\ry8\xf2\xae",
-        b"\xc6\xbbEu\xdf\xd1uc\xf5M\x11'",
+        b'\x04"\xc0\xd5\xac\xc5+\x82\xeb\xacA\xe0',
+        b"\x07\x04%\x7f\xbf\xc3x*\x89}Jb",
+        b"\x8f\x1f\x1dMR\x19\xe7\xbf\xa2D\xbe\x7f",
+        b'\xb4"\xd9\x1a\x89\x896\xcb.\x9b#P',
+        b"\xf6g\x08\x06\xcb\xd4\xd9\xe8\xfd\xb8;\x15",
+        b"\xfa\xa3\xd8\xb88\n\x05\xd3$o\xc3\x04",
     }
     for _ in range(4):
         assert op_single() == baseline
