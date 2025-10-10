@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import binascii
 import contextlib
 import os
@@ -18,6 +17,7 @@ from typing_extensions import (
     overload,
 )
 
+from duron._core.config import config
 from duron._core.context import Context
 from duron._core.ops import (
     Barrier,
@@ -98,7 +98,7 @@ class Invoke(Generic[_P, _T_co]):
                 "version": _CURRENT_VERSION,
                 "args": [codec.encode_json(arg) for arg in args],
                 "kwargs": {k: codec.encode_json(v) for k, v in kwargs.items()},
-                "seed": binascii.b2a_base64(os.urandom(12), newline=False).decode(),
+                "seed": _generate_id(),
             }
 
         codec = self._fn.codec
@@ -109,6 +109,7 @@ class Invoke(Generic[_P, _T_co]):
             self._log,
             codec,
             watchers=self._watchers,
+            debug=config.debug,
         )
         await self._run.resume()
 
@@ -124,6 +125,7 @@ class Invoke(Generic[_P, _T_co]):
             self._log,
             self._fn.codec,
             watchers=self._watchers,
+            debug=config.debug,
         )
         await self._run.resume()
 
@@ -255,30 +257,16 @@ async def _invoke_prelude(
         if init_params["version"] != _CURRENT_VERSION:
             msg = "version mismatch"
             raise RuntimeError(msg)
-        loop.set_key(binascii.a2b_base64(init_params["seed"]))
+        loop.set_key(_decode_id(init_params["seed"]))
         extra_kwargs: dict[str, object] = {}
         for name, type_, dtype in job_fn.inject:
-            if type_ is Stream:
-                extra_kwargs[name], _ = await ctx.create_stream(
-                    dtype,
-                    metadata={
-                        "param.name": name,
-                    },
-                )
-            elif type_ is Signal:
-                extra_kwargs[name], _ = await ctx.create_signal(
-                    dtype,
-                    metadata={
-                        "param.name": name,
-                    },
-                )
-            elif type_ is StreamWriter:
-                _, extra_kwargs[name] = await ctx.create_stream(
-                    dtype,
-                    metadata={
-                        "param.name": name,
-                    },
-                )
+            with ctx.metadata({"param.name": name}):
+                if type_ is Stream:
+                    extra_kwargs[name], _ = await ctx.create_stream(dtype)
+                elif type_ is Signal:
+                    extra_kwargs[name], _ = await ctx.create_signal(dtype)
+                elif type_ is StreamWriter:
+                    _, extra_kwargs[name] = await ctx.create_stream(dtype)
         codec = job_fn.codec
 
         args = tuple(
@@ -301,6 +289,7 @@ async def _invoke_prelude(
 class _InvokeRun:
     __slots__ = (
         "_codec",
+        "_debug",
         "_log",
         "_loop",
         "_now",
@@ -319,12 +308,16 @@ class _InvokeRun:
         task: Coroutine[Any, Any, object],
         log: LogStorage,
         codec: Codec,
+        *,
         watchers: list[
             tuple[Callable[[dict[str, JSONValue]], bool], StreamObserver[object]]
         ]
         | None = None,
+        debug: bool = False,
     ) -> None:
         self._loop = create_loop(asyncio.get_running_loop())
+        if debug:
+            self._loop.set_debug(True)
         self._task = self._loop.create_task(task)
         self._log = log
         self._codec = codec
@@ -346,6 +339,9 @@ class _InvokeRun:
             ],
         ] = {}
         self._watchers = watchers or []
+        self._debug: dict[str, JSONValue] | None = (
+            {"run.id": _generate_id()} if debug else None
+        )
 
     async def close(self) -> None:
         for task, _ in self._tasks.values():
@@ -507,6 +503,16 @@ class _InvokeRun:
         if not self._running:
             self._pending_msg.append(entry)
         else:
+            if self._debug:
+                if "debug" in entry:
+                    entry["debug"] = {
+                        **entry["debug"],
+                        **self._debug,
+                    }
+                else:
+                    entry["debug"] = self._debug
+            else:
+                _ = entry.pop("debug", None)
             offset = await self._log.append(self._running, entry)
             if flush:
                 await self._log.flush(self._running)
@@ -523,6 +529,12 @@ class _InvokeRun:
                 }
                 if op.metadata:
                     promise_create_entry["metadata"] = op.metadata
+                if self._debug:
+                    promise_create_entry["debug"] = {
+                        "fn.name": str(
+                            getattr(op.callable, "__qualname__", op.callable)
+                        ),
+                    }
                 await self.enqueue_log(promise_create_entry)
 
                 async def cb() -> None:
@@ -667,7 +679,7 @@ class _InvokeRun:
             if predicate(md or {}):
                 entry: StreamEmitEntry = {
                     "ts": ts,
-                    "id": _encode_id(os.urandom(12)),
+                    "id": _generate_id(),
                     "type": "stream/emit",
                     "stream_id": stream_id,
                     "value": self._codec.encode_json(value),
@@ -694,7 +706,7 @@ class _InvokeRun:
             if error:
                 entry: StreamCompleteEntry = {
                     "ts": ts,
-                    "id": _encode_id(os.urandom(12)),
+                    "id": _generate_id(),
                     "type": "stream/complete",
                     "stream_id": stream_id,
                     "error": _encode_error(error),
@@ -702,7 +714,7 @@ class _InvokeRun:
             else:
                 entry = {
                     "ts": ts,
-                    "id": _encode_id(os.urandom(12)),
+                    "id": _generate_id(),
                     "type": "stream/complete",
                     "stream_id": stream_id,
                 }
@@ -717,11 +729,15 @@ def _encode_id(id_: bytes, *, ack: bool = False) -> str:
             id_,
             digest_size=12,
         ).digest()
-    return base64.b64encode(id_).decode()
+    return binascii.b2a_base64(id_, newline=False).decode()
 
 
 def _decode_id(encoded: str) -> bytes:
-    return base64.b64decode(encoded)
+    return binascii.a2b_base64(encoded)
+
+
+def _generate_id() -> str:
+    return _encode_id(os.urandom(12))
 
 
 def _encode_error(error: BaseException) -> ErrorInfo:

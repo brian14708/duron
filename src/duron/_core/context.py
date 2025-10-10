@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import binascii
+from contextlib import contextmanager
 from contextvars import ContextVar
 from random import Random
 from typing import TYPE_CHECKING, cast
@@ -21,11 +22,10 @@ from duron._decorator.op import CheckpointOp, Op
 from duron.typing import inspect_function
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    from collections.abc import Callable, Coroutine, Generator
     from contextvars import Token
     from types import TracebackType
 
-    from duron._core.options import RunOptions
     from duron._core.signal import Signal, SignalWriter
     from duron._core.stream import Stream, StreamWriter
     from duron._decorator.fn import Fn
@@ -38,6 +38,9 @@ if TYPE_CHECKING:
     _P = ParamSpec("_P")
 
 _context: ContextVar[Context | None] = ContextVar("duron_context", default=None)
+_metadata: ContextVar[dict[str, JSONValue] | None] = ContextVar(
+    "duron_metadata", default=None
+)
 
 
 @final
@@ -76,7 +79,6 @@ class Context:
     async def run(
         self,
         fn: Callable[_P, Coroutine[Any, Any, _T]] | Op[_P, _T],
-        options: RunOptions | None = ...,
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
@@ -85,7 +87,6 @@ class Context:
     async def run(
         self,
         fn: Callable[_P, _T] | CheckpointOp[_P, _T, Any],
-        options: RunOptions | None = ...,
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
@@ -95,7 +96,6 @@ class Context:
         fn: Callable[_P, Coroutine[Any, Any, _T] | _T]
         | Op[_P, _T]
         | CheckpointOp[_P, _T, Any],
-        options: RunOptions | None = None,
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
@@ -105,7 +105,7 @@ class Context:
             raise RuntimeError(msg)
 
         if isinstance(fn, CheckpointOp):
-            async with self.run_stream(fn, options, *args, **kwargs) as stream:
+            async with self.run_stream(fn, *args, **kwargs) as stream:
                 await stream.discard()
                 return await stream
 
@@ -123,7 +123,7 @@ class Context:
                 args=args,
                 kwargs=kwargs,
                 return_type=return_type,
-                metadata=_merge(options.metadata if options else None, metadata),
+                metadata=self._get_metadata(metadata),
             ),
         )
         return cast("_T", await op)
@@ -131,12 +131,10 @@ class Context:
     def run_stream(
         self,
         fn: CheckpointOp[_P, _T, _S],
-        options: RunOptions | None = None,
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
     ) -> AsyncContextManager[Stream[_S, _T]]:
-        _ = options
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
@@ -155,7 +153,6 @@ class Context:
         dtype: TypeHint[_T],
         *,
         external: bool = False,
-        metadata: dict[str, JSONValue] | None = None,
     ) -> tuple[Stream[_T, None], StreamWriter[_T]]:
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
@@ -164,32 +161,28 @@ class Context:
             self._loop,
             dtype,
             external=external,
-            metadata=metadata,
+            metadata=self._get_metadata(None),
         )
 
     async def create_signal(
         self,
         dtype: TypeHint[_T],
-        *,
-        metadata: dict[str, JSONValue] | None = None,
     ) -> tuple[Signal[_T], SignalWriter[_T]]:
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
-        return await create_signal(self._loop, dtype, metadata=metadata)
+        return await create_signal(self._loop, dtype, metadata=self._get_metadata(None))
 
     async def create_promise(
         self,
         dtype: type[_T],
-        *,
-        metadata: dict[str, JSONValue] | None = None,
     ) -> tuple[str, asyncio.Future[_T]]:
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
         fut = create_op(
             self._loop,
-            ExternalPromiseCreate(metadata=metadata, return_type=dtype),
+            ExternalPromiseCreate(metadata=self._get_metadata(None), return_type=dtype),
         )
         return (
             binascii.b2a_base64(fut.id, newline=False).decode(),
@@ -220,12 +213,30 @@ class Context:
             raise RuntimeError(msg)
         return Random(self._loop.generate_op_id())  # noqa: S311
 
+    @contextmanager
+    def metadata(self, metadata: dict[str, JSONValue]) -> Generator[None, None, None]:
+        if asyncio.get_running_loop() is not self._loop:
+            msg = "Context time can only be used in the context loop"
+            raise RuntimeError(msg)
+        if not metadata:
+            yield
+            return
 
-def _merge(
-    d1: dict[str, JSONValue] | None, d2: dict[str, JSONValue] | None
-) -> dict[str, JSONValue] | None:
-    if d1 is None:
-        return d2
-    if d2 is None:
-        return d1
-    return {**d1, **d2}
+        current = _metadata.get()
+        merged = {**current, **metadata} if current is not None else metadata
+        token = _metadata.set(merged)
+        try:
+            yield
+        finally:
+            _metadata.reset(token)
+
+    @staticmethod
+    def _get_metadata(
+        merge: dict[str, JSONValue] | None,
+    ) -> dict[str, JSONValue] | None:
+        current = _metadata.get()
+        if merge is None:
+            return current
+        if current is None:
+            return merge
+        return {**current, **merge}

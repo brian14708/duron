@@ -15,6 +15,7 @@ class _BaseEntry(TypedDict):
     id: str
     # Unix timestamp in microseconds
     ts: int
+    debug: NotRequired[dict[str, JSONValue]]
 
 
 class ErrorInfo(TypedDict):

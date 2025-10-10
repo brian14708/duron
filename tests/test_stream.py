@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
-from duron import Context, RunOptions, StreamClosed, fn, op
+from duron import Context, StreamClosed, fn, op
 from duron.contrib.storage import MemoryLogStorage
 
 if TYPE_CHECKING:
@@ -59,7 +59,7 @@ async def test_stream_host() -> None:
                 await stream.send(i)
             await stream.close()
 
-        await ctx.run(task, RunOptions(), handle)
+        await ctx.run(task, handle)
         assert sum(await stream.collect()) == 1225
 
     log = MemoryLogStorage()

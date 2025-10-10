@@ -28,7 +28,7 @@ async def generate_lucky_number() -> int:
 @duron.fn
 async def greeting_flow(ctx: duron.Context, name: str) -> str:
     message, lucky_number = await asyncio.gather(
-        ctx.run(work, None, name), ctx.run(generate_lucky_number)
+        ctx.run(work, name), ctx.run(generate_lucky_number)
     )
     return f"{message} Your lucky number is {lucky_number}."
 

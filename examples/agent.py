@@ -111,7 +111,7 @@ async def agent_fn(
                         for tool_call in result.choices[0].message.tool_calls:
                             await output.send(("call", tool_call.model_dump_json()))
                             tasks.append(
-                                asyncio.create_task(ctx.run(call_tool, None, tool_call))
+                                asyncio.create_task(ctx.run(call_tool, tool_call))
                             )
                         for id_, tool_result in await asyncio.gather(*tasks):
                             await output.send(("tool", tool_result))
@@ -233,7 +233,6 @@ async def completion(
 
     return await ctx.run(
         _completion,
-        None,
         messages,
     )
 
