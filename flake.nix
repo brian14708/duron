@@ -2,6 +2,8 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
+    process-compose-flake.url = "github:Platonic-Systems/process-compose-flake";
+    services-flake.url = "github:juspay/services-flake";
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -12,6 +14,7 @@
     inputs.flake-parts.lib.mkFlake { inherit inputs; } {
       imports = [
         inputs.treefmt-nix.flakeModule
+        inputs.process-compose-flake.flakeModule
       ];
       systems = [
         "x86_64-linux"
@@ -26,6 +29,11 @@
           ...
         }:
         {
+          process-compose."env" = {
+            imports = [
+              inputs.services-flake.processComposeModules.default
+            ];
+          };
           devShells = {
             default = pkgs.mkShell {
               buildInputs = with pkgs; [

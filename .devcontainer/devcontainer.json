@@ -1,0 +1,19 @@
+{
+  "name": "Duron",
+  "image": "mcr.microsoft.com/devcontainers/python:2-3",
+  "features": {
+    "ghcr.io/devcontainers-extra/features/nox:2": {},
+    "ghcr.io/devcontainers-extra/features/uv:1": {}
+  },
+  "postCreateCommand": "uv sync --all-groups --all-extras",
+  "appPort": [],
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.terminal.activateEnvInCurrentTerminal": true,
+        "python.defaultInterpreterPath": ".venv/bin/python"
+      },
+      "extensions": []
+    }
+  }
+}

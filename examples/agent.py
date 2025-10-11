@@ -156,7 +156,7 @@ async def main() -> None:
     )
     args = parser.parse_args()
 
-    log_storage = FileLogStorage(Path("logs") / f"{args.session_id}.jsonl")
+    log_storage = FileLogStorage(Path("data") / f"{args.session_id}.jsonl")
     async with agent_fn.invoke(log_storage) as job:
         input_stream: StreamWriter[str] = job.open_stream("input_", "w")
         signal_stream: StreamWriter[None] = job.open_stream("signal", "w")
