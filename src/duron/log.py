@@ -85,6 +85,8 @@ def is_entry(entry: Entry | AnyEntry) -> TypeGuard[Entry]:
 
 
 class LogStorage(ABC):
+    __slots__: tuple[str, ...] = ()
+
     @abstractmethod
     def stream(
         self,

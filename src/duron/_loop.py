@@ -209,7 +209,8 @@ class EventLoop(asyncio.AbstractEventLoop):
     def poll_completion(self, task: Future[_T]) -> WaitSet | None:
         now = self.time_us()
         self._event.clear()
-        if prev_task := tasks.current_task():
+        prev_task = tasks.current_task()
+        if prev_task:
             tasks._leave_task(self._host, prev_task)  # noqa: SLF001
         events._set_running_loop(self)  # noqa: SLF001
         try:
@@ -232,7 +233,8 @@ class EventLoop(asyncio.AbstractEventLoop):
                 if not ready:
                     break
                 while ready:
-                    if (h := ready.popleft())._cancelled:  # noqa: SLF001
+                    h = ready.popleft()
+                    if h._cancelled:  # noqa: SLF001
                         continue
                     try:
                         h._run()  # noqa: SLF001

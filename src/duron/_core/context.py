@@ -104,7 +104,9 @@ class Context:
             raise RuntimeError(msg)
 
         if isinstance(fn, CheckpointOp):
-            async with self.run_stream(fn, *args, **kwargs) as stream:
+            async with self.run_stream(
+                cast("CheckpointOp[_P, _T, Any]", fn), *args, **kwargs
+            ) as stream:
                 await stream.discard()
                 return await stream
 
@@ -142,7 +144,7 @@ class Context:
             fn.action_type,
             fn.initial(),
             fn.reducer,
-            fn,
+            fn.fn,
             *args,
             **kwargs,
         )

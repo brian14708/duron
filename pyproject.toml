@@ -15,28 +15,36 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "pydantic>=2.11.9",
-    "pytest-asyncio>=0.21",
-    "pytest-codspeed>=4.1.1",
-    "pytest>=7.0",
+    {include-group = "lint"},
+    {include-group = "test"},
+    {include-group = "typing"},
 ]
-type-checking = [
-    "basedmypy>=2.10.0",
-    "basedpyright>=1.31.2",
+test = [
+    "pydantic",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-codspeed",
+    "pytest-xdist",
+]
+typing = [
+    "basedmypy",
+    "basedpyright",
+    "pydantic",
+    "pytest",
 ]
 lint = [
-    "ruff>=0.12.8",
+    "ruff",
 ]
 docs = [
-    "mkdocs-material>=9.6.18",
-    "mkdocs-mermaid2-plugin>=1.2.1",
-    "mkdocs>=1.6.1",
-    "mkdocstrings[python]>=0.30.0",
+    "mkdocs",
+    "mkdocs-material",
+    "mkdocs-mermaid2-plugin",
+    "mkdocstrings[python]",
 ]
 examples = [
-    "openai>=2.2.0",
-    "pydantic>=2.11.9",
-    "rich>=14.1.0",
+    "openai",
+    "pydantic",
+    "rich",
 ]
 
 [tool.ruff.lint]
@@ -70,6 +78,9 @@ preview = true
 docstring-code-format = true
 
 [tool.mypy]
+files = ["src", "tests"]
+strict = true
+python_version = "3.10"
 disable_error_code = [
     "decorated-any",
     "explicit-any",
@@ -77,10 +88,15 @@ disable_error_code = [
 ]
 
 [tool.pyright]
+include = ["src", "tests"]
 venv = "."
 venvPath = ".venv"
+typeCheckingMode = "strict"
 enableExperimentalFeatures = true
 reportAny = false
 reportExplicitAny = false
 reportUnreachable = false
 reportImportCycles = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
