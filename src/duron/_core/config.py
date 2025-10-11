@@ -25,6 +25,9 @@ config = _Config(
 def set_config(
     *,
     codec: Codec | None = None,
+    debug: bool | None = None,
 ) -> None:
     if codec is not None:
         config.codec = codec
+    if debug is not None:
+        config.debug = debug

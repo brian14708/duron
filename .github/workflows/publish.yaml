@@ -1,12 +1,11 @@
 name: Publish
 
 on:
-  push:
-    tags:
-      - v*
+  release:
+    types: [published]
 
 jobs:
-  run:
+  publish-pypi:
     runs-on: ubuntu-latest
     environment:
       name: pypi
