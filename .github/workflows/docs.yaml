@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - "docs/**"
+      - "tools/trace-ui/**"
       - mkdocs.yaml
   workflow_dispatch:
 
@@ -32,6 +33,31 @@ jobs:
         run: uv sync --group docs
       - name: Build static files
         run: uv run mkdocs build
+
+      # Build trace-ui
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: "tools/trace-ui/package.json"
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: latest
+          cache: "pnpm"
+          cache-dependency-path: "tools/trace-ui/pnpm-lock.yaml"
+      - name: Install trace-ui dependencies
+        working-directory: tools/trace-ui
+        run: pnpm install --frozen-lockfile
+      - name: Build trace-ui
+        working-directory: tools/trace-ui
+        run: pnpm run build
+
+      # Copy trace-ui build to docs site subdirectory
+      - name: Copy trace-ui to docs
+        run: |
+          mkdir -p site/trace-ui
+          cp -r tools/trace-ui/dist/* site/trace-ui/
+
       - name: Upload static files as artifact
         id: deployment
         uses: actions/upload-pages-artifact@v4

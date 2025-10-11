@@ -2,6 +2,7 @@
   "name": "Duron",
   "image": "mcr.microsoft.com/devcontainers/python:2-3",
   "features": {
+    "ghcr.io/devcontainers/features/node:1": {},
     "ghcr.io/devcontainers-extra/features/nox:2": {},
     "ghcr.io/devcontainers-extra/features/uv:1": {}
   },
@@ -13,7 +14,7 @@
         "python.terminal.activateEnvInCurrentTerminal": true,
         "python.defaultInterpreterPath": ".venv/bin/python"
       },
-      "extensions": []
+      "extensions": ["ms-python.python", "svelte.svelte-vscode"]
     }
   }
 }

@@ -38,3 +38,28 @@ jobs:
         run: uv run mypy
       - name: Run basedpyright
         run: uv run basedpyright
+
+  trace-ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/trace-ui
+
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: "tools/trace-ui/package.json"
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: latest
+          cache: "pnpm"
+          cache-dependency-path: "tools/trace-ui/pnpm-lock.yaml"
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run lint
+        run: pnpm run lint
+      - name: Run build
+        run: pnpm run build

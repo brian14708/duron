@@ -5,6 +5,7 @@ repo_name: "brian14708/duron"
 nav:
   - index.md
   - reference.md
+  - Trace UI: https://brian14708.github.io/duron/trace-ui/
 
 theme:
   name: material

@@ -37,6 +37,8 @@
           devShells = {
             default = pkgs.mkShell {
               buildInputs = with pkgs; [
+                pnpm
+                nodejs
                 (python3.withPackages (
                   p: with p; [
                     nox
@@ -56,6 +58,11 @@
               ruff-check.enable = true;
               ruff-format.enable = true;
               prettier.enable = true;
+            };
+            settings.formatter = {
+              prettier = {
+                excludes = [ "tools/trace-ui/**" ];
+              };
             };
           };
         };
