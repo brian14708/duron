@@ -18,7 +18,7 @@ class _BaseEntry(TypedDict):
     id: str
     # Unix timestamp in microseconds
     ts: int
-    debug: NotRequired[dict[str, JSONValue]]
+    metadata: NotRequired[dict[str, JSONValue]]
 
 
 class ErrorInfo(TypedDict):
@@ -28,7 +28,6 @@ class ErrorInfo(TypedDict):
 
 class PromiseCreateEntry(_BaseEntry):
     type: Literal["promise/create"]
-    metadata: NotRequired[dict[str, JSONValue]]
 
 
 class PromiseCompleteEntry(_BaseEntry):
@@ -40,7 +39,6 @@ class PromiseCompleteEntry(_BaseEntry):
 
 class StreamCreateEntry(_BaseEntry):
     type: Literal["stream/create"]
-    metadata: NotRequired[dict[str, JSONValue]]
 
 
 class StreamEmitEntry(_BaseEntry):
@@ -59,8 +57,13 @@ class BarrierEntry(_BaseEntry):
     type: Literal["barrier"]
 
 
-class AnyEntry(_BaseEntry):
-    type: str
+class TraceEntry(_BaseEntry):
+    type: Literal["trace"]
+    trace_id: str
+    events: list[dict[str, JSONValue]]
+
+
+AnyEntry = _BaseEntry
 
 
 Entry = (
@@ -70,18 +73,30 @@ Entry = (
     | StreamEmitEntry
     | StreamCompleteEntry
     | BarrierEntry
+    | TraceEntry
 )
 
 
 def is_entry(entry: Entry | AnyEntry) -> TypeGuard[Entry]:
-    return entry["type"] in {
+    return entry.get("type") in {
         "promise/create",
         "promise/complete",
         "stream/create",
         "stream/emit",
         "stream/complete",
         "barrier",
+        "trace",
     }
+
+
+def set_metadata(entry: Entry, *metadata: dict[str, JSONValue] | None) -> None:
+    m = entry.get("metadata")
+    for md in metadata:
+        if md:
+            if m is None:
+                entry["metadata"] = m = {**md}
+            else:
+                m.update(md)
 
 
 class LogStorage(Protocol):

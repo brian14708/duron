@@ -4,12 +4,12 @@ import inspect
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from ._hint import Unspecified
+from duron.typing._hint import Unspecified
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from ._hint import TypeHint
+    from duron.typing._hint import TypeHint
 
 
 @dataclass(slots=True)

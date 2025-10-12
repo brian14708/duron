@@ -10,11 +10,11 @@ from typing_extensions import (
     TypedDict,
     TypeVar,
     assert_never,
+    assert_type,
     final,
     overload,
 )
 
-from duron._core.config import config
 from duron._core.context import Context
 from duron._core.ops import (
     Barrier,
@@ -28,11 +28,18 @@ from duron._core.signal import Signal
 from duron._core.stream import ObserverStream, Stream, StreamWriter
 from duron._loop import EventLoop, create_loop
 from duron.codec import Codec, JSONValue
-from duron.log import derive_id, is_entry, random_id
+from duron.log import derive_id, is_entry, random_id, set_metadata
+from duron.tracing import (
+    NULL_SPAN,
+    Tracer,
+    current_tracer,
+    span,
+)
 from duron.typing import Unspecified, inspect_function
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
+    from contextvars import Token
     from types import TracebackType
 
     from duron._core.ops import (
@@ -86,8 +93,9 @@ class Invoke(Generic[_P, _T_co]):
     def invoke(
         fn: Fn[_P, _T_co],
         log: LogStorage,
+        tracer: Tracer | None,
     ) -> contextlib.AbstractAsyncContextManager[Invoke[_P, _T_co]]:
-        return _InvokeGuard(Invoke(fn, log))
+        return _InvokeGuard(Invoke(fn, log), tracer)
 
     async def start(self, *args: _P.args, **kwargs: _P.kwargs) -> None:
         def get_init() -> InitParams:
@@ -106,7 +114,6 @@ class Invoke(Generic[_P, _T_co]):
             self._log,
             codec,
             watchers=self._watchers,
-            debug=config.debug,
         )
         await self._run.resume()
 
@@ -122,7 +129,6 @@ class Invoke(Generic[_P, _T_co]):
             self._log,
             self._fn.codec,
             watchers=self._watchers,
-            debug=config.debug,
         )
         await self._run.resume()
 
@@ -217,12 +223,15 @@ class Invoke(Generic[_P, _T_co]):
 
 @final
 class _InvokeGuard(Generic[_P, _T_co]):
-    __slots__ = ("_job",)
+    __slots__ = ("_job", "_token", "_tracer")
 
-    def __init__(self, job: Invoke[_P, _T_co]) -> None:
+    def __init__(self, job: Invoke[_P, _T_co], tracer: Tracer | None) -> None:
         self._job = job
+        self._tracer = tracer
+        self._token: Token[Tracer | None] | None = None
 
     async def __aenter__(self) -> Invoke[_P, _T_co]:
+        self._token = current_tracer.set(self._tracer)
         return self._job
 
     async def __aexit__(
@@ -232,6 +241,8 @@ class _InvokeGuard(Generic[_P, _T_co]):
         traceback: TracebackType | None,
     ) -> None:
         await self._job.close()
+        if self._token:
+            current_tracer.reset(self._token)
 
 
 class InitParams(TypedDict):
@@ -249,7 +260,12 @@ async def _invoke_prelude(
     loop = asyncio.get_running_loop()
     assert isinstance(loop, EventLoop)  # noqa: S101
 
-    with Context(job_fn, loop) as ctx:
+    with (
+        Context(job_fn, loop) as ctx,
+        span({
+            "name": "INVOKE",
+        }),
+    ):
         init_params = await ctx.run(init)
         if init_params["version"] != _CURRENT_VERSION:
             msg = "version mismatch"
@@ -286,7 +302,7 @@ async def _invoke_prelude(
 class _InvokeRun:
     __slots__ = (
         "_codec",
-        "_debug",
+        "_lease",
         "_log",
         "_loop",
         "_now",
@@ -297,6 +313,7 @@ class _InvokeRun:
         "_streams",
         "_task",
         "_tasks",
+        "_tracer",
         "_watchers",
     )
 
@@ -310,15 +327,13 @@ class _InvokeRun:
             tuple[Callable[[dict[str, JSONValue]], bool], StreamObserver[object]]
         ]
         | None = None,
-        debug: bool = False,
     ) -> None:
         self._loop = create_loop(asyncio.get_running_loop())
-        if debug:
-            self._loop.set_debug(True)
         self._task = self._loop.create_task(task)
         self._log = log
         self._codec = codec
-        self._running: bytes | None = None
+        self._running: bool = False
+        self._lease: bytes | None = None
         self._pending_msg: list[Entry] = []
         self._pending_task: dict[
             str,
@@ -336,11 +351,23 @@ class _InvokeRun:
             ],
         ] = {}
         self._watchers = watchers or []
-        self._debug: dict[str, JSONValue] | None = (
-            {"run.id": random_id()} if debug else None
-        )
+        self._tracer: Tracer | None = Tracer.current()
 
     async def close(self) -> None:
+        if self._tracer:
+            tid, data = self._tracer.flush_events()
+            for i in range(0, len(data), 128):
+                trace_entry: Entry = {
+                    "ts": self.now(),
+                    "id": random_id(),
+                    "type": "trace",
+                    "events": data[i : i + 128],
+                    "trace_id": tid,
+                }
+                await self.enqueue_log(trace_entry)
+        if self._lease:
+            await self._log.release_lease(self._lease)
+            self._lease = None
         for task, _ in self._tasks.values():
             _ = task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -359,6 +386,7 @@ class _InvokeRun:
         return self._now
 
     async def resume(self) -> None:
+        self._lease = await self._log.acquire_lease()
         recvd_msgs: set[str] = set()
         async for o, entry in self._log.stream(None, live=False):
             ts = entry["ts"]
@@ -378,21 +406,30 @@ class _InvokeRun:
         if self._task.done():
             return self._task.result()
 
-        self._running = await self._log.acquire_lease()
-        try:
-            for msg in self._pending_msg:
-                await self.enqueue_log(msg)
-            self._pending_msg.clear()
-            for key, (task_fn, return_type) in self._pending_task.items():
-                self._tasks[key] = (asyncio.create_task(task_fn()), return_type)
-            self._pending_task.clear()
+        self._running = True
+        for msg in self._pending_msg:
+            await self.enqueue_log(msg)
+        self._pending_msg.clear()
+        for key, (task_fn, return_type) in self._pending_task.items():
+            self._tasks[key] = (asyncio.create_task(task_fn()), return_type)
+        self._pending_task.clear()
 
-            while waitset := await self._step():
+        while waitset := await self._step():
+            if self._tracer:
+                await waitset.block(self.now(), 100 * 1000)
+                tid, data = self._tracer.flush_events()
+                for i in range(0, len(data), 128):
+                    trace_entry: Entry = {
+                        "ts": self.now(),
+                        "id": random_id(),
+                        "type": "trace",
+                        "events": data[i : i + 128],
+                        "trace_id": tid,
+                    }
+                    await self.enqueue_log(trace_entry)
+            else:
                 await waitset.block(self.now())
-            return self._task.result()
-        finally:
-            await self._log.release_lease(self._running)
-            self._running = None
+        return self._task.result()
 
     async def _step(self) -> WaitSet | None:
         while True:
@@ -495,24 +532,21 @@ class _InvokeRun:
             id_ = e["id"]
             self._loop.post_completion(id_, result=offset)
             self._pending_ops.discard(id_)
+        elif e["type"] == "trace":
+            pass
+        else:
+            assert_type(e["type"], Literal["promise/create"])
 
     async def enqueue_log(self, entry: Entry, *, flush: bool = False) -> None:
         if not self._running:
             self._pending_msg.append(entry)
+        elif self._lease is None:
+            # closed
+            return
         else:
-            if self._debug:
-                if "debug" in entry:
-                    entry["debug"] = {
-                        **entry["debug"],
-                        **self._debug,
-                    }
-                else:
-                    entry["debug"] = self._debug
-            else:
-                _ = entry.pop("debug", None)
-            offset = await self._log.append(self._running, entry)
+            offset = await self._log.append(self._lease, entry)
             if flush:
-                await self._log.flush(self._running)
+                await self._log.flush(self._lease)
             await self.handle_message(offset, entry)
 
     async def enqueue_op(self, id_: str, fut: OpFuture[object]) -> None:
@@ -524,14 +558,24 @@ class _InvokeRun:
                     "id": id_,
                     "type": "promise/create",
                 }
-                if op.metadata:
-                    promise_create_entry["metadata"] = op.metadata
-                if self._debug:
-                    promise_create_entry["debug"] = {
-                        "fn.name": str(
-                            getattr(op.callable, "__qualname__", op.callable)
-                        ),
-                    }
+
+                set_metadata(
+                    promise_create_entry,
+                    op.metadata,
+                )
+                if self._tracer:
+                    span = fut.context.run(
+                        self._tracer.new_entry_span,
+                        promise_create_entry,
+                        {
+                            "name": cast(
+                                "str",
+                                getattr(op.callable, "__qualname__", "fn.anonymous"),
+                            ),
+                        },
+                    )
+                else:
+                    span = NULL_SPAN
                 await self.enqueue_log(promise_create_entry)
 
                 async def cb() -> None:
@@ -542,16 +586,19 @@ class _InvokeRun:
                         "type": "promise/complete",
                         "promise_id": id_,
                     }
-                    try:
-                        result = op.callable(*op.args, **op.kwargs)
-                        if asyncio.iscoroutine(result):
-                            result = await result
-                        entry["result"] = self._codec.encode_json(result)
-                    except Exception as e:  # noqa: BLE001
-                        entry["error"] = _encode_error(e)
-                    except asyncio.CancelledError as e:
-                        entry["error"] = _encode_error(e)
+                    with span as span_:
+                        try:
+                            result = op.callable(*op.args, **op.kwargs)
+                            if asyncio.iscoroutine(result):
+                                result = await result
+                            entry["result"] = self._codec.encode_json(result)
+                        except Exception as e:  # noqa: BLE001
+                            entry["error"] = _encode_error(e)
+                        except asyncio.CancelledError as e:
+                            entry["error"] = _encode_error(e)
 
+                        if self._tracer:
+                            self._tracer.end_entry_span(entry, id_, span_)
                     await self.enqueue_log(entry)
 
                 def done(f: OpFuture[object]) -> None:
@@ -590,8 +637,7 @@ class _InvokeRun:
                     "id": stream_id,
                     "type": "stream/create",
                 }
-                if op.metadata:
-                    stream_create_entry["metadata"] = op.metadata
+                set_metadata(stream_create_entry, op.metadata)
                 await self.enqueue_log(stream_create_entry)
 
             case StreamEmit():
@@ -634,8 +680,7 @@ class _InvokeRun:
                     "id": id_,
                     "type": "promise/create",
                 }
-                if op.metadata:
-                    promise_create_entry["metadata"] = op.metadata
+                set_metadata(promise_create_entry, op.metadata)
                 self._tasks[id_] = (asyncio.Future(), op.return_type)
                 await self.enqueue_log(promise_create_entry)
             case _:

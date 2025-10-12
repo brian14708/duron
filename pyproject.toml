@@ -51,10 +51,10 @@ examples = [
 select = ["ALL"]
 ignore = [
     "COM812",
-    "CPY", "D",
+    "CPY", "D", "FIX", "TD002", "TD003",
     "PLR0", "PLR1", "PLR2", "C901",
 ]
-extend-safe-fixes = ["TC"]
+extend-safe-fixes = ["TC", "F401"]
 preview = true
 future-annotations = true
 
@@ -69,6 +69,9 @@ extra-standard-library = ["typing_extensions"]
 runtime-evaluated-base-classes = ["typing_extensions.TypedDict"]
 runtime-evaluated-decorators = ["duron.fn", "duron.op"]
 exempt-modules = ["typing", "typing_extensions"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "typing.TypedDict".msg = "Use typing_extensions.TypedDict instead."

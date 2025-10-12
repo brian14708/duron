@@ -36,9 +36,9 @@ if TYPE_CHECKING:
     _S = TypeVar("_S")
     _P = ParamSpec("_P")
 
-_context: ContextVar[Context | None] = ContextVar("duron_context", default=None)
+_context: ContextVar[Context | None] = ContextVar("duron.context", default=None)
 _metadata: ContextVar[dict[str, JSONValue] | None] = ContextVar(
-    "duron_metadata", default=None
+    "duron.metadata", default=None
 )
 
 

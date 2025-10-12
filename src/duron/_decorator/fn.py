@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from duron._core.context import Context
     from duron.codec import Codec
     from duron.log import LogStorage
+    from duron.tracing import Tracer
     from duron.typing import TypeHint
 
 
@@ -50,8 +51,10 @@ class Fn(Generic[_P, _T_co]):
     ) -> Coroutine[Any, Any, _T_co]:
         return self.fn(ctx, *args, **kwargs)
 
-    def invoke(self, log: LogStorage) -> AsyncContextManager[Invoke[_P, _T_co]]:
-        return Invoke[_P, _T_co].invoke(self, log)
+    def invoke(
+        self, log: LogStorage, /, *, tracer: Tracer | None = None
+    ) -> AsyncContextManager[Invoke[_P, _T_co]]:
+        return Invoke[_P, _T_co].invoke(self, log, tracer)
 
 
 @overload

@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-_task_ctx: contextvars.ContextVar[_TaskCtx] = contextvars.ContextVar("duron_task")
+_task_ctx: contextvars.ContextVar[_TaskCtx] = contextvars.ContextVar("duron.task")
 
 
 class OpFuture(asyncio.Future[_T], Generic[_T]):
@@ -48,13 +48,18 @@ class OpFuture(asyncio.Future[_T], Generic[_T]):
 
     id: str
     params: object
+    context: Context
 
     def __init__(
-        self, id_: str, params: object, loop: asyncio.AbstractEventLoop
+        self,
+        id_: str,
+        params: object,
+        loop: asyncio.AbstractEventLoop,
     ) -> None:
         super().__init__(loop=loop)
         self.id = id_
         self.params = params
+        self.context = contextvars.copy_context()
 
 
 @dataclass(slots=True)
@@ -63,11 +68,17 @@ class WaitSet:
     timer: int | None
     event: asyncio.Event
 
-    async def block(self, now_us: int) -> None:
-        if self.timer is None:
+    async def block(self, now_us: int, max_timeout_us: int = -1) -> None:
+        if self.timer is None and max_timeout_us < 0:
             _ = await self.event.wait()
             return
-        t = (self.timer - now_us) / 1e6
+
+        if self.timer is None or (
+            max_timeout_us > 0 and (self.timer - now_us) > max_timeout_us
+        ):
+            t = max_timeout_us / 1e6
+        else:
+            t = (self.timer - now_us) / 1e6
         if t > 0:
             with contextlib.suppress(asyncio.TimeoutError):
                 _ = await asyncio.wait_for(self.event.wait(), timeout=t)
@@ -83,7 +94,6 @@ class EventLoop(asyncio.AbstractEventLoop):
     __slots__: tuple[str, ...] = (
         "_closed",
         "_ctx",
-        "_debug",
         "_event",
         "_exc_handler",
         "_host",
@@ -95,7 +105,6 @@ class EventLoop(asyncio.AbstractEventLoop):
 
     def __init__(self, host: asyncio.AbstractEventLoop) -> None:
         self._ready: deque[asyncio.Handle] = deque()
-        self._debug: bool = False
         self._host: asyncio.AbstractEventLoop = host
         self._exc_handler: (
             Callable[[asyncio.AbstractEventLoop, dict[str, object]], object] | None
@@ -317,11 +326,7 @@ class EventLoop(asyncio.AbstractEventLoop):
 
     @override
     def get_debug(self) -> bool:
-        return self._debug
-
-    @override
-    def set_debug(self, enabled: bool) -> None:
-        self._debug = enabled
+        return False
 
     @override
     def default_exception_handler(self, context: dict[str, object]) -> None:
