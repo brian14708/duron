@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
-from typing_extensions import Any, override
+from typing_extensions import Any
 
 import pydantic
 import pytest
 
 from duron import Context, fn
-from duron.codec import Codec
 from duron.contrib.storage import MemoryLogStorage
 
 if TYPE_CHECKING:
@@ -22,18 +21,16 @@ class PydanticPoint(pydantic.BaseModel):
 
 @pytest.mark.asyncio
 async def test_pydantic_serialize() -> None:
-    class PydanticCodec(Codec):
-        @override
-        def encode_json(self, result: object) -> JSONValue:
+    class PydanticCodec:
+        @staticmethod
+        def encode_json(result: object) -> JSONValue:
             return cast(
                 "JSONValue",
                 pydantic.TypeAdapter(type(result)).dump_python(result, mode="json"),
             )
 
-        @override
-        def decode_json(
-            self, encoded: JSONValue, expected_type: TypeHint[Any]
-        ) -> object:
+        @staticmethod
+        def decode_json(encoded: JSONValue, expected_type: TypeHint[Any]) -> object:
             return cast(
                 "object", pydantic.TypeAdapter(expected_type).validate_python(encoded)
             )

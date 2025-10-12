@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import binascii
 import os
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from hashlib import blake2b
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Protocol
 from typing_extensions import NotRequired, TypedDict
 
 from duron.codec import JSONValue
@@ -84,7 +84,7 @@ def is_entry(entry: Entry | AnyEntry) -> TypeGuard[Entry]:
     }
 
 
-class LogStorage(ABC):
+class LogStorage(Protocol):
     __slots__: tuple[str, ...] = ()
 
     @abstractmethod

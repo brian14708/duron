@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, TypeAlias, TypeGuard, cast
+from abc import abstractmethod
+from typing import TYPE_CHECKING, Protocol, TypeAlias, TypeGuard, cast
 from typing_extensions import (
     Any,
     TypeAliasType,
@@ -35,7 +35,7 @@ def is_json_value(x: object) -> TypeGuard[JSONValue]:
     return False
 
 
-class Codec(ABC):
+class Codec(Protocol):
     __slots__: tuple[str, ...] = ()
 
     @abstractmethod

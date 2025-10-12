@@ -5,9 +5,6 @@ import json
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, cast, final
-from typing_extensions import override
-
-from duron.log import LogStorage
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -16,7 +13,7 @@ if TYPE_CHECKING:
 
 
 @final
-class FileLogStorage(LogStorage):
+class FileLogStorage:
     __slots__ = ("_leases", "_lock", "_log_file")
 
     _log_file: Path
@@ -29,7 +26,6 @@ class FileLogStorage(LogStorage):
         self._leases = None
         self._lock = asyncio.Lock()
 
-    @override
     async def stream(
         self,
         start: int | None,
@@ -82,20 +78,17 @@ class FileLogStorage(LogStorage):
                     else:
                         await asyncio.sleep(0.1)
 
-    @override
     async def acquire_lease(self) -> bytes:
         lease_id = uuid.uuid4().bytes
         async with self._lock:
             self._leases = lease_id
         return lease_id
 
-    @override
     async def release_lease(self, token: bytes) -> None:
         async with self._lock:
             if token == self._leases:
                 self._leases = None
 
-    @override
     async def append(self, token: bytes, entry: Entry) -> int:
         async with self._lock:
             if token != self._leases:
@@ -108,13 +101,12 @@ class FileLogStorage(LogStorage):
                 _ = f.write("\n")
                 return offset
 
-    @override
-    async def flush(self, token: bytes) -> None:
+    async def flush(self, _token: bytes) -> None:
         pass
 
 
 @final
-class MemoryLogStorage(LogStorage):
+class MemoryLogStorage:
     __slots__ = ("_condition", "_entries", "_leases", "_lock")
 
     _entries: list[AnyEntry]
@@ -128,7 +120,6 @@ class MemoryLogStorage(LogStorage):
         self._lock = asyncio.Lock()
         self._condition = asyncio.Condition(self._lock)
 
-    @override
     async def stream(
         self,
         start: int | None,
@@ -166,20 +157,17 @@ class MemoryLogStorage(LogStorage):
                     )
                     last_seen_index = index
 
-    @override
     async def acquire_lease(self) -> bytes:
         lease_id = uuid.uuid4().bytes
         async with self._lock:
             self._leases = lease_id
         return lease_id
 
-    @override
     async def release_lease(self, token: bytes) -> None:
         async with self._lock:
             if token == self._leases:
                 self._leases = None
 
-    @override
     async def append(self, token: bytes, entry: Entry) -> int:
         async with self._condition:
             if token != self._leases:
@@ -191,7 +179,6 @@ class MemoryLogStorage(LogStorage):
             self._condition.notify_all()
             return offset
 
-    @override
     async def flush(self, token: bytes) -> None:
         pass
 
