@@ -20,8 +20,8 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from duron.codec import JSONValue
-    from duron.log import Entry
-    from duron.tracing._events import LinkRef, Log, SpanEnd, SpanStart, TraceEvent
+    from duron.log import PromiseCompleteEntry, PromiseCreateEntry
+    from duron.tracing._events import Event, LinkRef, SpanEnd, SpanStart, TraceEvent
     from duron.tracing._span import Span
 
 current_tracer: ContextVar[Tracer | None] = ContextVar("duron.tracer", default=None)
@@ -43,18 +43,6 @@ class Tracer:
         self._events: list[TraceEvent] = []
         self._lock = threading.Lock()
 
-    def emit_log(self, span_id: str | None, level: str, msg: str) -> None:
-        with self._lock:
-            event: Log = {
-                "type": "log",
-                "message": msg,
-                "level": level,
-                "ts_us": time.time_ns() // 1000,
-            }
-            if span_id:
-                event["span_id"] = span_id
-            self._events.append(event)
-
     def emit_event(self, event: TraceEvent) -> None:
         with self._lock:
             self._events.append(event)
@@ -67,7 +55,7 @@ class Tracer:
     def new_span(
         self, metadata: dict[str, JSONValue] | None = None
     ) -> AbstractContextManager[Span]:
-        parent = _TracerSpan.current()
+        parent = _current_span.get()
         return _TracerSpan(
             _random_id(),
             tracer=self,
@@ -76,16 +64,21 @@ class Tracer:
         )
 
     def new_entry_span(
-        self, entry: Entry, metadata: dict[str, JSONValue]
+        self, entry: PromiseCreateEntry, metadata: dict[str, JSONValue]
     ) -> AbstractContextManager[Span]:
         event: SpanStart = {
-            "type": "span/start",
+            "type": "span.start",
             "span_id": _derive_id(entry["id"]),
-            "ts_us": time.time_ns() // 1000,
-            "trace_id": self.trace_id,
+            "ts": time.time_ns() // 1000,
         }
-        parent = _TracerSpan.current()
-        set_metadata(entry, {"trace": [cast("dict[str, JSONValue]", event)]})
+        parent = _current_span.get()
+        set_metadata(
+            entry,
+            {
+                "trace.id": self.trace_id,
+                "trace.event": cast("dict[str, JSONValue]", event),
+            },
+        )
         return _TracerSpan(
             _random_id(),
             tracer=self,
@@ -94,14 +87,19 @@ class Tracer:
             attributes=metadata,
         )
 
-    def end_entry_span(self, entry: Entry, id_: str, span: Span) -> Span:
+    def end_entry_span(self, entry: PromiseCompleteEntry, id_: str, span: Span) -> Span:
         event: SpanEnd = {
-            "type": "span/end",
+            "type": "span.end",
             "span_id": _derive_id(id_),
-            "ts_us": time.time_ns() // 1000,
-            "trace_id": self.trace_id,
+            "ts": time.time_ns() // 1000,
         }
-        set_metadata(entry, {"trace": [cast("dict[str, JSONValue]", event)]})
+        set_metadata(
+            entry,
+            {
+                "trace.id": self.trace_id,
+                "trace.event": cast("dict[str, JSONValue]", event),
+            },
+        )
         return span
 
     @staticmethod
@@ -123,9 +121,9 @@ class _TracerSpan:
     def __enter__(self) -> Self:
         self.start_ns = time.time_ns()
         evnt: SpanStart = {
-            "type": "span/start",
+            "type": "span.start",
             "span_id": self.id,
-            "ts_us": self.start_ns // 1000,
+            "ts": self.start_ns // 1000,
         }
         if self.parent_id:
             evnt["parent_span_id"] = self.parent_id
@@ -148,9 +146,9 @@ class _TracerSpan:
     ) -> None:
         self.end_ns = time.time_ns()
         evnt: SpanEnd = {
-            "type": "span/end",
+            "type": "span.end",
             "span_id": self.id,
-            "ts_us": self.end_ns // 1000,
+            "ts": self.end_ns // 1000,
         }
         if self.attributes:
             evnt["attributes"] = self.attributes
@@ -160,19 +158,24 @@ class _TracerSpan:
         if self._token:
             _current_span.reset(self._token)
 
-    @staticmethod
-    def current() -> Span | None:
-        return _current_span.get()
-
 
 class _LoggingHandler(logging.Handler):
     @override
     def emit(self, record: logging.LogRecord) -> None:
         if tracer := current_tracer.get():
             span = _current_span.get()
-            tracer.emit_log(
-                span.id if span else None, record.levelname, record.getMessage()
-            )
+            event: Event = {
+                "type": "event",
+                "kind": "log",
+                "ts": time.time_ns() // 1000,
+                "attributes": {
+                    "level": record.levelname,
+                    "message": record.getMessage(),
+                },
+            }
+            if span:
+                event["span_id"] = span.id
+            tracer.emit_event(event)
 
 
 def setup_tracing(

@@ -178,6 +178,7 @@ async def create_stream(
     *,
     external: bool = False,
     metadata: dict[str, JSONValue] | None = None,
+    labels: dict[str, str] | None = None,
 ) -> tuple[Stream[_T, None], StreamWriter[_T]]:
     assert asyncio.get_running_loop() is loop  # noqa: S101
     s: ObserverStream[_T, None] = ObserverStream()
@@ -187,6 +188,7 @@ async def create_stream(
             dtype=dtype,
             observer=s,
             metadata=metadata,
+            labels=labels,
         ),
     )
     if external:

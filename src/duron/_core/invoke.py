@@ -28,7 +28,7 @@ from duron._core.signal import Signal
 from duron._core.stream import ObserverStream, Stream, StreamWriter
 from duron._loop import EventLoop, create_loop
 from duron.codec import Codec, JSONValue
-from duron.log import derive_id, is_entry, random_id, set_metadata
+from duron.log import derive_id, is_entry, random_id, set_labels, set_metadata
 from duron.tracing import (
     NULL_SPAN,
     Tracer,
@@ -84,7 +84,7 @@ class Invoke(Generic[_P, _T_co]):
         self._run: _InvokeRun | None = None
         self._watchers: list[
             tuple[
-                Callable[[dict[str, JSONValue]], bool],
+                dict[str, str],
                 StreamObserver[object],
             ]
         ] = []
@@ -192,16 +192,12 @@ class Invoke(Generic[_P, _T_co]):
             msg = f"Stream parameter '{name}' not found"
             raise ValueError(msg)
         if mode == "r":
-
-            def pred(md: dict[str, JSONValue]) -> bool:
-                return md.get("param.name") == name
-
-            return self.watch_stream(pred)
+            return self.watch_stream({"param.name": name})
         return _StreamWriter(self, name)
 
     def watch_stream(
         self,
-        predicate: Callable[[dict[str, JSONValue]], bool],
+        labels: dict[str, str],
     ) -> Stream[_T_co, None]:
         if self._run is not None:
             msg = "create_watcher() must be called before start() or resume()"
@@ -209,7 +205,7 @@ class Invoke(Generic[_P, _T_co]):
 
         observer: ObserverStream[_T_co, None] = ObserverStream()
         self._watchers.append((
-            predicate,
+            labels,
             cast("StreamObserver[object]", cast("StreamObserver[_T_co]", observer)),
         ))
         return observer
@@ -273,7 +269,7 @@ async def _invoke_prelude(
         loop.set_key(init_params["nonce"].encode())
         extra_kwargs: dict[str, object] = {}
         for name, type_, dtype in job_fn.inject:
-            with ctx.metadata({"param.name": name}):
+            with ctx.labels({"param.name": name}):
                 if type_ is Stream:
                     extra_kwargs[name], _ = await ctx.create_stream(dtype)
                 elif type_ is Signal:
@@ -323,10 +319,7 @@ class _InvokeRun:
         log: LogStorage,
         codec: Codec,
         *,
-        watchers: list[
-            tuple[Callable[[dict[str, JSONValue]], bool], StreamObserver[object]]
-        ]
-        | None = None,
+        watchers: list[tuple[dict[str, str], StreamObserver[object]]] | None = None,
     ) -> None:
         self._loop = create_loop(asyncio.get_running_loop())
         self._task = self._loop.create_task(task)
@@ -347,7 +340,7 @@ class _InvokeRun:
             tuple[
                 list[StreamObserver[object]],
                 TypeHint[Any],
-                dict[str, JSONValue] | None,
+                dict[str, str] | None,
             ],
         ] = {}
         self._watchers = watchers or []
@@ -362,7 +355,9 @@ class _InvokeRun:
                     "id": random_id(),
                     "type": "trace",
                     "events": data[i : i + 128],
-                    "trace_id": tid,
+                    "metadata": {
+                        "trace.id": tid,
+                    },
                 }
                 await self.enqueue_log(trace_entry)
         if self._lease:
@@ -424,7 +419,9 @@ class _InvokeRun:
                         "id": random_id(),
                         "type": "trace",
                         "events": data[i : i + 128],
-                        "trace_id": tid,
+                        "metadata": {
+                            "trace.id": tid,
+                        },
                     }
                     await self.enqueue_log(trace_entry)
             else:
@@ -453,7 +450,7 @@ class _InvokeRun:
         offset: int,
         e: Entry,
     ) -> None:
-        if e["type"] == "promise/complete":
+        if e["type"] == "promise.complete":
             pending_info = self._pending_task.pop(e["promise_id"], None)
             task_info = self._tasks.get(e["promise_id"], None)
 
@@ -485,9 +482,9 @@ class _InvokeRun:
                     )
                 self._pending_ops.discard(id_)
             else:
-                msg = f"Invalid promise/complete entry: {e!r}"
+                msg = f"Invalid promise.complete entry: {e!r}"
                 raise ValueError(msg)
-        elif e["type"] == "stream/create":
+        elif e["type"] == "stream.create":
             id_ = e["id"]
             if e["id"] not in self._streams:
                 self._loop.post_completion(
@@ -496,7 +493,7 @@ class _InvokeRun:
             else:
                 self._loop.post_completion(id_, result=e["id"])
             self._pending_ops.discard(id_)
-        elif e["type"] == "stream/emit":
+        elif e["type"] == "stream.emit":
             id_ = e["id"]
             if e["stream_id"] not in self._streams:
                 self._loop.post_completion(
@@ -511,7 +508,7 @@ class _InvokeRun:
                     )
                 self._loop.post_completion(id_, result=None)
             self._pending_ops.discard(id_)
-        elif e["type"] == "stream/complete":
+        elif e["type"] == "stream.complete":
             id_ = e["id"]
             if e["stream_id"] not in self._streams:
                 self._loop.post_completion(
@@ -535,7 +532,7 @@ class _InvokeRun:
         elif e["type"] == "trace":
             pass
         else:
-            assert_type(e["type"], Literal["promise/create"])
+            assert_type(e["type"], Literal["promise.create"])
 
     async def enqueue_log(self, entry: Entry, *, flush: bool = False) -> None:
         if not self._running:
@@ -556,12 +553,16 @@ class _InvokeRun:
                 promise_create_entry: PromiseCreateEntry = {
                     "ts": self.now(),
                     "id": id_,
-                    "type": "promise/create",
+                    "type": "promise.create",
                 }
 
                 set_metadata(
                     promise_create_entry,
                     op.metadata,
+                )
+                set_labels(
+                    promise_create_entry,
+                    op.labels,
                 )
                 if self._tracer:
                     span = fut.context.run(
@@ -583,7 +584,7 @@ class _InvokeRun:
                     entry: PromiseCompleteEntry = {
                         "ts": now_us,
                         "id": derive_id(id_),
-                        "type": "promise/complete",
+                        "type": "promise.complete",
                         "promise_id": id_,
                     }
                     with span as span_:
@@ -626,18 +627,19 @@ class _InvokeRun:
                 ob = [op.observer] if op.observer else []
 
                 # Check if any external watchers match
-                for predicate, watcher in self._watchers:
-                    if predicate(op.metadata or {}):
+                for matcher, watcher in self._watchers:
+                    if _match_labels(op.labels or {}, matcher):
                         ob.append(watcher)
 
-                self._streams[stream_id] = (ob, op.dtype, op.metadata)
+                self._streams[stream_id] = (ob, op.dtype, op.labels)
 
                 stream_create_entry: StreamCreateEntry = {
                     "ts": self.now(),
                     "id": stream_id,
-                    "type": "stream/create",
+                    "type": "stream.create",
                 }
                 set_metadata(stream_create_entry, op.metadata)
+                set_labels(stream_create_entry, op.labels)
                 await self.enqueue_log(stream_create_entry)
 
             case StreamEmit():
@@ -645,7 +647,7 @@ class _InvokeRun:
                     "ts": self.now(),
                     "id": id_,
                     "stream_id": op.stream_id,
-                    "type": "stream/emit",
+                    "type": "stream.emit",
                     "value": self._codec.encode_json(op.value),
                 }
                 await self.enqueue_log(stream_emit_entry)
@@ -655,7 +657,7 @@ class _InvokeRun:
                         "ts": self.now(),
                         "id": id_,
                         "stream_id": op.stream_id,
-                        "type": "stream/complete",
+                        "type": "stream.complete",
                         "error": _encode_error(op.exception),
                     }
                     await self.enqueue_log(stream_close_entry_err)
@@ -664,7 +666,7 @@ class _InvokeRun:
                         "ts": self.now(),
                         "id": id_,
                         "stream_id": op.stream_id,
-                        "type": "stream/complete",
+                        "type": "stream.complete",
                     }
                     await self.enqueue_log(stream_close_entry)
             case Barrier():
@@ -678,9 +680,10 @@ class _InvokeRun:
                 promise_create_entry = {
                     "ts": self.now(),
                     "id": id_,
-                    "type": "promise/create",
+                    "type": "promise.create",
                 }
                 set_metadata(promise_create_entry, op.metadata)
+                set_labels(promise_create_entry, op.labels)
                 self._tasks[id_] = (asyncio.Future(), op.return_type)
                 await self.enqueue_log(promise_create_entry)
             case _:
@@ -700,7 +703,7 @@ class _InvokeRun:
         entry: PromiseCompleteEntry = {
             "ts": now_us,
             "id": derive_id(id_),
-            "type": "promise/complete",
+            "type": "promise.complete",
             "promise_id": id_,
         }
         if error is not None:
@@ -714,17 +717,17 @@ class _InvokeRun:
 
     async def send_stream(
         self,
-        predicate: Callable[[dict[str, JSONValue]], bool],
+        matcher: dict[str, str],
         value: object,
     ) -> int:
         cnt = 0
         ts = self.now()
-        for stream_id, (_, _, md) in self._streams.items():
-            if predicate(md or {}):
+        for stream_id, (_, _, lb) in self._streams.items():
+            if _match_labels(lb or {}, matcher):
                 entry: StreamEmitEntry = {
                     "ts": ts,
                     "id": random_id(),
-                    "type": "stream/emit",
+                    "type": "stream.emit",
                     "stream_id": stream_id,
                     "value": self._codec.encode_json(value),
                 }
@@ -734,7 +737,7 @@ class _InvokeRun:
 
     async def close_stream(
         self,
-        predicate: Callable[[dict[str, JSONValue]], bool],
+        matcher: dict[str, str],
         error: BaseException | None = None,
     ) -> int:
         cnt = 0
@@ -742,8 +745,8 @@ class _InvokeRun:
         # Collect matching stream IDs first to avoid modifying dict during iteration
         matching_streams = [
             stream_id
-            for stream_id, (_, _, md) in self._streams.items()
-            if predicate(md or {})
+            for stream_id, (_, _, lb) in self._streams.items()
+            if _match_labels(lb or {}, matcher)
         ]
 
         for stream_id in matching_streams:
@@ -751,7 +754,7 @@ class _InvokeRun:
                 entry: StreamCompleteEntry = {
                     "ts": ts,
                     "id": random_id(),
-                    "type": "stream/complete",
+                    "type": "stream.complete",
                     "stream_id": stream_id,
                     "error": _encode_error(error),
                 }
@@ -759,7 +762,7 @@ class _InvokeRun:
                 entry = {
                     "ts": ts,
                     "id": random_id(),
-                    "type": "stream/complete",
+                    "type": "stream.complete",
                     "stream_id": stream_id,
                 }
             await self.enqueue_log(entry)
@@ -785,6 +788,15 @@ def _decode_error(error_info: ErrorInfo) -> BaseException:
     return Exception(f"[{error_info['code']}] {error_info['message']}")
 
 
+def _match_labels(labels: dict[str, str], matcher: dict[str, str]) -> bool:
+    """Check if all key-value pairs in matcher are present in labels.
+
+    Returns:
+        True if all matcher keys exist in labels with matching values.
+    """
+    return all(labels.get(k) == v for k, v in matcher.items())
+
+
 @final
 class _StreamWriter(Generic[_T]):
     __slots__ = ("_invoke", "_name")
@@ -794,19 +806,15 @@ class _StreamWriter(Generic[_T]):
         self._name = name
 
     async def send(self, value: _T) -> None:
-        def pred(md: dict[str, JSONValue]) -> bool:
-            return md.get("param.name") == self._name
-
         while (  # noqa: ASYNC110
-            await self._invoke.get_run().send_stream(pred, value) == 0
+            await self._invoke.get_run().send_stream({"param.name": self._name}, value)
+            == 0
         ):
             await asyncio.sleep(0.1)
 
     async def close(self, error: BaseException | None = None) -> None:
-        def pred(md: dict[str, JSONValue]) -> bool:
-            return md.get("param.name") == self._name
-
         while (  # noqa: ASYNC110
-            await self._invoke.get_run().close_stream(pred, error) == 0
+            await self._invoke.get_run().close_stream({"param.name": self._name}, error)
+            == 0
         ):
             await asyncio.sleep(0.1)

@@ -10,10 +10,9 @@ class LinkRef(TypedDict):
 
 
 class SpanStart(TypedDict):
-    type: Literal["span/start"]
-    trace_id: NotRequired[str]
+    type: Literal["span.start"]
     span_id: str
-    ts_us: int
+    ts: int
     attributes: NotRequired[dict[str, JSONValue]]
 
     parent_span_id: NotRequired[str]
@@ -21,22 +20,18 @@ class SpanStart(TypedDict):
 
 
 class SpanEnd(TypedDict):
-    type: Literal["span/end"]
-    trace_id: NotRequired[str]
+    type: Literal["span.end"]
     span_id: str
-    ts_us: int
+    ts: int
     attributes: NotRequired[dict[str, JSONValue]]
 
 
-class Log(TypedDict):
-    type: Literal["log"]
-    trace_id: NotRequired[str]
+class Event(TypedDict):
+    type: Literal["event"]
     span_id: NotRequired[str]
-    ts_us: int
+    ts: int
+    kind: Literal["log", "stream"]
     attributes: NotRequired[dict[str, JSONValue]]
 
-    message: str
-    level: str
 
-
-TraceEvent = SpanStart | SpanEnd | Log
+TraceEvent = SpanStart | SpanEnd | Event

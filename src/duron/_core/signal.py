@@ -117,6 +117,7 @@ async def create_signal(
     dtype: TypeHint[_In_contra],
     *,
     metadata: dict[str, JSONValue] | None = None,
+    labels: dict[str, str] | None = None,
 ) -> tuple[Signal[_In_contra], SignalWriter[_In_contra]]:
     assert asyncio.get_running_loop() is loop  # noqa: S101
     s: Signal[_In_contra] = Signal(loop)
@@ -126,6 +127,7 @@ async def create_signal(
             dtype=dtype,
             observer=s,
             metadata=metadata,
+            labels=labels,
         ),
     )
     return (s, SignalWriter(sid, loop))

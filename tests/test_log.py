@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 def make_entry(id_: str) -> Entry:
-    return {"type": "promise/create", "id": id_, "ts": -1}
+    return {"type": "promise.create", "id": id_, "ts": -1}
 
 
 async def impl_test_log_storage(storage: LogStorage) -> None:

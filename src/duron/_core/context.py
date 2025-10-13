@@ -40,6 +40,7 @@ _context: ContextVar[Context | None] = ContextVar("duron.context", default=None)
 _metadata: ContextVar[dict[str, JSONValue] | None] = ContextVar(
     "duron.metadata", default=None
 )
+_labels: ContextVar[dict[str, str] | None] = ContextVar("duron.labels", default=None)
 
 
 @final
@@ -125,6 +126,7 @@ class Context:
                 kwargs=kwargs,
                 return_type=return_type,
                 metadata=self._get_metadata(metadata),
+                labels=self._get_labels(None),
             ),
         )
         return cast("_T", await op)
@@ -163,6 +165,7 @@ class Context:
             dtype,
             external=external,
             metadata=self._get_metadata(None),
+            labels=self._get_labels(None),
         )
 
     async def create_signal(
@@ -172,7 +175,12 @@ class Context:
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
-        return await create_signal(self._loop, dtype, metadata=self._get_metadata(None))
+        return await create_signal(
+            self._loop,
+            dtype,
+            metadata=self._get_metadata(None),
+            labels=self._get_labels(None),
+        )
 
     async def create_promise(
         self,
@@ -183,7 +191,11 @@ class Context:
             raise RuntimeError(msg)
         fut = create_op(
             self._loop,
-            ExternalPromiseCreate(metadata=self._get_metadata(None), return_type=dtype),
+            ExternalPromiseCreate(
+                metadata=self._get_metadata(None),
+                return_type=dtype,
+                labels=self._get_labels(None),
+            ),
         )
         return (
             fut.id,
@@ -231,11 +243,39 @@ class Context:
         finally:
             _metadata.reset(token)
 
+    @contextmanager
+    def labels(self, labels: dict[str, str]) -> Generator[None, None, None]:
+        if asyncio.get_running_loop() is not self._loop:
+            msg = "Context labels can only be used in the context loop"
+            raise RuntimeError(msg)
+        if not labels:
+            yield
+            return
+
+        current = _labels.get()
+        merged = {**current, **labels} if current is not None else labels
+        token = _labels.set(merged)
+        try:
+            yield
+        finally:
+            _labels.reset(token)
+
     @staticmethod
     def _get_metadata(
         merge: dict[str, JSONValue] | None,
     ) -> dict[str, JSONValue] | None:
         current = _metadata.get()
+        if merge is None:
+            return current
+        if current is None:
+            return merge
+        return {**current, **merge}
+
+    @staticmethod
+    def _get_labels(
+        merge: dict[str, str] | None,
+    ) -> dict[str, str] | None:
+        current = _labels.get()
         if merge is None:
             return current
         if current is None:

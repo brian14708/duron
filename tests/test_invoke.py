@@ -240,7 +240,7 @@ async def test_external_stream_write() -> None:
 async def test_watch_stream() -> None:
     @fn
     async def activity(ctx: Context) -> int:
-        with ctx.metadata({"name": "output"}):
+        with ctx.labels({"name": "output"}):
             _, sink = await ctx.create_stream(int)
         for i in range(10):
             await sink.send(i)
@@ -250,7 +250,7 @@ async def test_watch_stream() -> None:
     log = MemoryLogStorage()
 
     async with activity.invoke(log) as invoke:
-        output_stream = invoke.watch_stream(lambda d: d.get("name") == "output")
+        output_stream = invoke.watch_stream({"name": "output"})
 
         await invoke.start()
 

@@ -23,6 +23,7 @@ class FnCall:
     kwargs: dict[str, object]
     return_type: TypeHint[Any]
     metadata: dict[str, JSONValue] | None = None
+    labels: dict[str, str] | None = None
 
 
 class StreamObserver(Protocol, Generic[_In_contra]):
@@ -35,6 +36,7 @@ class StreamCreate:
     observer: StreamObserver[Any] | None
     dtype: TypeHint[Any]
     metadata: dict[str, JSONValue] | None = None
+    labels: dict[str, str] | None = None
 
 
 @dataclass(slots=True)
@@ -57,6 +59,7 @@ class Barrier: ...
 class ExternalPromiseCreate:
     return_type: TypeHint[Any]
     metadata: dict[str, JSONValue] | None = None
+    labels: dict[str, str] | None = None
 
 
 Op = FnCall | StreamCreate | StreamEmit | StreamClose | Barrier | ExternalPromiseCreate
