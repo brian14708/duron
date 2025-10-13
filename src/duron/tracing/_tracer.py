@@ -4,7 +4,6 @@ import logging
 import os
 import threading
 import time
-import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass
 from hashlib import blake2b
@@ -43,7 +42,7 @@ class Tracer:
         instance_id: str | None = None,
     ) -> None:
         self.trace_id: str = trace_id
-        self.instance_id: str = instance_id or uuid.uuid4().hex
+        self.instance_id: str = instance_id or _trace_id()
         self._events: list[TraceEvent] = []
         self._lock = threading.Lock()
 
@@ -249,3 +248,12 @@ def _random_id() -> str:
 
 def _derive_id(base: str) -> str:
     return blake2b(base.encode(), digest_size=8).hexdigest()
+
+
+def _trace_id() -> str:
+    data = bytearray(16)
+    data[:6] = (time.time_ns() // 1_000_000).to_bytes(6, "big")
+    data[6:] = os.urandom(10)
+    data[6] = (data[6] & 0x0F) | 0x70
+    data[8] = (data[8] & 0x3F) | 0x80
+    return data.hex()
