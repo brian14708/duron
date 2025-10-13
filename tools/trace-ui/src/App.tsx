@@ -12,6 +12,8 @@ import {
 } from "@/components/ui/card";
 import { parseTraceLog } from "@/lib/trace";
 
+import { ModeToggle } from "./components/mode-toggle";
+
 interface TraceFile {
   name: string;
   size: number;
@@ -157,6 +159,13 @@ function App() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
       <div className="container mx-auto px-4 py-8">
+        <div className="mb-6 flex items-center justify-between">
+          <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-50">
+            🌀 Duron
+          </h1>
+          <ModeToggle />
+        </div>
+
         {/* Upload Section */}
         {!file ? (
           <Card className="mx-auto max-w-2xl">
