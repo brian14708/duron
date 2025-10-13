@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 from abc import ABC, abstractmethod
 from asyncio.exceptions import CancelledError
 from collections import deque
@@ -402,6 +403,7 @@ class _ResumableGuard(Generic[_U, _T]):
                 args=(sink,),
                 kwargs={},
                 return_type=Unspecified,
+                context=contextvars.copy_context(),
             ),
         )
         return self._stream

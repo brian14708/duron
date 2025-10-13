@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 from contextlib import contextmanager
 from contextvars import ContextVar
 from random import Random
@@ -125,6 +126,7 @@ class Context:
                 args=args,
                 kwargs=kwargs,
                 return_type=return_type,
+                context=contextvars.copy_context(),
                 metadata=self._get_metadata(metadata),
                 labels=self._get_labels(None),
             ),

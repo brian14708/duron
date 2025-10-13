@@ -46,10 +46,6 @@ _task_ctx: contextvars.ContextVar[_TaskCtx] = contextvars.ContextVar("duron.task
 class OpFuture(asyncio.Future[_T], Generic[_T]):
     __slots__: tuple[str, ...] = ("id", "params")
 
-    id: str
-    params: object
-    context: Context
-
     def __init__(
         self,
         id_: str,
@@ -59,7 +55,6 @@ class OpFuture(asyncio.Future[_T], Generic[_T]):
         super().__init__(loop=loop)
         self.id = id_
         self.params = params
-        self.context = contextvars.copy_context()
 
 
 @dataclass(slots=True)

@@ -7,6 +7,7 @@ from typing_extensions import overload
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
+    from contextvars import Context
 
     from duron._loop import EventLoop, OpFuture
     from duron.codec import JSONValue
@@ -22,6 +23,7 @@ class FnCall:
     args: tuple[object, ...]
     kwargs: dict[str, object]
     return_type: TypeHint[Any]
+    context: Context
     metadata: dict[str, JSONValue] | None = None
     labels: dict[str, str] | None = None
 

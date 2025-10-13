@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import sys
 import time
 from typing import TYPE_CHECKING, Final, Generic, Literal, cast
 from typing_extensions import (
@@ -38,6 +39,7 @@ from duron.tracing import (
 from duron.typing import Unspecified, inspect_function
 
 if TYPE_CHECKING:
+    import contextvars
     from collections.abc import Callable, Coroutine
     from contextvars import Token
     from types import TracebackType
@@ -60,6 +62,7 @@ if TYPE_CHECKING:
         StreamCreateEntry,
         StreamEmitEntry,
     )
+    from duron.tracing._tracer import EntrySpan
     from duron.typing import FunctionType, TypeHint
 
 
@@ -330,7 +333,11 @@ class _InvokeRun:
         self._pending_msg: list[Entry] = []
         self._pending_task: dict[
             str,
-            tuple[Callable[[], Coroutine[Any, Any, None]], TypeHint[Any]],
+            tuple[
+                Callable[[], Coroutine[Any, Any, None]],
+                contextvars.Context,
+                TypeHint[Any],
+            ],
         ] = {}
         self._pending_ops: set[str] = set()
         self._now = 0
@@ -341,6 +348,7 @@ class _InvokeRun:
                 list[StreamObserver[object]],
                 TypeHint[Any],
                 dict[str, str] | None,
+                EntrySpan | None,
             ],
         ] = {}
         self._watchers = watchers or []
@@ -405,8 +413,11 @@ class _InvokeRun:
         for msg in self._pending_msg:
             await self.enqueue_log(msg)
         self._pending_msg.clear()
-        for key, (task_fn, return_type) in self._pending_task.items():
-            self._tasks[key] = (asyncio.create_task(task_fn()), return_type)
+        for key, (task_fn, context, return_type) in self._pending_task.items():
+            self._tasks[key] = (
+                _create_task_context(task_fn(), context),
+                return_type,
+            )
         self._pending_task.clear()
 
         while waitset := await self._step():
@@ -458,7 +469,7 @@ class _InvokeRun:
 
             return_type: TypeHint[Any] = Unspecified
             if pending_info is not None:
-                _, return_type = pending_info
+                _, _, return_type = pending_info
             elif task_info is not None:
                 _, return_type = task_info
             else:
@@ -500,7 +511,7 @@ class _InvokeRun:
                     id_, exception=ValueError("Stream not found")
                 )
             else:
-                obs, tv, _ = self._streams[e["stream_id"]]
+                obs, tv, _, _ = self._streams[e["stream_id"]]
                 for ob in obs:
                     ob.on_next(
                         offset,
@@ -515,7 +526,7 @@ class _InvokeRun:
                     id_, exception=ValueError("Stream not found")
                 )
             else:
-                obs, _, _ = self._streams[e["stream_id"]]
+                obs, _, _, _ = self._streams[e["stream_id"]]
                 self._loop.post_completion(id_, result=None)
                 for ob in obs:
                     if "error" in e:
@@ -556,17 +567,10 @@ class _InvokeRun:
                     "type": "promise.create",
                 }
 
-                set_metadata(
-                    promise_create_entry,
-                    op.metadata,
-                )
-                set_labels(
-                    promise_create_entry,
-                    op.labels,
-                )
+                set_metadata(promise_create_entry, op.metadata)
+                set_labels(promise_create_entry, op.labels)
                 if self._tracer:
-                    span = fut.context.run(
-                        self._tracer.new_entry_span,
+                    entry_span = self._tracer.new_entry_span(
                         promise_create_entry,
                         {
                             "name": cast(
@@ -576,7 +580,7 @@ class _InvokeRun:
                         },
                     )
                 else:
-                    span = NULL_SPAN
+                    entry_span = None
                 await self.enqueue_log(promise_create_entry)
 
                 async def cb() -> None:
@@ -587,7 +591,7 @@ class _InvokeRun:
                         "type": "promise.complete",
                         "promise_id": id_,
                     }
-                    with span as span_:
+                    with entry_span.new_span() if entry_span else NULL_SPAN:
                         try:
                             result = op.callable(*op.args, **op.kwargs)
                             if asyncio.iscoroutine(result):
@@ -598,8 +602,8 @@ class _InvokeRun:
                         except asyncio.CancelledError as e:
                             entry["error"] = _encode_error(e)
 
-                        if self._tracer:
-                            self._tracer.end_entry_span(entry, id_, span_)
+                    if entry_span:
+                        entry_span.end(entry)
                     await self.enqueue_log(entry)
 
                 def done(f: OpFuture[object]) -> None:
@@ -616,9 +620,12 @@ class _InvokeRun:
                 fut.add_done_callback(done)
                 sid = id_
                 if self._running:
-                    self._tasks[sid] = (asyncio.create_task(cb()), op.return_type)
+                    self._tasks[sid] = (
+                        _create_task_context(cb(), op.context),
+                        op.return_type,
+                    )
                 else:
-                    self._pending_task[sid] = (cb, op.return_type)
+                    self._pending_task[sid] = (cb, op.context, op.return_type)
 
             case StreamCreate():
                 stream_id = id_
@@ -631,18 +638,27 @@ class _InvokeRun:
                     if _match_labels(op.labels or {}, matcher):
                         ob.append(watcher)
 
-                self._streams[stream_id] = (ob, op.dtype, op.labels)
-
                 stream_create_entry: StreamCreateEntry = {
                     "ts": self.now(),
                     "id": stream_id,
                     "type": "stream.create",
                 }
+                if self._tracer:
+                    entry_span = self._tracer.new_entry_span(
+                        stream_create_entry,
+                        {},
+                    )
+                else:
+                    entry_span = None
+
+                self._streams[stream_id] = (ob, op.dtype, op.labels, entry_span)
+
                 set_metadata(stream_create_entry, op.metadata)
                 set_labels(stream_create_entry, op.labels)
                 await self.enqueue_log(stream_create_entry)
 
             case StreamEmit():
+                _, _, _, entry_span = self._streams[op.stream_id]
                 stream_emit_entry: StreamEmitEntry = {
                     "ts": self.now(),
                     "id": id_,
@@ -650,8 +666,18 @@ class _InvokeRun:
                     "type": "stream.emit",
                     "value": self._codec.encode_json(op.value),
                 }
+                if entry_span:
+                    entry_span.attach(
+                        stream_emit_entry,
+                        {
+                            "type": "event",
+                            "ts": self.now(),
+                            "kind": "stream",
+                        },
+                    )
                 await self.enqueue_log(stream_emit_entry)
             case StreamClose():
+                _, _, _, entry_span = self._streams[op.stream_id]
                 if op.exception:
                     stream_close_entry_err: StreamCompleteEntry = {
                         "ts": self.now(),
@@ -660,6 +686,8 @@ class _InvokeRun:
                         "type": "stream.complete",
                         "error": _encode_error(op.exception),
                     }
+                    if entry_span:
+                        entry_span.end(stream_close_entry_err)
                     await self.enqueue_log(stream_close_entry_err)
                 else:
                     stream_close_entry: StreamCompleteEntry = {
@@ -668,6 +696,8 @@ class _InvokeRun:
                         "stream_id": op.stream_id,
                         "type": "stream.complete",
                     }
+                    if entry_span:
+                        entry_span.end(stream_close_entry)
                     await self.enqueue_log(stream_close_entry)
             case Barrier():
                 barrier_entry: BarrierEntry = {
@@ -722,7 +752,7 @@ class _InvokeRun:
     ) -> int:
         cnt = 0
         ts = self.now()
-        for stream_id, (_, _, lb) in self._streams.items():
+        for stream_id, (_, _, lb, entry_span) in self._streams.items():
             if _match_labels(lb or {}, matcher):
                 entry: StreamEmitEntry = {
                     "ts": ts,
@@ -731,6 +761,15 @@ class _InvokeRun:
                     "stream_id": stream_id,
                     "value": self._codec.encode_json(value),
                 }
+                if entry_span:
+                    entry_span.attach(
+                        entry,
+                        {
+                            "type": "event",
+                            "ts": ts,
+                            "kind": "stream",
+                        },
+                    )
                 await self.enqueue_log(entry)
                 cnt += 1
         return cnt
@@ -744,12 +783,12 @@ class _InvokeRun:
         ts = self.now()
         # Collect matching stream IDs first to avoid modifying dict during iteration
         matching_streams = [
-            stream_id
-            for stream_id, (_, _, lb) in self._streams.items()
+            (stream_id, span)
+            for stream_id, (_, _, lb, span) in self._streams.items()
             if _match_labels(lb or {}, matcher)
         ]
 
-        for stream_id in matching_streams:
+        for stream_id, entry_span in matching_streams:
             if error:
                 entry: StreamCompleteEntry = {
                     "ts": ts,
@@ -765,6 +804,8 @@ class _InvokeRun:
                     "type": "stream.complete",
                     "stream_id": stream_id,
                 }
+            if entry_span:
+                entry_span.end(entry)
             await self.enqueue_log(entry)
             cnt += 1
         return cnt
@@ -818,3 +859,18 @@ class _StreamWriter(Generic[_T]):
             == 0
         ):
             await asyncio.sleep(0.1)
+
+
+if sys.version_info >= (3, 11):
+
+    def _create_task_context(
+        coro: Coroutine[Any, Any, _T], context: contextvars.Context
+    ) -> asyncio.Task[_T]:
+        return asyncio.create_task(coro, context=context)
+
+else:
+
+    def _create_task_context(
+        coro: Coroutine[Any, Any, _T], context: contextvars.Context
+    ) -> asyncio.Task[_T]:
+        return context.run(asyncio.create_task, coro)
