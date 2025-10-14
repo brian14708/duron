@@ -57,6 +57,7 @@ class Tracer:
 
     def new_span(
         self,
+        name: str,
         attributes: dict[str, JSONValue] | None = None,
         links: list[LinkRef] | None = None,
     ) -> AbstractContextManager[Span]:
@@ -64,6 +65,7 @@ class Tracer:
         return _TracerSpan(
             _random_id(),
             tracer=self,
+            name=name,
             attributes=attributes,
             parent_id=parent.id if parent else None,
             links=links,
@@ -71,11 +73,13 @@ class Tracer:
 
     def new_entry_span(
         self,
+        name: str,
         entry: PromiseCreateEntry | StreamCreateEntry,
-        attributes: dict[str, JSONValue],
+        attributes: dict[str, JSONValue] | None,
     ) -> EntrySpan:
         event: SpanStart = {
             "type": "span.start",
+            "name": name,
             "span_id": _derive_id(entry["id"]),
             "ts": time.time_ns() // 1000,
         }
@@ -88,7 +92,9 @@ class Tracer:
                 "trace.event": cast("dict[str, JSONValue]", event),
             },
         )
-        return EntrySpan(_derive_id(entry["id"]), tracer=self)
+        return EntrySpan(
+            id=_derive_id(entry["id"]), tracer=self, name=name, attributes=attributes
+        )
 
     @staticmethod
     def current() -> Tracer | None:
@@ -99,14 +105,8 @@ class Tracer:
 class EntrySpan:
     id: str
     tracer: Tracer
-
-    def __init__(
-        self,
-        id_: str,
-        tracer: Tracer,
-    ) -> None:
-        self.id = id_
-        self.tracer = tracer
+    name: str
+    attributes: dict[str, JSONValue] | None
 
     def new_span(
         self, attributes: dict[str, JSONValue] | None = None
@@ -115,7 +115,12 @@ class EntrySpan:
             "span_id": self.id,
             "trace_id": self.tracer.trace_id,
         }
-        return self.tracer.new_span(attributes, links=[link])
+        if self.attributes:
+            if attributes:
+                attributes = {**self.attributes, **attributes}
+            else:
+                attributes = self.attributes
+        return self.tracer.new_span(self.name, attributes, links=[link])
 
     def end(self, entry: Entry) -> None:
         event: SpanEnd = {
@@ -146,6 +151,7 @@ class EntrySpan:
 class _TracerSpan:
     id: str
     tracer: Tracer
+    name: str
     parent_id: str | None = None
     attributes: dict[str, JSONValue] | None = None
     links: list[LinkRef] | None = None
@@ -157,6 +163,7 @@ class _TracerSpan:
             "type": "span.start",
             "span_id": self.id,
             "ts": start_ns // 1000,
+            "name": self.name,
         }
         if self.parent_id:
             evnt["parent_span_id"] = self.parent_id
@@ -235,10 +242,11 @@ def setup_tracing(
 
 
 def span(
+    name: str,
     metadata: dict[str, JSONValue] | None = None,
 ) -> AbstractContextManager[Span]:
     if tracer := current_tracer.get():
-        return tracer.new_span(metadata)
+        return tracer.new_span(name, metadata)
     return NULL_SPAN
 
 

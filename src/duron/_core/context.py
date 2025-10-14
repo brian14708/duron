@@ -4,6 +4,7 @@ import asyncio
 import contextvars
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from random import Random
 from typing import TYPE_CHECKING, cast
 from typing_extensions import (
@@ -19,10 +20,11 @@ from duron._core.ops import Barrier, ExternalPromiseCreate, FnCall, create_op
 from duron._core.signal import create_signal
 from duron._core.stream import create_stream, run_stream
 from duron._decorator.op import CheckpointOp, Op
+from duron._util.linked_dict import LinkedDict
 from duron.typing import inspect_function
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Generator
+    from collections.abc import Callable, Coroutine, Generator, Mapping
     from contextvars import Token
     from types import TracebackType
 
@@ -38,10 +40,18 @@ if TYPE_CHECKING:
     _P = ParamSpec("_P")
 
 _context: ContextVar[Context | None] = ContextVar("duron.context", default=None)
-_metadata: ContextVar[dict[str, JSONValue] | None] = ContextVar(
-    "duron.metadata", default=None
+
+
+@final
+@dataclass(slots=True)
+class Annotation:
+    metadata: LinkedDict[str, JSONValue]
+    labels: LinkedDict[str, str]
+
+
+_annotation: ContextVar[Annotation | None] = ContextVar(
+    "duron.context.annotation", default=None
 )
-_labels: ContextVar[dict[str, str] | None] = ContextVar("duron.labels", default=None)
 
 
 @final
@@ -119,10 +129,12 @@ class Context:
             return_type = inspect_function(fn).return_type
             metadata = None
 
+        callable_ = fn.fn if isinstance(fn, Op) else fn
         op = create_op(
             self._loop,
             FnCall(
-                callable=fn.fn if isinstance(fn, Op) else fn,
+                callable=callable_,
+                name=cast("str", getattr(callable_, "__name__", repr(callable_))),
                 args=args,
                 kwargs=kwargs,
                 return_type=return_type,
@@ -156,7 +168,9 @@ class Context:
     async def create_stream(
         self,
         dtype: TypeHint[_T],
+        /,
         *,
+        name: str | None = None,
         external: bool = False,
     ) -> tuple[Stream[_T, None], StreamWriter[_T]]:
         if asyncio.get_running_loop() is not self._loop:
@@ -167,12 +181,11 @@ class Context:
             dtype,
             external=external,
             metadata=self._get_metadata(None),
-            labels=self._get_labels(None),
+            labels=self._get_labels({"name": name} if name else None),
         )
 
     async def create_signal(
-        self,
-        dtype: TypeHint[_T],
+        self, dtype: TypeHint[_T], /, *, name: str | None = None
     ) -> tuple[Signal[_T], SignalWriter[_T]]:
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
@@ -181,7 +194,7 @@ class Context:
             self._loop,
             dtype,
             metadata=self._get_metadata(None),
-            labels=self._get_labels(None),
+            labels=self._get_labels({"name": name} if name else None),
         )
 
     async def create_promise(
@@ -229,57 +242,55 @@ class Context:
         return Random(self._loop.generate_op_id())  # noqa: S311
 
     @contextmanager
-    def metadata(self, metadata: dict[str, JSONValue]) -> Generator[None, None, None]:
-        if asyncio.get_running_loop() is not self._loop:
-            msg = "Context time can only be used in the context loop"
-            raise RuntimeError(msg)
-        if not metadata:
-            yield
-            return
-
-        current = _metadata.get()
-        merged = {**current, **metadata} if current is not None else metadata
-        token = _metadata.set(merged)
-        try:
-            yield
-        finally:
-            _metadata.reset(token)
-
-    @contextmanager
-    def labels(self, labels: dict[str, str]) -> Generator[None, None, None]:
+    def annotate(
+        self,
+        *,
+        labels: Mapping[str, str] | None = None,
+        metadata: Mapping[str, JSONValue] | None = None,
+    ) -> Generator[None, None, None]:
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context labels can only be used in the context loop"
             raise RuntimeError(msg)
-        if not labels:
+        if not labels and not metadata:
             yield
             return
 
-        current = _labels.get()
-        merged = {**current, **labels} if current is not None else labels
-        token = _labels.set(merged)
+        current = _annotation.get()
+        token = _annotation.set(
+            Annotation(
+                metadata=current.metadata.extend(metadata)
+                if current
+                else LinkedDict(metadata),
+                labels=current.labels.extend(labels) if current else LinkedDict(labels),
+            )
+        )
         try:
             yield
         finally:
-            _labels.reset(token)
+            _annotation.reset(token)
 
     @staticmethod
     def _get_metadata(
         merge: dict[str, JSONValue] | None,
     ) -> dict[str, JSONValue] | None:
-        current = _metadata.get()
-        if merge is None:
-            return current
+        anno = _annotation.get()
+        current = anno.metadata if anno else None
         if current is None:
             return merge
-        return {**current, **merge}
+        if merge:
+            return current.extend(merge).materialize()
+        return current.materialize()
 
     @staticmethod
     def _get_labels(
         merge: dict[str, str] | None,
     ) -> dict[str, str] | None:
-        current = _labels.get()
-        if merge is None:
-            return current
+        anno = _annotation.get()
+        current = anno.labels if anno else None
+        if merge:
+            if current is None:
+                return merge
+            return current.extend(merge).materialize()
         if current is None:
-            return merge
-        return {**current, **merge}
+            return None
+        return current.materialize()

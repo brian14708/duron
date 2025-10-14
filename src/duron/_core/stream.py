@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from duron._core.context import Context
-    from duron._loop import EventLoop
+    from duron._loop import EventLoop, OpFuture
     from duron.codec import JSONValue
     from duron.typing import TypeHint
 
@@ -393,19 +393,11 @@ class _ResumableGuard(Generic[_U, _T]):
             StreamCreate(
                 dtype=self._dtype,
                 observer=self._stream,
+                labels={"name": self._stream.name()},
             ),
         )
-        sink: StreamWriter[_T] = _ExternalWriter(sid, self._loop)
-        self._task = create_op(
-            self._loop,
-            FnCall(
-                callable=self._stream.worker,
-                args=(sink,),
-                kwargs={},
-                return_type=Unspecified,
-                context=contextvars.copy_context(),
-            ),
-        )
+        sink: StreamWriter[_U] = _ExternalWriter(sid, self._loop)
+        self._task = self._stream.start_worker(sink)
         return self._stream
 
     async def __aexit__(
@@ -441,38 +433,61 @@ class _StreamRun(ObserverStream[_U, _T], Generic[_U, _T]):
         self._args = args
         self._kwargs = kwargs
         self._enabled = True
-        self._final: asyncio.Future[_T] = asyncio.Future()
+        self._task: asyncio.Future[_T] | None = None
 
-    async def worker(self, sink: StreamWriter[_U]) -> None:
+    def name(self) -> str:
+        return cast("str", getattr(self._fn, "__name__", repr(self._fn)))
+
+    def start_worker(self, sink: StreamWriter[_U]) -> asyncio.Future[object]:
+        op = create_op(
+            self._event_loop,
+            FnCall(
+                callable=self._worker,
+                name=self.name(),
+                args=(sink,),
+                kwargs={},
+                return_type=Unspecified,
+                context=contextvars.copy_context(),
+            ),
+        )
+        self._task = cast("OpFuture[_T]", op)
+        return op
+
+    async def _worker(self, sink: StreamWriter[_U]) -> _T:
         gen = None
         state = self._current
         if self._closed is True:
-            return
+            return state
+        if self._closed is not False:
+            raise self._closed
         self._enabled = False
         try:
             gen = self._fn(state, *self._args, **self._kwargs)
-            state_partial = await anext(gen)
-            while True:
-                state = self._reducer(state, state_partial)
-                await sink.send(state_partial)
-                state_partial = await gen.asend(state)
+            try:
+                state_partial = await anext(gen)
+                while True:
+                    state = self._reducer(state, state_partial)
+                    await sink.send(state_partial)
+                    state_partial = await gen.asend(state)
+            finally:
+                await gen.aclose()
         except StopAsyncIteration:
             assert self._loop  # noqa: S101
-            _ = self._loop.call_soon(self._final.set_result, state)
             await sink.close()
+            return state
         except Exception as e:
             await sink.close(e)
             raise
         except CancelledError as e:
             self._send_close(-1, e)
             raise
-        finally:
-            if gen:
-                await gen.aclose()
 
     @override
     def __await__(self) -> Generator[Any, Any, _T]:
-        return self._final.__await__()
+        if not self._task:
+            msg = "Stream is not started"
+            raise RuntimeError(msg)
+        return self._task.__await__()
 
     @override
     def on_next(self, offset: int, value: _U) -> None:
@@ -484,5 +499,4 @@ class _StreamRun(ObserverStream[_U, _T], Generic[_U, _T]):
     def on_close(self, offset: int, exc: BaseException | None) -> None:
         if self._enabled:
             self._closed = True if exc is None else exc
-            _ = self._event_loop.call_soon(self._final.set_result, self._current)
         super().on_close(offset, exc)

@@ -18,6 +18,7 @@ class _BaseEntry(TypedDict):
     id: str
     # Unix timestamp in microseconds
     ts: int
+    labels: NotRequired[dict[str, str]]
     metadata: NotRequired[dict[str, JSONValue]]
 
 
@@ -28,7 +29,6 @@ class ErrorInfo(TypedDict):
 
 class PromiseCreateEntry(_BaseEntry):
     type: Literal["promise.create"]
-    labels: NotRequired[dict[str, str]]
 
 
 class PromiseCompleteEntry(_BaseEntry):
@@ -40,7 +40,6 @@ class PromiseCompleteEntry(_BaseEntry):
 
 class StreamCreateEntry(_BaseEntry):
     type: Literal["stream.create"]
-    labels: NotRequired[dict[str, str]]
 
 
 class StreamEmitEntry(_BaseEntry):
@@ -101,28 +100,13 @@ def set_metadata(entry: Entry, *metadata: dict[str, JSONValue] | None) -> None:
 
 
 def set_labels(entry: Entry, *labels: dict[str, str] | None) -> None:
-    if entry["type"] not in {"promise.create", "stream.create"}:
-        return
-
-    # Type narrowing for entries that support labels
-    if entry["type"] == "promise.create":
-        promise_entry: PromiseCreateEntry = entry
-        lb = promise_entry.get("labels")
-        for label_dict in labels:
-            if label_dict:
-                if lb is None:
-                    promise_entry["labels"] = lb = {**label_dict}
-                else:
-                    lb.update(label_dict)
-    elif entry["type"] == "stream.create":
-        stream_entry: StreamCreateEntry = entry
-        lb = stream_entry.get("labels")
-        for label_dict in labels:
-            if label_dict:
-                if lb is None:
-                    stream_entry["labels"] = lb = {**label_dict}
-                else:
-                    lb.update(label_dict)
+    lb = entry.get("labels")
+    for label_dict in labels:
+        if label_dict:
+            if lb is None:
+                entry["labels"] = lb = {**label_dict}
+            else:
+                lb.update(label_dict)
 
 
 class LogStorage(Protocol):

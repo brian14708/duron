@@ -13,6 +13,7 @@ class SpanStart(TypedDict):
     type: Literal["span.start"]
     span_id: str
     ts: int
+    name: str
     attributes: NotRequired[dict[str, JSONValue]]
 
     parent_span_id: NotRequired[str]

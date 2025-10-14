@@ -20,6 +20,7 @@ _In_contra = TypeVar("_In_contra", contravariant=True)
 @dataclass(slots=True)
 class FnCall:
     callable: Callable[..., Coroutine[Any, Any, object] | object]
+    name: str
     args: tuple[object, ...]
     kwargs: dict[str, object]
     return_type: TypeHint[Any]

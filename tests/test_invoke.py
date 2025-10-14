@@ -240,7 +240,7 @@ async def test_external_stream_write() -> None:
 async def test_watch_stream() -> None:
     @fn
     async def activity(ctx: Context) -> int:
-        with ctx.labels({"name": "output"}):
+        with ctx.annotate(labels={"name": "output"}):
             _, sink = await ctx.create_stream(int)
         for i in range(10):
             await sink.send(i)

@@ -36,6 +36,7 @@ interface TraceEvent {
   span_id: string;
   ts: number; // timestamp in microseconds
   parent_span_id?: string;
+  name?: string;
   attributes?: Record<string, JSONValue>;
   links?: Array<{ span_id: string; trace_id: string }>;
   kind?: string;
@@ -61,6 +62,7 @@ interface RawTraceEvent {
   type: "span.start" | "span.end" | "event";
   span_id: string;
   ts: number;
+  name?: string;
   parent_span_id?: string;
   attributes?: Record<string, JSONValue>;
   links?: Array<{ span_id: string; trace_id?: string }>;
@@ -97,6 +99,7 @@ function rawEventToTraceEvent(
     span_id: event.span_id,
     ts: event.ts,
     parent_span_id: event.parent_span_id,
+    name: event.name,
     attributes: event.attributes,
     links: event.links?.map((link) => ({
       span_id: link.span_id,
@@ -117,7 +120,6 @@ export function parseTraceLog(filename: string, content: string): TraceFile {
   for (const line of lines) {
     try {
       const parsed = JSON.parse(line) as RawLog;
-      // TODO
       const traceId = parsed.metadata?.["trace.id"];
       if (!traceId || typeof traceId !== "string") {
         continue;
@@ -154,7 +156,7 @@ export function parseTraceLog(filename: string, content: string): TraceFile {
           ) {
             const value = parsed[key];
             if (value !== undefined) {
-              event.attributes[parsed.type + "." + key] = value;
+              event.attributes[key] = value;
             }
           }
         }
@@ -221,7 +223,7 @@ export function extractSpansFromEntries(entries: TraceEvent[]): Span[] {
 
     if (event.type === "span.start") {
       span.startTime = event.ts;
-      span.name = (event.attributes?.name as string) ?? "Unknown";
+      span.name = event.name ?? "Unknown";
       span.parentId = event.parent_span_id;
       span.attributes = event.attributes;
       span.links = event.links;
@@ -233,7 +235,7 @@ export function extractSpansFromEntries(entries: TraceEvent[]): Span[] {
       }
     } else if (event.type === "event") {
       // Collect instant events
-      const eventName = (event.attributes?.name as string) ?? "event";
+      const eventName = event.name ?? "event";
       span.events = span.events || [];
       span.events.push({
         time: event.ts,

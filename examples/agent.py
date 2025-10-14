@@ -23,7 +23,7 @@ import duron
 from duron import Defer, Signal, SignalInterrupt, Stream, StreamWriter
 from duron.codec import Codec
 from duron.contrib.storage import FileLogStorage
-from duron.tracing import Tracer
+from duron.tracing import Tracer, span
 
 if TYPE_CHECKING:
     from duron.codec import JSONValue
@@ -65,6 +65,7 @@ async def agent_fn(
         },
     ]
     async with input_ as inp:
+        i = 0
         while True:
             msgs: list[str] = [msgs async for _, msgs in inp.next_nowait(ctx)]
             if not msgs:
@@ -76,58 +77,60 @@ async def agent_fn(
                 "content": "\n".join(msgs),
             })
             await output.send(("user", "\n".join(msgs)))
-            while True:
-                try:
-                    async with signal:
-                        result = await completion(
-                            ctx,
-                            messages=history,
-                        )
-                        if result.choices[0].message.content:
-                            await output.send((
-                                "assistant",
-                                result.choices[0].message.content,
-                            ))
+            with span(f"Round #{i}"):
+                i += 1
+                while True:
+                    try:
+                        async with signal:
+                            result = await completion(
+                                ctx,
+                                messages=history,
+                            )
+                            if result.choices[0].message.content:
+                                await output.send((
+                                    "assistant",
+                                    result.choices[0].message.content,
+                                ))
+                            history.append({
+                                "role": "assistant",
+                                "content": result.choices[0].message.content,
+                                "tool_calls": [
+                                    {
+                                        "id": toolcall.id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": toolcall.function.name,
+                                            "arguments": toolcall.function.arguments,
+                                        },
+                                    }
+                                    for toolcall in result.choices[0].message.tool_calls
+                                    or []
+                                    if toolcall.type == "function"
+                                ],
+                            })
+                            if not result.choices[0].message.tool_calls:
+                                break
+
+                            tasks: list[asyncio.Task[tuple[str, str]]] = []
+                            for tool_call in result.choices[0].message.tool_calls:
+                                await output.send(("call", tool_call.model_dump_json()))
+                                tasks.append(
+                                    asyncio.create_task(ctx.run(call_tool, tool_call))
+                                )
+                            for id_, tool_result in await asyncio.gather(*tasks):
+                                await output.send(("tool", tool_result))
+                                history.append({
+                                    "role": "tool",
+                                    "tool_call_id": id_,
+                                    "content": tool_result,
+                                })
+                    except SignalInterrupt:
+                        await output.send(("assistant", "[Interrupted]"))
                         history.append({
                             "role": "assistant",
-                            "content": result.choices[0].message.content,
-                            "tool_calls": [
-                                {
-                                    "id": toolcall.id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": toolcall.function.name,
-                                        "arguments": toolcall.function.arguments,
-                                    },
-                                }
-                                for toolcall in result.choices[0].message.tool_calls
-                                or []
-                                if toolcall.type == "function"
-                            ],
+                            "content": "[Interrupted]",
                         })
-                        if not result.choices[0].message.tool_calls:
-                            break
-
-                        tasks: list[asyncio.Task[tuple[str, str]]] = []
-                        for tool_call in result.choices[0].message.tool_calls:
-                            await output.send(("call", tool_call.model_dump_json()))
-                            tasks.append(
-                                asyncio.create_task(ctx.run(call_tool, tool_call))
-                            )
-                        for id_, tool_result in await asyncio.gather(*tasks):
-                            await output.send(("tool", tool_result))
-                            history.append({
-                                "role": "tool",
-                                "tool_call_id": id_,
-                                "content": tool_result,
-                            })
-                except SignalInterrupt:
-                    await output.send(("assistant", "[Interrupted]"))
-                    history.append({
-                        "role": "assistant",
-                        "content": "[Interrupted]",
-                    })
-                    break
+                        break
 
 
 @duron.op

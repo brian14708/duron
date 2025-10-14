@@ -34,7 +34,6 @@ from duron.tracing import (
     NULL_SPAN,
     Tracer,
     current_tracer,
-    span,
 )
 from duron.typing import Unspecified, inspect_function
 
@@ -48,6 +47,7 @@ if TYPE_CHECKING:
         Op,
         StreamObserver,
     )
+    from duron._core.signal import SignalWriter
     from duron._decorator.fn import Fn
     from duron._loop import OpFuture, WaitSet
     from duron.codec import Codec
@@ -71,6 +71,11 @@ _T = TypeVar("_T")
 _P = ParamSpec("_P")
 
 _CURRENT_VERSION: Final = 0
+
+
+def _resume_init() -> InitParams:
+    msg = "not started"
+    raise RuntimeError(msg)
 
 
 @final
@@ -101,7 +106,7 @@ class Invoke(Generic[_P, _T_co]):
         return _InvokeGuard(Invoke(fn, log), tracer)
 
     async def start(self, *args: _P.args, **kwargs: _P.kwargs) -> None:
-        def get_init() -> InitParams:
+        def prelude() -> InitParams:
             return {
                 "version": _CURRENT_VERSION,
                 "args": [codec.encode_json(arg) for arg in args],
@@ -111,9 +116,9 @@ class Invoke(Generic[_P, _T_co]):
 
         codec = self._fn.codec
         type_info = inspect_function(self._fn.fn)
-        prelude = _invoke_prelude(self._fn, type_info, get_init)
+        p = _invoke_prelude(self._fn, type_info, prelude)
         self._run = _InvokeRun(
-            prelude,
+            p,
             self._log,
             codec,
             watchers=self._watchers,
@@ -121,12 +126,8 @@ class Invoke(Generic[_P, _T_co]):
         await self._run.resume()
 
     async def resume(self) -> None:
-        def cb() -> InitParams:
-            msg = "not started"
-            raise RuntimeError(msg)
-
         type_info = inspect_function(self._fn.fn)
-        prelude = _invoke_prelude(self._fn, type_info, cb)
+        prelude = _invoke_prelude(self._fn, type_info, _resume_init)
         self._run = _InvokeRun(
             prelude,
             self._log,
@@ -195,7 +196,7 @@ class Invoke(Generic[_P, _T_co]):
             msg = f"Stream parameter '{name}' not found"
             raise ValueError(msg)
         if mode == "r":
-            return self.watch_stream({"param.name": name})
+            return self.watch_stream({"name": name})
         return _StreamWriter(self, name)
 
     def watch_stream(
@@ -259,28 +260,14 @@ async def _invoke_prelude(
     loop = asyncio.get_running_loop()
     assert isinstance(loop, EventLoop)  # noqa: S101
 
-    with (
-        Context(job_fn, loop) as ctx,
-        span({
-            "name": "INVOKE",
-        }),
-    ):
+    with Context(job_fn, loop) as ctx:
         init_params = await ctx.run(init)
         if init_params["version"] != _CURRENT_VERSION:
             msg = "version mismatch"
             raise RuntimeError(msg)
         loop.set_key(init_params["nonce"].encode())
-        extra_kwargs: dict[str, object] = {}
-        for name, type_, dtype in job_fn.inject:
-            with ctx.labels({"param.name": name}):
-                if type_ is Stream:
-                    extra_kwargs[name], _ = await ctx.create_stream(dtype)
-                elif type_ is Signal:
-                    extra_kwargs[name], _ = await ctx.create_signal(dtype)
-                elif type_ is StreamWriter:
-                    _, extra_kwargs[name] = await ctx.create_stream(dtype)
-        codec = job_fn.codec
 
+        codec = job_fn.codec
         args = tuple(
             codec.decode_json(
                 arg,
@@ -294,7 +281,23 @@ async def _invoke_prelude(
             k: codec.decode_json(v, type_info.parameter_types.get(k, Unspecified))
             for k, v in sorted(init_params["kwargs"].items())
         }
-        return await job_fn.fn(ctx, *args, **extra_kwargs, **kwargs)
+
+        extra_kwargs: dict[str, object] = {}
+        closer: list[StreamWriter[Any] | SignalWriter[Any]] = []
+        for name, type_, dtype in job_fn.inject:
+            if type_ is Stream:
+                extra_kwargs[name], stw = await ctx.create_stream(dtype, name=name)
+                closer.append(stw)
+            elif type_ is Signal:
+                extra_kwargs[name], sgw = await ctx.create_signal(dtype, name=name)
+                closer.append(sgw)
+            elif type_ is StreamWriter:
+                _, extra_kwargs[name] = await ctx.create_stream(dtype, name=name)
+        try:
+            return await job_fn.fn(ctx, *args, **extra_kwargs, **kwargs)
+        finally:
+            for c in closer:
+                await c.close()
 
 
 @final
@@ -570,14 +573,11 @@ class _InvokeRun:
                 set_metadata(promise_create_entry, op.metadata)
                 set_labels(promise_create_entry, op.labels)
                 if self._tracer:
+                    name = op.name
                     entry_span = self._tracer.new_entry_span(
+                        name,
                         promise_create_entry,
-                        {
-                            "name": cast(
-                                "str",
-                                getattr(op.callable, "__qualname__", "fn.anonymous"),
-                            ),
-                        },
+                        None,
                     )
                 else:
                     entry_span = None
@@ -644,9 +644,11 @@ class _InvokeRun:
                     "type": "stream.create",
                 }
                 if self._tracer:
+                    span_name = op.labels.get("name") if op.labels else None
                     entry_span = self._tracer.new_entry_span(
+                        "stream:" + span_name if span_name else "stream",
                         stream_create_entry,
-                        {},
+                        None,
                     )
                 else:
                     entry_span = None
@@ -848,15 +850,13 @@ class _StreamWriter(Generic[_T]):
 
     async def send(self, value: _T) -> None:
         while (  # noqa: ASYNC110
-            await self._invoke.get_run().send_stream({"param.name": self._name}, value)
-            == 0
+            await self._invoke.get_run().send_stream({"name": self._name}, value) == 0
         ):
             await asyncio.sleep(0.1)
 
     async def close(self, error: BaseException | None = None) -> None:
         while (  # noqa: ASYNC110
-            await self._invoke.get_run().close_stream({"param.name": self._name}, error)
-            == 0
+            await self._invoke.get_run().close_stream({"name": self._name}, error) == 0
         ):
             await asyncio.sleep(0.1)
 
