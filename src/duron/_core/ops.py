@@ -3,30 +3,65 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar
-from typing_extensions import overload
+from typing_extensions import Never, dataclass_transform, overload
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    from collections.abc import Callable, Coroutine, Mapping, Sequence
     from contextvars import Context
 
     from duron._loop import EventLoop, OpFuture
     from duron.codec import JSONValue
     from duron.typing import TypeHint
 
+    _T = TypeVar("_T")
+
+    @dataclass_transform(frozen_default=True)
+    def frozen(_cls: type[_T]) -> type[_T]: ...
+
+else:
+    frozen = dataclass(slots=True)
 
 _In_contra = TypeVar("_In_contra", contravariant=True)
 
+_EMPTY_DICT: dict[str, Never] = {}
 
-@dataclass(slots=True)
+
+@frozen
+class OpAnnotations:
+    metadata: Mapping[str, JSONValue]
+    labels: Mapping[str, str]
+    name: str = "<unnamed>"
+
+    @staticmethod
+    def extend(
+        base: OpAnnotations | None,
+        *,
+        name: str | None = None,
+        metadata: Mapping[str, JSONValue] | None = None,
+        labels: Mapping[str, str] | None = None,
+    ) -> OpAnnotations:
+        if not base:
+            return OpAnnotations(
+                metadata={**metadata} if metadata else _EMPTY_DICT,
+                labels={**labels} if labels else _EMPTY_DICT,
+                name=name or "<unnamed>",
+            )
+
+        return OpAnnotations(
+            metadata={**base.metadata, **metadata} if metadata else base.metadata,
+            labels={**base.labels, **labels} if labels else base.labels,
+            name=name or base.name,
+        )
+
+
+@frozen
 class FnCall:
     callable: Callable[..., Coroutine[Any, Any, object] | object]
-    name: str
-    args: tuple[object, ...]
-    kwargs: dict[str, object]
+    args: Sequence[object]
+    kwargs: Mapping[str, object]
     return_type: TypeHint[Any]
     context: Context
-    metadata: dict[str, JSONValue] | None = None
-    labels: dict[str, str] | None = None
+    annotations: OpAnnotations
 
 
 class StreamObserver(Protocol, Generic[_In_contra]):
@@ -34,35 +69,33 @@ class StreamObserver(Protocol, Generic[_In_contra]):
     def on_close(self, log_offset: int, error: BaseException | None, /) -> None: ...
 
 
-@dataclass(slots=True)
+@frozen
 class StreamCreate:
     observer: StreamObserver[Any] | None
     dtype: TypeHint[Any]
-    metadata: dict[str, JSONValue] | None = None
-    labels: dict[str, str] | None = None
+    annotations: OpAnnotations
 
 
-@dataclass(slots=True)
+@frozen
 class StreamEmit:
     stream_id: str
     value: object
 
 
-@dataclass(slots=True)
+@frozen
 class StreamClose:
     stream_id: str
     exception: BaseException | None
 
 
-@dataclass(slots=True)
+@frozen
 class Barrier: ...
 
 
-@dataclass(slots=True)
+@frozen
 class ExternalPromiseCreate:
     return_type: TypeHint[Any]
-    metadata: dict[str, JSONValue] | None = None
-    labels: dict[str, str] | None = None
+    annotations: OpAnnotations
 
 
 Op = FnCall | StreamCreate | StreamEmit | StreamClose | Barrier | ExternalPromiseCreate

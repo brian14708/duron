@@ -6,6 +6,6 @@ from duron._core.signal import SignalWriter as SignalWriter
 from duron._core.stream import Stream as Stream
 from duron._core.stream import StreamClosed as StreamClosed
 from duron._core.stream import StreamWriter as StreamWriter
-from duron._decorator.fn import fn as fn
-from duron._decorator.op import op as op
-from duron.typing import Defer as Defer
+from duron._decorator.durable import durable as durable
+from duron._decorator.effect import effect as effect
+from duron.typing import Provided as Provided

@@ -6,7 +6,7 @@ from typing_extensions import Any
 import pydantic
 import pytest
 
-from duron import Context, fn
+from duron import Context, durable
 from duron.contrib.storage import MemoryLogStorage
 
 if TYPE_CHECKING:
@@ -35,7 +35,7 @@ async def test_pydantic_serialize() -> None:
                 "object", pydantic.TypeAdapter(expected_type).validate_python(encoded)
             )
 
-    @fn(codec=PydanticCodec())
+    @durable(codec=PydanticCodec())
     async def activity(ctx: Context) -> PydanticPoint:
         def new_pt() -> PydanticPoint:
             return PydanticPoint(x=1, y=2)

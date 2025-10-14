@@ -4,7 +4,7 @@ import contextvars
 
 import pytest
 
-from duron import Context, fn
+from duron import Context, durable
 from duron.contrib.storage import MemoryLogStorage
 from duron.tracing import Tracer
 
@@ -18,7 +18,7 @@ async def test_contextvars() -> None:
     def u(v: str) -> None:
         assert test_var.get() == v
 
-    @fn()
+    @durable()
     async def activity(ctx: Context) -> None:
         _ = await ctx.run(u, "no_value")
         test_var.set("value1")

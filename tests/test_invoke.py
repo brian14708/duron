@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from duron import Context, Defer, Stream, StreamWriter, fn
+from duron import Context, Provided, Stream, StreamWriter, durable
 from duron.contrib.codecs import PickleCodec
 from duron.contrib.storage import MemoryLogStorage
 
@@ -20,7 +20,7 @@ async def test_invoke() -> None:
             await asyncio.sleep(0.001)
         return str(uuid.uuid4())
 
-    @fn()
+    @durable()
     async def activity(ctx: Context, i: str) -> str:
         x = await asyncio.gather(
             ctx.run(u),
@@ -48,7 +48,7 @@ async def test_invoke() -> None:
 
 @pytest.mark.asyncio
 async def test_invoke_error() -> None:
-    @fn()
+    @durable()
     async def activity(ctx: Context) -> None:
         _ = await ctx.run(lambda: asyncio.sleep(0.1))
 
@@ -73,7 +73,7 @@ async def test_invoke_error() -> None:
 async def test_resume() -> None:
     sleep = 9999
 
-    @fn()
+    @durable()
     async def activity(ctx: Context, s: str) -> str:
         _ = await ctx.run(lambda: asyncio.sleep(sleep))
         return s
@@ -93,7 +93,7 @@ async def test_resume() -> None:
 
 @pytest.mark.asyncio
 async def test_cancel() -> None:
-    @fn()
+    @durable()
     async def activity(ctx: Context, s: str) -> str:
         with contextlib.suppress(asyncio.TimeoutError):
             _ = await asyncio.wait_for(ctx.run(lambda: asyncio.sleep(9999)), 0.1)
@@ -119,7 +119,7 @@ class CustomPoint:
 
 @pytest.mark.asyncio
 async def test_serialize() -> None:
-    @fn(codec=PickleCodec())
+    @durable(codec=PickleCodec())
     async def activity(ctx: Context) -> CustomPoint:
         def new_pt() -> CustomPoint:
             return CustomPoint(x=1, y=2)
@@ -138,7 +138,7 @@ async def test_serialize() -> None:
 
 @pytest.mark.asyncio
 async def test_random() -> None:
-    @fn()
+    @durable()
     async def activity(ctx: Context) -> int:
         assert ctx.time_ns() == ctx.time_ns()
         await asyncio.sleep(0)
@@ -160,7 +160,7 @@ async def test_random() -> None:
 async def test_external_promise() -> None:
     v: dict[str, str] = {}
 
-    @fn
+    @durable
     async def activity(ctx: Context) -> int:
         a, b = await ctx.create_promise(int)
         v["data"] = a
@@ -185,8 +185,8 @@ async def test_external_promise() -> None:
 
 @pytest.mark.asyncio
 async def test_external_stream() -> None:
-    @fn
-    async def activity(_ctx: Context, test: Stream[int] = Defer) -> int:
+    @durable
+    async def activity(_ctx: Context, test: Stream[int] = Provided) -> int:
         t = 0
         async for value in test:
             t += value
@@ -212,8 +212,8 @@ async def test_external_stream() -> None:
 
 @pytest.mark.asyncio
 async def test_external_stream_write() -> None:
-    @fn
-    async def activity(_ctx: Context, writer: StreamWriter[int] = Defer) -> int:
+    @durable
+    async def activity(_ctx: Context, writer: StreamWriter[int] = Provided) -> int:
         for i in range(10):
             await writer.send(i)
         await writer.close()
@@ -238,7 +238,7 @@ async def test_external_stream_write() -> None:
 
 @pytest.mark.asyncio
 async def test_watch_stream() -> None:
-    @fn
+    @durable
     async def activity(ctx: Context) -> int:
         with ctx.annotate(labels={"name": "output"}):
             _, sink = await ctx.create_stream(int)
@@ -264,7 +264,7 @@ async def test_watch_stream() -> None:
         assert await b == list(range(10))
 
 
-@fn
+@durable
 async def activity(ctx: Context) -> int:
     for _i in range(100):
         _ = await ctx.barrier()

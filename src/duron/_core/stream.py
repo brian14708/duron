@@ -17,7 +17,14 @@ from typing_extensions import (
     override,
 )
 
-from duron._core.ops import FnCall, StreamClose, StreamCreate, StreamEmit, create_op
+from duron._core.ops import (
+    FnCall,
+    OpAnnotations,
+    StreamClose,
+    StreamCreate,
+    StreamEmit,
+    create_op,
+)
 from duron._loop import wrap_future
 from duron.typing import Unspecified
 
@@ -28,7 +35,6 @@ if TYPE_CHECKING:
 
     from duron._core.context import Context
     from duron._loop import EventLoop, OpFuture
-    from duron.codec import JSONValue
     from duron.typing import TypeHint
 
     _P = ParamSpec("_P")
@@ -176,10 +182,9 @@ class StreamOp(Generic[_T, _S_co]):
 async def create_stream(
     loop: EventLoop,
     dtype: TypeHint[_T],
+    annotations: OpAnnotations,
     *,
     external: bool = False,
-    metadata: dict[str, JSONValue] | None = None,
-    labels: dict[str, str] | None = None,
 ) -> tuple[Stream[_T, None], StreamWriter[_T]]:
     assert asyncio.get_running_loop() is loop  # noqa: S101
     s: ObserverStream[_T, None] = ObserverStream()
@@ -188,8 +193,7 @@ async def create_stream(
         StreamCreate(
             dtype=dtype,
             observer=s,
-            metadata=metadata,
-            labels=labels,
+            annotations=annotations,
         ),
     )
     if external:
@@ -393,7 +397,9 @@ class _ResumableGuard(Generic[_U, _T]):
             StreamCreate(
                 dtype=self._dtype,
                 observer=self._stream,
-                labels={"name": self._stream.name()},
+                annotations=OpAnnotations(
+                    labels={"name": self._stream.name()}, metadata={}
+                ),
             ),
         )
         sink: StreamWriter[_U] = _ExternalWriter(sid, self._loop)
@@ -443,11 +449,11 @@ class _StreamRun(ObserverStream[_U, _T], Generic[_U, _T]):
             self._event_loop,
             FnCall(
                 callable=self._worker,
-                name=self.name(),
                 args=(sink,),
                 kwargs={},
                 return_type=Unspecified,
                 context=contextvars.copy_context(),
+                annotations=OpAnnotations.extend(None, name=self.name()),
             ),
         )
         self._task = cast("OpFuture[_T]", op)

@@ -4,7 +4,6 @@ import asyncio
 import contextvars
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
 from random import Random
 from typing import TYPE_CHECKING, cast
 from typing_extensions import (
@@ -16,11 +15,16 @@ from typing_extensions import (
     overload,
 )
 
-from duron._core.ops import Barrier, ExternalPromiseCreate, FnCall, create_op
+from duron._core.ops import (
+    Barrier,
+    ExternalPromiseCreate,
+    FnCall,
+    OpAnnotations,
+    create_op,
+)
 from duron._core.signal import create_signal
 from duron._core.stream import create_stream, run_stream
-from duron._decorator.op import CheckpointOp, Op
-from duron._util.linked_dict import LinkedDict
+from duron._decorator.effect import CheckpointFn, EffectFn
 from duron.typing import inspect_function
 
 if TYPE_CHECKING:
@@ -30,7 +34,7 @@ if TYPE_CHECKING:
 
     from duron._core.signal import Signal, SignalWriter
     from duron._core.stream import Stream, StreamWriter
-    from duron._decorator.fn import Fn
+    from duron._decorator.durable import DurableFn
     from duron._loop import EventLoop
     from duron.codec import JSONValue
     from duron.typing import TypeHint
@@ -40,16 +44,7 @@ if TYPE_CHECKING:
     _P = ParamSpec("_P")
 
 _context: ContextVar[Context | None] = ContextVar("duron.context", default=None)
-
-
-@final
-@dataclass(slots=True)
-class Annotation:
-    metadata: LinkedDict[str, JSONValue]
-    labels: LinkedDict[str, str]
-
-
-_annotation: ContextVar[Annotation | None] = ContextVar(
+_annotation: ContextVar[OpAnnotations | None] = ContextVar(
     "duron.context.annotation", default=None
 )
 
@@ -58,7 +53,7 @@ _annotation: ContextVar[Annotation | None] = ContextVar(
 class Context:
     __slots__ = ("_fn", "_loop", "_token")
 
-    def __init__(self, task: Fn[..., object], loop: EventLoop) -> None:
+    def __init__(self, task: DurableFn[..., object], loop: EventLoop) -> None:
         self._loop: EventLoop = loop
         self._fn = task
         self._token: Token[Context | None] | None = None
@@ -89,7 +84,7 @@ class Context:
     @overload
     async def run(
         self,
-        fn: Callable[_P, Coroutine[Any, Any, _T]] | Op[_P, _T],
+        fn: Callable[_P, Coroutine[Any, Any, _T]] | EffectFn[_P, _T],
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
@@ -97,7 +92,7 @@ class Context:
     @overload
     async def run(
         self,
-        fn: Callable[_P, _T] | CheckpointOp[_P, _T, Any],
+        fn: Callable[_P, _T] | CheckpointFn[_P, _T, Any],
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
@@ -105,8 +100,8 @@ class Context:
     async def run(
         self,
         fn: Callable[_P, Coroutine[Any, Any, _T] | _T]
-        | Op[_P, _T]
-        | CheckpointOp[_P, _T, Any],
+        | EffectFn[_P, _T]
+        | CheckpointFn[_P, _T, Any],
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
@@ -115,39 +110,38 @@ class Context:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
 
-        if isinstance(fn, CheckpointOp):
+        if isinstance(fn, CheckpointFn):
             async with self.run_stream(
-                cast("CheckpointOp[_P, _T, Any]", fn), *args, **kwargs
+                cast("CheckpointFn[_P, _T, Any]", fn), *args, **kwargs
             ) as stream:
                 await stream.discard()
                 return await stream
 
-        if isinstance(fn, Op):
+        if isinstance(fn, EffectFn):
             return_type = fn.return_type
-            metadata = fn.metadata
         else:
             return_type = inspect_function(fn).return_type
-            metadata = None
 
-        callable_ = fn.fn if isinstance(fn, Op) else fn
+        callable_ = fn.fn if isinstance(fn, EffectFn) else fn
         op = create_op(
             self._loop,
             FnCall(
                 callable=callable_,
-                name=cast("str", getattr(callable_, "__name__", repr(callable_))),
                 args=args,
                 kwargs=kwargs,
                 return_type=return_type,
                 context=contextvars.copy_context(),
-                metadata=self._get_metadata(metadata),
-                labels=self._get_labels(None),
+                annotations=OpAnnotations.extend(
+                    _annotation.get(),
+                    name=cast("str", getattr(callable_, "__name__", repr(callable_))),
+                ),
             ),
         )
         return cast("_T", await op)
 
     def run_stream(
         self,
-        fn: CheckpointOp[_P, _T, _S],
+        fn: CheckpointFn[_P, _T, _S],
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
@@ -180,8 +174,11 @@ class Context:
             self._loop,
             dtype,
             external=external,
-            metadata=self._get_metadata(None),
-            labels=self._get_labels({"name": name} if name else None),
+            annotations=OpAnnotations.extend(
+                _annotation.get(),
+                name=name,
+                labels={"name": name} if name else None,
+            ),
         )
 
     async def create_signal(
@@ -193,13 +190,14 @@ class Context:
         return await create_signal(
             self._loop,
             dtype,
-            metadata=self._get_metadata(None),
-            labels=self._get_labels({"name": name} if name else None),
+            annotations=OpAnnotations.extend(
+                _annotation.get(),
+                labels={"name": name} if name else None,
+            ),
         )
 
     async def create_promise(
-        self,
-        dtype: type[_T],
+        self, dtype: type[_T], /, *, name: str | None = None
     ) -> tuple[str, asyncio.Future[_T]]:
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
@@ -207,9 +205,12 @@ class Context:
         fut = create_op(
             self._loop,
             ExternalPromiseCreate(
-                metadata=self._get_metadata(None),
                 return_type=dtype,
-                labels=self._get_labels(None),
+                annotations=OpAnnotations.extend(
+                    _annotation.get(),
+                    name=name,
+                    labels={"name": name} if name else None,
+                ),
             ),
         )
         return (
@@ -257,40 +258,9 @@ class Context:
 
         current = _annotation.get()
         token = _annotation.set(
-            Annotation(
-                metadata=current.metadata.extend(metadata)
-                if current
-                else LinkedDict(metadata),
-                labels=current.labels.extend(labels) if current else LinkedDict(labels),
-            )
+            OpAnnotations.extend(current, metadata=metadata, labels=labels)
         )
         try:
             yield
         finally:
             _annotation.reset(token)
-
-    @staticmethod
-    def _get_metadata(
-        merge: dict[str, JSONValue] | None,
-    ) -> dict[str, JSONValue] | None:
-        anno = _annotation.get()
-        current = anno.metadata if anno else None
-        if current is None:
-            return merge
-        if merge:
-            return current.extend(merge).materialize()
-        return current.materialize()
-
-    @staticmethod
-    def _get_labels(
-        merge: dict[str, str] | None,
-    ) -> dict[str, str] | None:
-        anno = _annotation.get()
-        current = anno.labels if anno else None
-        if merge:
-            if current is None:
-                return merge
-            return current.extend(merge).materialize()
-        if current is None:
-            return None
-        return current.materialize()

@@ -13,7 +13,7 @@ class _Unspecified:
 
 
 Unspecified: Final = _Unspecified()
-Defer: Final = cast("Any", ...)
+Provided: Final = cast("Any", ...)
 
 
 MYPY = False

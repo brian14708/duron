@@ -5,13 +5,13 @@ from typing import cast
 
 import pytest
 
-from duron import Context, SignalInterrupt, fn
+from duron import Context, SignalInterrupt, durable
 from duron.contrib.storage import MemoryLogStorage
 
 
 @pytest.mark.asyncio
 async def test_signal() -> None:
-    @fn()
+    @durable()
     async def activity(ctx: Context) -> list[int]:
         signal, handle = await ctx.create_signal(int)
 

@@ -67,7 +67,7 @@ extra-standard-library = ["typing_extensions"]
 
 [tool.ruff.lint.flake8-type-checking]
 runtime-evaluated-base-classes = ["typing_extensions.TypedDict"]
-runtime-evaluated-decorators = ["duron.fn", "duron.op"]
+runtime-evaluated-decorators = ["duron.durable", "duron.effect"]
 exempt-modules = ["typing", "typing_extensions"]
 
 [tool.ruff.lint.flake8-tidy-imports]

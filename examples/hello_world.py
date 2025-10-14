@@ -14,7 +14,7 @@ from duron.tracing import Tracer, setup_tracing
 logger = logging.getLogger(__name__)
 
 
-@duron.op
+@duron.effect
 async def work(name: str) -> str:
     print("⚡ Preparing to greet...")
     await asyncio.sleep(2)
@@ -22,7 +22,7 @@ async def work(name: str) -> str:
     return f"Hello, {name}!"
 
 
-@duron.op
+@duron.effect
 async def generate_lucky_number() -> int:
     print("⚡ Generating lucky number...")
     await asyncio.sleep(1)
@@ -31,17 +31,17 @@ async def generate_lucky_number() -> int:
     return random.randint(1, 100)
 
 
-@duron.op(checkpoint=True, initial=lambda: 0, reducer=lambda a, _b: a + 10)
-async def count_up(count: int, target: int) -> AsyncGenerator[None, int]:
+@duron.effect(checkpoint=True, initial=lambda: 0, reducer=int.__add__)
+async def count_up(count: int, target: int) -> AsyncGenerator[int, int]:
     print("⚡ Counting...")
     await asyncio.sleep(0.5)
     while count < target:
-        count = yield
+        count = yield 10
         print(f"⚡ Current count: {count}")
         await asyncio.sleep(0.05)
 
 
-@duron.fn
+@duron.durable
 async def greeting_flow(ctx: duron.Context, name: str) -> str:
     message, lucky_number = await asyncio.gather(
         ctx.run(work, name), ctx.run(generate_lucky_number)

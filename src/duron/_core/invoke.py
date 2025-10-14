@@ -29,7 +29,7 @@ from duron._core.signal import Signal
 from duron._core.stream import ObserverStream, Stream, StreamWriter
 from duron._loop import EventLoop, create_loop
 from duron.codec import Codec, JSONValue
-from duron.log import derive_id, is_entry, random_id, set_labels, set_metadata
+from duron.log import derive_id, is_entry, random_id, set_annotations
 from duron.tracing import (
     NULL_SPAN,
     Tracer,
@@ -39,7 +39,7 @@ from duron.typing import Unspecified, inspect_function
 
 if TYPE_CHECKING:
     import contextvars
-    from collections.abc import Callable, Coroutine
+    from collections.abc import Callable, Coroutine, Mapping
     from contextvars import Token
     from types import TracebackType
 
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
         StreamObserver,
     )
     from duron._core.signal import SignalWriter
-    from duron._decorator.fn import Fn
+    from duron._decorator.durable import DurableFn
     from duron._loop import OpFuture, WaitSet
     from duron.codec import Codec
     from duron.log import (
@@ -84,7 +84,7 @@ class Invoke(Generic[_P, _T_co]):
 
     def __init__(
         self,
-        fn: Fn[_P, _T_co],
+        fn: DurableFn[_P, _T_co],
         log: LogStorage,
     ) -> None:
         self._fn = fn
@@ -99,7 +99,7 @@ class Invoke(Generic[_P, _T_co]):
 
     @staticmethod
     def invoke(
-        fn: Fn[_P, _T_co],
+        fn: DurableFn[_P, _T_co],
         log: LogStorage,
         tracer: Tracer | None,
     ) -> contextlib.AbstractAsyncContextManager[Invoke[_P, _T_co]]:
@@ -253,7 +253,7 @@ class InitParams(TypedDict):
 
 
 async def _invoke_prelude(
-    job_fn: Fn[..., _T_co],
+    job_fn: DurableFn[..., _T_co],
     type_info: FunctionType,
     init: Callable[[], InitParams],
 ) -> _T_co:
@@ -350,7 +350,7 @@ class _InvokeRun:
             tuple[
                 list[StreamObserver[object]],
                 TypeHint[Any],
-                dict[str, str] | None,
+                Mapping[str, str],
                 EntrySpan | None,
             ],
         ] = {}
@@ -570,10 +570,13 @@ class _InvokeRun:
                     "type": "promise.create",
                 }
 
-                set_metadata(promise_create_entry, op.metadata)
-                set_labels(promise_create_entry, op.labels)
+                set_annotations(
+                    promise_create_entry,
+                    metadata=op.annotations.metadata,
+                    labels=op.annotations.labels,
+                )
                 if self._tracer:
-                    name = op.name
+                    name = op.annotations.name
                     entry_span = self._tracer.new_entry_span(
                         name,
                         promise_create_entry,
@@ -635,7 +638,7 @@ class _InvokeRun:
 
                 # Check if any external watchers match
                 for matcher, watcher in self._watchers:
-                    if _match_labels(op.labels or {}, matcher):
+                    if _match_labels(op.annotations.labels, matcher):
                         ob.append(watcher)
 
                 stream_create_entry: StreamCreateEntry = {
@@ -644,19 +647,26 @@ class _InvokeRun:
                     "type": "stream.create",
                 }
                 if self._tracer:
-                    span_name = op.labels.get("name") if op.labels else None
                     entry_span = self._tracer.new_entry_span(
-                        "stream:" + span_name if span_name else "stream",
+                        "stream:" + op.annotations.name,
                         stream_create_entry,
                         None,
                     )
                 else:
                     entry_span = None
 
-                self._streams[stream_id] = (ob, op.dtype, op.labels, entry_span)
+                self._streams[stream_id] = (
+                    ob,
+                    op.dtype,
+                    op.annotations.labels,
+                    entry_span,
+                )
 
-                set_metadata(stream_create_entry, op.metadata)
-                set_labels(stream_create_entry, op.labels)
+                set_annotations(
+                    stream_create_entry,
+                    metadata=op.annotations.metadata,
+                    labels=op.annotations.labels,
+                )
                 await self.enqueue_log(stream_create_entry)
 
             case StreamEmit():
@@ -714,8 +724,11 @@ class _InvokeRun:
                     "id": id_,
                     "type": "promise.create",
                 }
-                set_metadata(promise_create_entry, op.metadata)
-                set_labels(promise_create_entry, op.labels)
+                set_annotations(
+                    promise_create_entry,
+                    metadata=op.annotations.metadata,
+                    labels=op.annotations.labels,
+                )
                 self._tasks[id_] = (asyncio.Future(), op.return_type)
                 await self.enqueue_log(promise_create_entry)
             case _:
@@ -755,7 +768,7 @@ class _InvokeRun:
         cnt = 0
         ts = self.now()
         for stream_id, (_, _, lb, entry_span) in self._streams.items():
-            if _match_labels(lb or {}, matcher):
+            if lb and _match_labels(lb, matcher):
                 entry: StreamEmitEntry = {
                     "ts": ts,
                     "id": random_id(),
@@ -787,7 +800,7 @@ class _InvokeRun:
         matching_streams = [
             (stream_id, span)
             for stream_id, (_, _, lb, span) in self._streams.items()
-            if _match_labels(lb or {}, matcher)
+            if lb and _match_labels(lb, matcher)
         ]
 
         for stream_id, entry_span in matching_streams:
@@ -831,7 +844,7 @@ def _decode_error(error_info: ErrorInfo) -> BaseException:
     return Exception(f"[{error_info['code']}] {error_info['message']}")
 
 
-def _match_labels(labels: dict[str, str], matcher: dict[str, str]) -> bool:
+def _match_labels(labels: Mapping[str, str], matcher: dict[str, str]) -> bool:
     """Check if all key-value pairs in matcher are present in labels.
 
     Returns:

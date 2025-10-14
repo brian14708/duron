@@ -10,7 +10,7 @@ from hashlib import blake2b
 from typing import TYPE_CHECKING, cast
 from typing_extensions import Self, override
 
-from duron.log import set_metadata
+from duron.log import set_annotations
 from duron.tracing._span import NULL_SPAN
 
 if TYPE_CHECKING:
@@ -85,9 +85,9 @@ class Tracer:
         }
         if attributes:
             event["attributes"] = attributes
-        set_metadata(
+        set_annotations(
             entry,
-            {
+            metadata={
                 "trace.id": self.trace_id,
                 "trace.event": cast("dict[str, JSONValue]", event),
             },
@@ -128,9 +128,9 @@ class EntrySpan:
             "span_id": self.id,
             "ts": time.time_ns() // 1000,
         }
-        set_metadata(
+        set_annotations(
             entry,
-            {
+            metadata={
                 "trace.id": self.tracer.trace_id,
                 "trace.event": cast("dict[str, JSONValue]", event),
             },
@@ -138,9 +138,9 @@ class EntrySpan:
 
     def attach(self, entry: Entry, event: Event) -> None:
         event["span_id"] = self.id
-        set_metadata(
+        set_annotations(
             entry,
-            {
+            metadata={
                 "trace.id": self.tracer.trace_id,
                 "trace.event": cast("dict[str, JSONValue]", event),
             },

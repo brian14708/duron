@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, TypeAdapter
 from rich.console import Console
 
 import duron
-from duron import Defer, Signal, SignalInterrupt, Stream, StreamWriter
+from duron import Provided, Signal, SignalInterrupt, Stream, StreamWriter
 from duron.codec import Codec
 from duron.contrib.storage import FileLogStorage
 from duron.tracing import Tracer, span
@@ -51,12 +51,12 @@ class PydanticCodec(Codec):
         return cast("object", TypeAdapter(expected_type).validate_python(encoded))
 
 
-@duron.fn(codec=PydanticCodec())
+@duron.durable(codec=PydanticCodec())
 async def agent_fn(
     ctx: duron.Context,
-    input_: Stream[str] = Defer,
-    signal: Signal[None] = Defer,
-    output: StreamWriter[tuple[str, str]] = Defer,
+    input_: Stream[str] = Provided,
+    signal: Signal[None] = Provided,
+    output: StreamWriter[tuple[str, str]] = Provided,
 ) -> None:
     history: list[ChatCompletionMessageParam] = [
         {
@@ -133,7 +133,7 @@ async def agent_fn(
                         break
 
 
-@duron.op
+@duron.effect
 async def call_tool(params: ChatCompletionMessageToolCallUnion) -> tuple[str, str]:  # noqa: RUF029
     if params.type != "function" or not params.function.name:
         return params.id, '{"status": "error", "message": "Invalid tool call"}'
@@ -207,9 +207,7 @@ async def completion(
     ctx: duron.Context,
     messages: list[ChatCompletionMessageParam],
 ) -> ChatCompletion:
-    @duron.op(
-        metadata={"type": "chat.completions.create"},
-    )
+    @duron.effect
     async def _completion(
         messages: list[ChatCompletionMessageParam],
     ) -> ChatCompletion:

@@ -7,14 +7,22 @@ from collections import deque
 from typing import TYPE_CHECKING, Generic
 from typing_extensions import Any, TypeVar, final
 
-from duron._core.ops import Barrier, StreamClose, StreamCreate, StreamEmit, create_op
+from duron._core.ops import (
+    Barrier,
+    StreamClose,
+    StreamCreate,
+    StreamEmit,
+    create_op,
+)
 from duron._loop import wrap_future
 
 if TYPE_CHECKING:
     from types import TracebackType
 
+    from duron._core.ops import (
+        OpAnnotations,
+    )
     from duron._loop import EventLoop
-    from duron.codec import JSONValue
     from duron.typing._hint import TypeHint
 
 _In_contra = TypeVar("_In_contra", contravariant=True)
@@ -115,9 +123,7 @@ class Signal(Generic[_In_contra]):
 async def create_signal(
     loop: EventLoop,
     dtype: TypeHint[_In_contra],
-    *,
-    metadata: dict[str, JSONValue] | None = None,
-    labels: dict[str, str] | None = None,
+    annotations: OpAnnotations,
 ) -> tuple[Signal[_In_contra], SignalWriter[_In_contra]]:
     assert asyncio.get_running_loop() is loop  # noqa: S101
     s: Signal[_In_contra] = Signal(loop)
@@ -126,8 +132,7 @@ async def create_signal(
         StreamCreate(
             dtype=dtype,
             observer=s,
-            metadata=metadata,
-            labels=labels,
+            annotations=annotations,
         ),
     )
     return (s, SignalWriter(sid, loop))

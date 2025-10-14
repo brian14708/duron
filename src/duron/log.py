@@ -10,7 +10,7 @@ from typing_extensions import NotRequired, TypedDict
 from duron.codec import JSONValue
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Mapping
     from typing import TypeGuard
 
 
@@ -89,24 +89,25 @@ def is_entry(entry: Entry | AnyEntry) -> TypeGuard[Entry]:
     }
 
 
-def set_metadata(entry: Entry, *metadata: dict[str, JSONValue] | None) -> None:
-    m = entry.get("metadata")
-    for md in metadata:
-        if md:
-            if m is None:
-                entry["metadata"] = m = {**md}
-            else:
-                m.update(md)
+def set_annotations(
+    entry: Entry,
+    *,
+    metadata: Mapping[str, JSONValue] | None = None,
+    labels: Mapping[str, str] | None = None,
+) -> None:
+    if metadata:
+        m = entry.get("metadata")
+        if m is None:
+            entry["metadata"] = {**metadata}
+        else:
+            m.update(metadata)
 
-
-def set_labels(entry: Entry, *labels: dict[str, str] | None) -> None:
-    lb = entry.get("labels")
-    for label_dict in labels:
-        if label_dict:
-            if lb is None:
-                entry["labels"] = lb = {**label_dict}
-            else:
-                lb.update(label_dict)
+    if labels:
+        lb = entry.get("labels")
+        if lb is None:
+            entry["labels"] = {**labels}
+        else:
+            lb.update(labels)
 
 
 class LogStorage(Protocol):

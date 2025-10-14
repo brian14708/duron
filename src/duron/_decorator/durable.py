@@ -38,7 +38,7 @@ _P = ParamSpec("_P")
 
 
 @dataclass(slots=True)
-class Fn(Generic[_P, _T_co]):
+class DurableFn(Generic[_P, _T_co]):
     codec: Codec
     fn: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]]
     inject: list[tuple[str, type, TypeHint[Any]]]
@@ -58,33 +58,33 @@ class Fn(Generic[_P, _T_co]):
 
 
 @overload
-def fn(
+def durable(
     f: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]],
     /,
-) -> Fn[_P, _T_co]: ...
+) -> DurableFn[_P, _T_co]: ...
 @overload
-def fn(
+def durable(
     *,
     codec: Codec | None = None,
 ) -> Callable[
     [Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]]],
-    Fn[_P, _T_co],
+    DurableFn[_P, _T_co],
 ]: ...
-def fn(
+def durable(
     f: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]] | None = None,
     /,
     *,
     codec: Codec | None = None,
 ) -> (
-    Fn[_P, _T_co]
+    DurableFn[_P, _T_co]
     | Callable[
         [Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]]],
-        Fn[_P, _T_co],
+        DurableFn[_P, _T_co],
     ]
 ):
     def decorate(
         fn: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]],
-    ) -> Fn[_P, _T_co]:
+    ) -> DurableFn[_P, _T_co]:
         info = inspect_function(fn)
         inject: list[tuple[str, type, TypeHint[Any]]] = []
         for name, param in info.parameter_types.items():
@@ -92,7 +92,7 @@ def fn(
             if ty:
                 inject.append((name, *ty))
         inject.sort()
-        return Fn(codec=codec or config.codec, fn=fn, inject=inject)
+        return DurableFn(codec=codec or config.codec, fn=fn, inject=inject)
 
     if f is not None:
         return decorate(f)

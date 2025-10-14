@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
-from duron import Context, StreamClosed, fn, op
+from duron import Context, StreamClosed, durable, effect
 from duron.contrib.storage import MemoryLogStorage
 
 if TYPE_CHECKING:
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 @pytest.mark.asyncio
 async def test_stream() -> None:
-    @fn()
+    @durable()
     async def activity(ctx: Context) -> None:
         stream, handle = await ctx.create_stream(int)
 
@@ -50,7 +50,7 @@ async def test_stream() -> None:
 
 @pytest.mark.asyncio
 async def test_stream_host() -> None:
-    @fn()
+    @durable()
     async def activity(ctx: Context) -> None:
         stream, handle = await ctx.create_stream(int, external=True)
 
@@ -73,9 +73,9 @@ async def test_run() -> None:
     sleep_idx = 3
     all_states: list[str] = []
 
-    @fn()
+    @durable()
     async def activity(ctx: Context) -> None:
-        @op(
+        @effect(
             checkpoint=True,
             initial=str,
             reducer=cast("Callable[[str, str], str]", operator.add),
@@ -107,9 +107,9 @@ async def test_run() -> None:
 
 @pytest.mark.asyncio
 async def test_stream_map() -> None:
-    @fn()
+    @durable()
     async def activity(ctx: Context) -> None:
-        @op(
+        @effect(
             checkpoint=True,
             initial=str,
             reducer=cast("Callable[[str, str], str]", operator.add),
@@ -133,7 +133,7 @@ async def test_stream_map() -> None:
 
 @pytest.mark.asyncio
 async def test_stream_peek() -> None:
-    @fn()
+    @durable()
     async def activity(ctx: Context) -> list[int]:
         stream, write = await ctx.create_stream(int, external=True)
 
@@ -173,9 +173,9 @@ async def test_stream_peek() -> None:
 
 @pytest.mark.asyncio
 async def test_stream_cross_loop() -> None:
-    @fn()
+    @durable()
     async def activity(ctx: Context) -> list[str]:
-        @op(
+        @effect(
             checkpoint=True,
             initial=str,
             reducer=cast("Callable[[str, str], str]", operator.add),
