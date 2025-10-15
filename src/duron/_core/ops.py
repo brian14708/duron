@@ -10,7 +10,6 @@ if TYPE_CHECKING:
     from contextvars import Context
 
     from duron._loop import EventLoop, OpFuture
-    from duron.codec import JSONValue
     from duron.typing import TypeHint
 
     _T = TypeVar("_T")
@@ -28,13 +27,8 @@ _EMPTY_DICT: dict[str, Any] = {}
 
 @frozen
 class OpAnnotations:
-    _metadata: dict[str, JSONValue]
     _labels: dict[str, str]
     _name: str | None
-
-    @property
-    def metadata(self) -> Mapping[str, JSONValue]:
-        return self._metadata
 
     @property
     def labels(self) -> Mapping[str, str]:
@@ -51,19 +45,16 @@ class OpAnnotations:
         base: OpAnnotations | None,
         *,
         name: str | None = None,
-        metadata: Mapping[str, JSONValue] | None = None,
         labels: Mapping[str, str] | None = None,
     ) -> OpAnnotations:
         if not base:
             return OpAnnotations(
-                _metadata={**metadata} if metadata else _EMPTY_DICT,
                 _labels={**labels} if labels else _EMPTY_DICT,
                 _name=name,
             )
 
         # OpAnnotations is immutable, so it's safe to use the existing dicts
         return OpAnnotations(
-            _metadata={**base._metadata, **metadata} if metadata else base._metadata,  # noqa: SLF001
             _labels={**base._labels, **labels} if labels else base._labels,  # noqa: SLF001
             _name=name if name is not None else base._name,  # noqa: SLF001
         )

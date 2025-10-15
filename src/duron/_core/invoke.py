@@ -530,7 +530,6 @@ class _InvokeRun:
 
                 set_annotations(
                     promise_create_entry,
-                    metadata=op.annotations.metadata,
                     labels=op.annotations.labels,
                 )
                 if self._tracer:
@@ -550,9 +549,7 @@ class _InvokeRun:
                         "promise_id": id_,
                     }
                     with (
-                        op_span.new_span(op.annotations.name, op.annotations.metadata)
-                        if op_span
-                        else NULL_SPAN
+                        op_span.new_span(op.annotations.name) if op_span else NULL_SPAN
                     ):
                         try:
                             result = op.callable(*op.args, **op.kwargs)
@@ -619,7 +616,6 @@ class _InvokeRun:
 
                 set_annotations(
                     stream_create_entry,
-                    metadata=op.annotations.metadata,
                     labels=op.annotations.labels,
                 )
                 await self.enqueue_log(stream_create_entry)
@@ -685,7 +681,6 @@ class _InvokeRun:
                 }
                 set_annotations(
                     promise_create_entry,
-                    metadata=op.annotations.metadata,
                     labels=op.annotations.labels,
                 )
                 if self._tracer:

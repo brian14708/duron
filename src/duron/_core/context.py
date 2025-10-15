@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-from contextlib import contextmanager
 from contextvars import ContextVar
 from random import Random
 from typing import TYPE_CHECKING, cast
@@ -29,7 +28,7 @@ from duron._decorator.effect import CheckpointFn, EffectFn
 from duron.typing import inspect_function
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Generator, Mapping
+    from collections.abc import Callable, Coroutine
     from contextvars import Token
     from types import TracebackType
 
@@ -37,7 +36,6 @@ if TYPE_CHECKING:
     from duron._core.stream import Stream, StreamWriter
     from duron._decorator.durable import DurableFn
     from duron._loop import EventLoop
-    from duron.codec import JSONValue
     from duron.typing import TypeHint
 
     _T = TypeVar("_T")
@@ -242,29 +240,6 @@ class Context:
             msg = "Context random can only be used in the context loop"
             raise RuntimeError(msg)
         return Random(self._loop.generate_op_id())  # noqa: S311
-
-    @contextmanager
-    def annotate(
-        self,
-        *,
-        labels: Mapping[str, str] | None = None,
-        metadata: Mapping[str, JSONValue] | None = None,
-    ) -> Generator[None, None, None]:
-        if asyncio.get_running_loop() is not self._loop:
-            msg = "Context labels can only be used in the context loop"
-            raise RuntimeError(msg)
-        if not labels and not metadata:
-            yield
-            return
-
-        current = _annotation.get()
-        token = _annotation.set(
-            OpAnnotations.extend(current, metadata=metadata, labels=labels)
-        )
-        try:
-            yield
-        finally:
-            _annotation.reset(token)
 
     @overload
     async def complete_promise(
