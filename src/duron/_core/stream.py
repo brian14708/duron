@@ -397,8 +397,9 @@ class _ResumableGuard(Generic[_U, _T]):
             StreamCreate(
                 dtype=self._dtype,
                 observer=self._stream,
-                annotations=OpAnnotations(
-                    labels={"name": self._stream.name()}, metadata={}
+                annotations=OpAnnotations.extend(
+                    None,
+                    name=self._stream.name(),
                 ),
             ),
         )

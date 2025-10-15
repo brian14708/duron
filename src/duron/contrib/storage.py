@@ -101,9 +101,6 @@ class FileLogStorage:
                 _ = f.write("\n")
                 return offset
 
-    async def flush(self, _token: bytes) -> None:
-        pass
-
 
 @final
 class MemoryLogStorage:
@@ -178,9 +175,6 @@ class MemoryLogStorage:
             self._entries.append(cast("AnyEntry", cast("object", entry)))
             self._condition.notify_all()
             return offset
-
-    async def flush(self, token: bytes) -> None:
-        pass
 
     async def entries(self) -> list[AnyEntry]:
         async with self._lock:

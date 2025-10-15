@@ -50,10 +50,13 @@ class Tracer:
         with self._lock:
             self._events.append(event)
 
-    def flush_events(self) -> tuple[str, list[dict[str, JSONValue]]]:
+    def pop_events(self, *, flush: bool) -> list[dict[str, JSONValue]]:
         with self._lock:
+            if len(self._events) < 16 and not flush:
+                return []
+
             old, self._events = self._events, []
-            return self.instance_id, cast("list[dict[str, JSONValue]]", old)
+            return cast("list[dict[str, JSONValue]]", old)
 
     def new_span(
         self,

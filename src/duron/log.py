@@ -131,9 +131,6 @@ class LogStorage(Protocol):
     @abstractmethod
     async def append(self, token: bytes, entry: Entry, /) -> int: ...
 
-    @abstractmethod
-    async def flush(self, token: bytes, /) -> None: ...
-
 
 def random_id() -> str:
     return binascii.b2a_base64(os.urandom(12), newline=False).decode()

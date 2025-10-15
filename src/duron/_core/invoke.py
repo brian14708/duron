@@ -358,19 +358,7 @@ class _InvokeRun:
         self._tracer: Tracer | None = Tracer.current()
 
     async def close(self) -> None:
-        if self._tracer:
-            tid, data = self._tracer.flush_events()
-            for i in range(0, len(data), 128):
-                trace_entry: Entry = {
-                    "ts": self.now(),
-                    "id": random_id(),
-                    "type": "annotate.trace",
-                    "events": data[i : i + 128],
-                    "metadata": {
-                        "trace.id": tid,
-                    },
-                }
-                await self.enqueue_log(trace_entry)
+        await self._send_traces(flush=True)
         if self._lease:
             await self._log.release_lease(self._lease)
             self._lease = None
@@ -425,19 +413,8 @@ class _InvokeRun:
 
         while waitset := await self._step():
             if self._tracer:
-                await waitset.block(self.now(), 100 * 1000)
-                tid, data = self._tracer.flush_events()
-                for i in range(0, len(data), 128):
-                    trace_entry: Entry = {
-                        "ts": self.now(),
-                        "id": random_id(),
-                        "type": "annotate.trace",
-                        "events": data[i : i + 128],
-                        "metadata": {
-                            "trace.id": tid,
-                        },
-                    }
-                    await self.enqueue_log(trace_entry)
+                await waitset.block(self.now(), 1_000_000)
+                await self._send_traces()
             else:
                 await waitset.block(self.now())
         return self._task.result()
@@ -458,6 +435,23 @@ class _InvokeRun:
                     new_ops = True
             if not new_ops:
                 return result
+
+    async def _send_traces(self, *, flush: bool = False) -> None:
+        if not self._tracer:
+            return
+        tid = self._tracer.instance_id
+        data = self._tracer.pop_events(flush=flush)
+        for i in range(0, len(data), 128):
+            trace_entry: Entry = {
+                "ts": self.now(),
+                "id": random_id(),
+                "type": "annotate.trace",
+                "events": data[i : i + 128],
+                "metadata": {
+                    "trace.id": tid,
+                },
+            }
+            await self.enqueue_log(trace_entry)
 
     async def handle_message(
         self,
@@ -548,7 +542,10 @@ class _InvokeRun:
         else:
             assert_type(e["type"], Literal["promise.create"])
 
-    async def enqueue_log(self, entry: Entry, *, flush: bool = False) -> None:
+    async def enqueue_log(
+        self,
+        entry: Entry,
+    ) -> None:
         if not self._running:
             self._pending_msg.append(entry)
         elif self._lease is None:
@@ -556,8 +553,6 @@ class _InvokeRun:
             return
         else:
             offset = await self._log.append(self._lease, entry)
-            if flush:
-                await self._log.flush(self._lease)
             await self.handle_message(offset, entry)
 
     async def enqueue_op(self, id_: str, fut: OpFuture[object]) -> None:
@@ -717,7 +712,7 @@ class _InvokeRun:
                     "id": id_,
                     "type": "barrier",
                 }
-                await self.enqueue_log(barrier_entry, flush=True)
+                await self.enqueue_log(barrier_entry)
             case ExternalPromiseCreate():
                 promise_create_entry = {
                     "ts": self.now(),
