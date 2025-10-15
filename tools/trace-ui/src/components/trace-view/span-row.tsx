@@ -133,7 +133,7 @@ export function SpanRow({
                   }}
                   title={event.name}
                 >
-                  <div className="h-full w-full bg-yellow-200 dark:bg-yellow-200" />
+                  <div className="h-full w-full bg-blue-300 dark:bg-blue-300" />
                   {/* Tooltip on hover */}
                   <div className="pointer-events-none absolute top-full left-1/2 z-50 mt-1 -translate-x-1/2 rounded bg-slate-900 px-2 py-1 text-xs whitespace-nowrap text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 dark:bg-slate-100 dark:text-slate-900">
                     {event.name}

@@ -50,7 +50,7 @@ export function TraceView({ file }: TraceViewProps) {
   const resize = useCallback((e: React.MouseEvent) => {
     if (isResizing.current) {
       const newWidth = window.innerWidth - e.clientX;
-      if (newWidth >= 256 && newWidth <= 600) {
+      if (newWidth >= 256 && newWidth <= window.innerWidth - 256) {
         setSidebarWidth(newWidth);
       }
     }

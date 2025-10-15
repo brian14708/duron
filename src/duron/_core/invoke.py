@@ -364,7 +364,7 @@ class _InvokeRun:
                 trace_entry: Entry = {
                     "ts": self.now(),
                     "id": random_id(),
-                    "type": "trace",
+                    "type": "annotate.trace",
                     "events": data[i : i + 128],
                     "metadata": {
                         "trace.id": tid,
@@ -431,7 +431,7 @@ class _InvokeRun:
                     trace_entry: Entry = {
                         "ts": self.now(),
                         "id": random_id(),
-                        "type": "trace",
+                        "type": "annotate.trace",
                         "events": data[i : i + 128],
                         "metadata": {
                             "trace.id": tid,
@@ -543,7 +543,7 @@ class _InvokeRun:
             id_ = e["id"]
             self._loop.post_completion(id_, result=offset)
             self._pending_ops.discard(id_)
-        elif e["type"] == "trace":
+        elif e["type"] == "annotate.trace":
             pass
         else:
             assert_type(e["type"], Literal["promise.create"])

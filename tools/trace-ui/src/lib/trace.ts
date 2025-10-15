@@ -125,7 +125,7 @@ export function parseTraceLog(filename: string, content: string): TraceFile {
         continue;
       }
       if (
-        parsed.type === "trace" &&
+        parsed.type === "annotate.trace" &&
         parsed["events"] &&
         Array.isArray(parsed["events"])
       ) {

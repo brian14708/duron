@@ -59,7 +59,7 @@ class BarrierEntry(_BaseEntry):
 
 
 class TraceEntry(_BaseEntry):
-    type: Literal["trace"]
+    type: Literal["annotate.trace"]
     events: list[dict[str, JSONValue]]
 
 
@@ -85,7 +85,7 @@ def is_entry(entry: Entry | AnyEntry) -> TypeGuard[Entry]:
         "stream.emit",
         "stream.complete",
         "barrier",
-        "trace",
+        "annotate.trace",
     }
 
 

@@ -24,20 +24,18 @@ async def work(name: str) -> str:
 
 @duron.effect
 async def generate_lucky_number() -> int:
-    print("⚡ Generating lucky number...")
+    logger.info("⚡ Generating lucky number...")
     await asyncio.sleep(1)
-    logger.warning("Generating a random lucky number between 1 and 100.")
-    print("⚡ Lucky number generated.")
+    logger.info("⚡ Lucky number generated.")
     return random.randint(1, 100)
 
 
 @duron.effect(checkpoint=True, initial=lambda: 0, reducer=int.__add__)
 async def count_up(count: int, target: int) -> AsyncGenerator[int, int]:
-    print("⚡ Counting...")
     await asyncio.sleep(0.5)
     while count < target:
         count = yield 10
-        print(f"⚡ Current count: {count}")
+        logger.info("⚡ Current count: %s", count)
         await asyncio.sleep(0.05)
 
 
@@ -60,9 +58,15 @@ async def run_workflow(name: str, log_file: Path) -> str:
 
 
 def main() -> None:
+    logging.basicConfig(
+        stream=sys.stdout,
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
     setup_tracing()
+
     result = asyncio.run(run_workflow("Alice", Path(sys.argv[1])))
-    print(f"Result: {result}")
+    logger.info("Result: %s", result)
 
 
 if __name__ == "__main__":
