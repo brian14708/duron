@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import sys
 import time
+from types import NoneType
 from typing import TYPE_CHECKING, Final, Generic, Literal, cast
 from typing_extensions import (
     Any,
@@ -19,6 +20,7 @@ from typing_extensions import (
 from duron._core.context import Context
 from duron._core.ops import (
     Barrier,
+    ExternalPromiseComplete,
     ExternalPromiseCreate,
     FnCall,
     StreamClose,
@@ -159,20 +161,20 @@ class Invoke(Generic[_P, _T_co]):
         self,
         id_: str,
         *,
-        error: BaseException,
+        exception: Exception,
     ) -> None: ...
     async def complete_promise(
         self,
         id_: str,
         *,
         result: object | None = None,
-        error: BaseException | None = None,
+        exception: Exception | None = None,
     ) -> None:
         if self._run is None:
             msg = "Job not started"
             raise RuntimeError(msg)
-        if error is not None:
-            await self._run.complete_external_promise(id_, error=error)
+        if exception is not None:
+            await self._run.complete_external_promise(id_, error=exception)
         elif result is not None:
             await self._run.complete_external_promise(id_, result=result)
         else:
@@ -261,6 +263,10 @@ async def _invoke_prelude(
     assert isinstance(loop, EventLoop)  # noqa: S101
 
     with Context(job_fn, loop) as ctx:
+        if Tracer.current():
+            promise_ = await ctx.create_promise(NoneType, name="Invoke")
+        else:
+            promise_ = None
         init_params = await ctx.run(init)
         if init_params["version"] != _CURRENT_VERSION:
             msg = "version mismatch"
@@ -294,10 +300,20 @@ async def _invoke_prelude(
             elif type_ is StreamWriter:
                 _, extra_kwargs[name] = await ctx.create_stream(dtype, name=name)
         try:
-            return await job_fn.fn(ctx, *args, **extra_kwargs, **kwargs)
+            result = await job_fn.fn(ctx, *args, **extra_kwargs, **kwargs)
+            if promise_:
+                await ctx.complete_promise(promise_[0], result=None)
+                await promise_[1]
+        except Exception as e:
+            if promise_:
+                await ctx.complete_promise(promise_[0], exception=e)
+                with contextlib.suppress(Exception):
+                    await promise_[1]
+            raise
         finally:
             for c in closer:
                 await c.close()
+        return result
 
 
 @final
@@ -344,7 +360,7 @@ class _InvokeRun:
         ] = {}
         self._pending_ops: set[str] = set()
         self._now = 0
-        self._tasks: dict[str, tuple[asyncio.Future[None], TypeHint[Any]]] = {}
+        self._tasks: dict[str, tuple[asyncio.Future[Any], TypeHint[Any]]] = {}
         self._streams: dict[
             str,
             tuple[
@@ -725,8 +741,29 @@ class _InvokeRun:
                     metadata=op.annotations.metadata,
                     labels=op.annotations.labels,
                 )
-                self._tasks[id_] = (asyncio.Future(), op.return_type)
+                pfut: asyncio.Future[object] = asyncio.Future()
+                if self._tracer:
+                    _ = self._tracer.new_op_span(
+                        op.annotations.name, promise_create_entry
+                    )
+                self._tasks[id_] = (pfut, op.return_type)
                 await self.enqueue_log(promise_create_entry)
+            case ExternalPromiseComplete():
+                promise_complete_entry: PromiseCompleteEntry = {
+                    "ts": self.now(),
+                    "id": id_,
+                    "type": "promise.complete",
+                    "promise_id": op.promise_id,
+                }
+                if op.exception is not None:
+                    promise_complete_entry["error"] = _encode_error(op.exception)
+                else:
+                    promise_complete_entry["result"] = self._codec.encode_json(op.value)
+
+                if self._tracer:
+                    self._tracer.end_op_span(op.promise_id, promise_complete_entry)
+                await self.enqueue_log(promise_complete_entry)
+                self._loop.post_completion(id_, result=None)
             case _:
                 assert_never(op)
 
@@ -754,6 +791,8 @@ class _InvokeRun:
         else:
             msg = "Either result or error must be provided"
             raise ValueError(msg)
+        if self._tracer:
+            self._tracer.end_op_span(id_, entry)
         await self.enqueue_log(entry)
 
     async def send_stream(

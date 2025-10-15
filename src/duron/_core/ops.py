@@ -113,7 +113,22 @@ class ExternalPromiseCreate:
     annotations: OpAnnotations
 
 
-Op = FnCall | StreamCreate | StreamEmit | StreamClose | Barrier | ExternalPromiseCreate
+@frozen
+class ExternalPromiseComplete:
+    promise_id: str
+    value: object
+    exception: BaseException | None
+
+
+Op = (
+    FnCall
+    | StreamCreate
+    | StreamEmit
+    | StreamClose
+    | Barrier
+    | ExternalPromiseCreate
+    | ExternalPromiseComplete
+)
 
 
 @overload
@@ -128,5 +143,7 @@ def create_op(loop: EventLoop, params: StreamClose) -> OpFuture[None]: ...
 def create_op(loop: EventLoop, params: Barrier) -> OpFuture[int]: ...
 @overload
 def create_op(loop: EventLoop, params: ExternalPromiseCreate) -> OpFuture[object]: ...
+@overload
+def create_op(loop: EventLoop, params: ExternalPromiseComplete) -> OpFuture[None]: ...
 def create_op(loop: EventLoop, params: Op) -> OpFuture[Any]:
     return loop.create_op(params, external=asyncio.get_running_loop() is not loop)

@@ -100,6 +100,9 @@ class Tracer:
             tracer=self,
         )
 
+    def end_op_span(self, origin_entry_id: str, entry: Entry) -> None:
+        OpSpan(id=_derive_id(origin_entry_id), tracer=self).end(entry)
+
     @staticmethod
     def current() -> Tracer | None:
         return current_tracer.get()

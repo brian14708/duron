@@ -17,6 +17,7 @@ from typing_extensions import (
 
 from duron._core.ops import (
     Barrier,
+    ExternalPromiseComplete,
     ExternalPromiseCreate,
     FnCall,
     OpAnnotations,
@@ -264,3 +265,33 @@ class Context:
             yield
         finally:
             _annotation.reset(token)
+
+    @overload
+    async def complete_promise(
+        self,
+        id_: str,
+        *,
+        result: object,
+    ) -> None: ...
+    @overload
+    async def complete_promise(
+        self,
+        id_: str,
+        *,
+        exception: Exception,
+    ) -> None: ...
+    async def complete_promise(
+        self,
+        id_: str,
+        *,
+        result: object | None = None,
+        exception: Exception | None = None,
+    ) -> None:
+        await create_op(
+            self._loop,
+            ExternalPromiseComplete(
+                promise_id=id_,
+                value=result,
+                exception=exception,
+            ),
+        )
