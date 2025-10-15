@@ -311,6 +311,15 @@ class EventLoop(asyncio.AbstractEventLoop):
 
     @override
     def close(self) -> None:
+        while self._ops:
+            ops, self._ops = self._ops, {}
+            for op in ops.values():
+                op.cancel()
+                p = self.poll_completion(op)
+                if p is not None:
+                    logger.warning(
+                        "Event loop closed with pending operations: %r", p.ops
+                    )
         while self._timers:
             th = heappop(self._timers)
             th.cancel()
