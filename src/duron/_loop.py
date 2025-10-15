@@ -283,14 +283,14 @@ class EventLoop(asyncio.AbstractEventLoop):
         self,
         id_: str,
         *,
-        exception: BaseException,
+        exception: Exception | asyncio.CancelledError,
     ) -> None: ...
     def post_completion(
         self,
         id_: str,
         *,
         result: object = None,
-        exception: BaseException | None = None,
+        exception: Exception | asyncio.CancelledError | None = None,
     ) -> None:
         if op := self._ops.pop(id_, None):
             if op.done():

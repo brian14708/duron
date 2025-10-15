@@ -81,7 +81,7 @@ class FnCall:
 
 class StreamObserver(Protocol, Generic[_In_contra]):
     def on_next(self, log_offset: int, value: _In_contra, /) -> None: ...
-    def on_close(self, log_offset: int, error: BaseException | None, /) -> None: ...
+    def on_close(self, log_offset: int, error: Exception | None, /) -> None: ...
 
 
 @frozen
@@ -100,7 +100,7 @@ class StreamEmit:
 @frozen
 class StreamClose:
     stream_id: str
-    exception: BaseException | None
+    exception: Exception | None
 
 
 @frozen
@@ -117,7 +117,7 @@ class ExternalPromiseCreate:
 class ExternalPromiseComplete:
     promise_id: str
     value: object
-    exception: BaseException | None
+    exception: Exception | None
 
 
 Op = (

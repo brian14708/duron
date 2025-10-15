@@ -47,7 +47,7 @@ _In_contra = TypeVar("_In_contra", contravariant=True)
 
 class StreamWriter(Protocol, Generic[_In_contra]):
     async def send(self, value: _In_contra, /) -> None: ...
-    async def close(self, error: BaseException | None = None, /) -> None: ...
+    async def close(self, error: Exception | None = None, /) -> None: ...
 
 
 @final
@@ -64,10 +64,10 @@ class _Writer(Generic[_In_contra]):
             StreamEmit(stream_id=self._stream_id, value=value),
         )
 
-    async def close(self, error: BaseException | None = None, /) -> None:
+    async def close(self, exception: Exception | None = None, /) -> None:
         await create_op(
             self._loop,
-            StreamClose(stream_id=self._stream_id, exception=error),
+            StreamClose(stream_id=self._stream_id, exception=exception),
         )
 
 
@@ -87,11 +87,11 @@ class _ExternalWriter(Generic[_In_contra]):
             ),
         )
 
-    async def close(self, error: BaseException | None = None, /) -> None:
+    async def close(self, exception: Exception | None = None, /) -> None:
         await wrap_future(
             create_op(
                 self._loop,
-                StreamClose(stream_id=self._stream_id, exception=error),
+                StreamClose(stream_id=self._stream_id, exception=exception),
             ),
         )
 
@@ -209,7 +209,7 @@ class StreamClosed(Exception):  # noqa: N818
         self,
         *args: object,
         offset: int,
-        reason: BaseException | None,
+        reason: Exception | None,
     ) -> None:
         super().__init__(*args)
         self.offset = offset
@@ -271,7 +271,7 @@ class ObserverStream(Stream[_T, _S_co], Generic[_T, _S_co]):
         if self._loop and self._event:
             _ = self._loop.call_soon(self._event.set)
 
-    def _send_close(self, offset: int, exc: BaseException | None) -> None:
+    def _send_close(self, offset: int, exc: Exception | None) -> None:
         self._buffer.append((offset, StreamClosed(offset=offset, reason=exc)))
         if self._loop and self._event:
             _ = self._loop.call_soon(self._event.set)
@@ -279,7 +279,7 @@ class ObserverStream(Stream[_T, _S_co], Generic[_T, _S_co]):
     def on_next(self, offset: int, value: _T) -> None:
         self._send(offset, value)
 
-    def on_close(self, offset: int, exc: BaseException | None) -> None:
+    def on_close(self, offset: int, exc: Exception | None) -> None:
         self._send_close(offset, exc)
 
     @override
@@ -434,7 +434,7 @@ class _StreamRun(ObserverStream[_U, _T], Generic[_U, _T]):
         super().__init__()
         self._event_loop = loop
         self._reducer = reducer
-        self._closed: bool | BaseException = False
+        self._closed: bool | Exception = False
         self._current: _T = initial
         self._fn = fn
         self._args = args
@@ -485,8 +485,8 @@ class _StreamRun(ObserverStream[_U, _T], Generic[_U, _T]):
         except Exception as e:
             await sink.close(e)
             raise
-        except CancelledError as e:
-            self._send_close(-1, e)
+        except CancelledError:
+            self._send_close(-1, RuntimeError("worker cancelled"))
             raise
 
     @override
@@ -503,7 +503,7 @@ class _StreamRun(ObserverStream[_U, _T], Generic[_U, _T]):
         super().on_next(offset, value)
 
     @override
-    def on_close(self, offset: int, exc: BaseException | None) -> None:
+    def on_close(self, offset: int, exc: Exception | None) -> None:
         if self._enabled:
             self._closed = True if exc is None else exc
         super().on_close(offset, exc)

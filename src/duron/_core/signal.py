@@ -110,7 +110,7 @@ class Signal(Generic[_In_contra]):
             if toffset < offset:
                 _ = self._loop.call_soon(t.cancel, _SENTINAL)
 
-    def on_close(self, _offset: int, _exc: BaseException | None) -> None:
+    def on_close(self, _offset: int, _exc: Exception | None) -> None:
         pass
 
     def _flush(self) -> None:

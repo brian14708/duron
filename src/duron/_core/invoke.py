@@ -41,6 +41,7 @@ from duron.typing import Unspecified, inspect_function
 
 if TYPE_CHECKING:
     import contextvars
+    from asyncio.exceptions import CancelledError
     from collections.abc import Callable, Coroutine, Mapping
     from contextvars import Token
     from types import TracebackType
@@ -174,7 +175,7 @@ class Invoke(Generic[_P, _T_co]):
             msg = "Job not started"
             raise RuntimeError(msg)
         if exception is not None:
-            await self._run.complete_external_promise(id_, error=exception)
+            await self._run.complete_external_promise(id_, exception=exception)
         elif result is not None:
             await self._run.complete_external_promise(id_, result=result)
         else:
@@ -543,7 +544,11 @@ class _InvokeRun:
                 self._loop.post_completion(id_, result=None)
                 for ob in obs:
                     if "error" in e:
-                        ob.on_close(offset, _decode_error(e["error"]))
+                        exc_ = _decode_error(e["error"])
+                        if isinstance(exc_, Exception):
+                            ob.on_close(offset, exc_)
+                        else:
+                            ob.on_close(offset, RuntimeError("unknown reason close"))
                     else:
                         ob.on_close(offset, None)
 
@@ -772,7 +777,7 @@ class _InvokeRun:
         id_: str,
         *,
         result: object | None = None,
-        error: BaseException | None = None,
+        exception: Exception | None = None,
     ) -> None:
         if id_ not in self._tasks:
             msg = "Promise not found"
@@ -784,8 +789,8 @@ class _InvokeRun:
             "type": "promise.complete",
             "promise_id": id_,
         }
-        if error is not None:
-            entry["error"] = _encode_error(error)
+        if exception is not None:
+            entry["error"] = _encode_error(exception)
         elif result is not None:
             entry["result"] = self._codec.encode_json(result)
         else:
@@ -827,7 +832,7 @@ class _InvokeRun:
     async def close_stream(
         self,
         matcher: dict[str, str],
-        error: BaseException | None = None,
+        exc: Exception | None = None,
     ) -> int:
         cnt = 0
         ts = self.now()
@@ -839,13 +844,13 @@ class _InvokeRun:
         ]
 
         for stream_id, entry_span in matching_streams:
-            if error:
+            if exc:
                 entry: StreamCompleteEntry = {
                     "ts": ts,
                     "id": random_id(),
                     "type": "stream.complete",
                     "stream_id": stream_id,
-                    "error": _encode_error(error),
+                    "error": _encode_error(exc),
                 }
             else:
                 entry = {
@@ -861,7 +866,7 @@ class _InvokeRun:
         return cnt
 
 
-def _encode_error(error: BaseException) -> ErrorInfo:
+def _encode_error(error: Exception | CancelledError) -> ErrorInfo:
     if type(error) is asyncio.CancelledError:
         return {
             "code": -2,
@@ -873,7 +878,7 @@ def _encode_error(error: BaseException) -> ErrorInfo:
     }
 
 
-def _decode_error(error_info: ErrorInfo) -> BaseException:
+def _decode_error(error_info: ErrorInfo) -> Exception | CancelledError:
     if error_info["code"] == -2:
         return asyncio.CancelledError()
     return Exception(f"[{error_info['code']}] {error_info['message']}")
@@ -902,7 +907,7 @@ class _StreamWriter(Generic[_T]):
         ):
             await asyncio.sleep(0.1)
 
-    async def close(self, error: BaseException | None = None) -> None:
+    async def close(self, error: Exception | None = None) -> None:
         while (  # noqa: ASYNC110
             await self._invoke.get_run().close_stream({"name": self._name}, error) == 0
         ):
