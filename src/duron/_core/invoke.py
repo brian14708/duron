@@ -31,10 +31,10 @@ from duron._loop import EventLoop, create_loop
 from duron.codec import Codec, JSONValue
 from duron.log import derive_id, is_entry, random_id, set_annotations
 from duron.tracing import (
-    NULL_SPAN,
     Tracer,
     current_tracer,
 )
+from duron.tracing._span import NULL_SPAN
 from duron.typing import Unspecified, inspect_function
 
 if TYPE_CHECKING:
@@ -62,7 +62,7 @@ if TYPE_CHECKING:
         StreamCreateEntry,
         StreamEmitEntry,
     )
-    from duron.tracing._tracer import EntrySpan
+    from duron.tracing._tracer import OpSpan
     from duron.typing import FunctionType, TypeHint
 
 
@@ -351,7 +351,7 @@ class _InvokeRun:
                 list[StreamObserver[object]],
                 TypeHint[Any],
                 Mapping[str, str],
-                EntrySpan | None,
+                OpSpan | None,
             ],
         ] = {}
         self._watchers = watchers or []
@@ -571,14 +571,12 @@ class _InvokeRun:
                     labels=op.annotations.labels,
                 )
                 if self._tracer:
-                    name = op.annotations.name
-                    entry_span = self._tracer.new_entry_span(
-                        name,
+                    op_span = self._tracer.new_op_span(
+                        op.annotations.name,
                         promise_create_entry,
-                        None,
                     )
                 else:
-                    entry_span = None
+                    op_span = None
                 await self.enqueue_log(promise_create_entry)
 
                 async def cb() -> None:
@@ -589,7 +587,11 @@ class _InvokeRun:
                         "type": "promise.complete",
                         "promise_id": id_,
                     }
-                    with entry_span.new_span() if entry_span else NULL_SPAN:
+                    with (
+                        op_span.new_span(op.annotations.name, op.annotations.metadata)
+                        if op_span
+                        else NULL_SPAN
+                    ):
                         try:
                             result = op.callable(*op.args, **op.kwargs)
                             if asyncio.iscoroutine(result):
@@ -600,8 +602,8 @@ class _InvokeRun:
                         except asyncio.CancelledError as e:
                             entry["error"] = _encode_error(e)
 
-                    if entry_span:
-                        entry_span.end(entry)
+                    if op_span:
+                        op_span.end(entry)
                     await self.enqueue_log(entry)
 
                 def done(f: OpFuture[object]) -> None:
@@ -642,19 +644,18 @@ class _InvokeRun:
                     "type": "stream.create",
                 }
                 if self._tracer:
-                    entry_span = self._tracer.new_entry_span(
+                    op_span = self._tracer.new_op_span(
                         "stream:" + op.annotations.name,
                         stream_create_entry,
-                        None,
                     )
                 else:
-                    entry_span = None
+                    op_span = None
 
                 self._streams[stream_id] = (
                     ob,
                     op.dtype,
                     op.annotations.labels,
-                    entry_span,
+                    op_span,
                 )
 
                 set_annotations(
@@ -665,7 +666,7 @@ class _InvokeRun:
                 await self.enqueue_log(stream_create_entry)
 
             case StreamEmit():
-                _, _, _, entry_span = self._streams[op.stream_id]
+                _, _, _, op_span = self._streams[op.stream_id]
                 stream_emit_entry: StreamEmitEntry = {
                     "ts": self.now(),
                     "id": id_,
@@ -673,8 +674,8 @@ class _InvokeRun:
                     "type": "stream.emit",
                     "value": self._codec.encode_json(op.value),
                 }
-                if entry_span:
-                    entry_span.attach(
+                if op_span:
+                    op_span.attach(
                         stream_emit_entry,
                         {
                             "type": "event",
@@ -684,7 +685,7 @@ class _InvokeRun:
                     )
                 await self.enqueue_log(stream_emit_entry)
             case StreamClose():
-                _, _, _, entry_span = self._streams[op.stream_id]
+                _, _, _, op_span = self._streams[op.stream_id]
                 if op.exception:
                     stream_close_entry_err: StreamCompleteEntry = {
                         "ts": self.now(),
@@ -693,8 +694,8 @@ class _InvokeRun:
                         "type": "stream.complete",
                         "error": _encode_error(op.exception),
                     }
-                    if entry_span:
-                        entry_span.end(stream_close_entry_err)
+                    if op_span:
+                        op_span.end(stream_close_entry_err)
                     await self.enqueue_log(stream_close_entry_err)
                 else:
                     stream_close_entry: StreamCompleteEntry = {
@@ -703,8 +704,8 @@ class _InvokeRun:
                         "stream_id": op.stream_id,
                         "type": "stream.complete",
                     }
-                    if entry_span:
-                        entry_span.end(stream_close_entry)
+                    if op_span:
+                        op_span.end(stream_close_entry)
                     await self.enqueue_log(stream_close_entry)
             case Barrier():
                 barrier_entry: BarrierEntry = {

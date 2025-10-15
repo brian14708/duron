@@ -6,19 +6,28 @@ from typing_extensions import Self, final
 if TYPE_CHECKING:
     from types import TracebackType
 
+    from duron.codec import JSONValue
+
 
 class Span(Protocol):
-    id: str
+    def record(
+        self,
+        key: str,
+        value: JSONValue,
+        /,
+    ) -> None: ...
 
 
 @final
 class _NullSpan:
     __slots__: tuple[str, ...] = ()
 
-    id: str = "0000000000000000"
-
     def __enter__(self) -> Self:
         return self
+
+    @staticmethod
+    def record(_key: str, _value: JSONValue) -> None:
+        return
 
     def __exit__(
         self,

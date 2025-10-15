@@ -14,6 +14,7 @@ from duron.log import set_annotations
 from duron.tracing._span import NULL_SPAN
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from contextlib import AbstractContextManager
     from contextvars import Token
     from types import TracebackType
@@ -28,7 +29,9 @@ if TYPE_CHECKING:
     from duron.tracing._span import Span
 
 current_tracer: ContextVar[Tracer | None] = ContextVar("duron.tracer", default=None)
-_current_span: ContextVar[Span | None] = ContextVar("duron.span", default=None)
+_current_span: ContextVar[_TracerSpan | None] = ContextVar(
+    "duron.tracer.span", default=None
+)
 
 
 class Tracer:
@@ -61,33 +64,30 @@ class Tracer:
     def new_span(
         self,
         name: str,
-        attributes: dict[str, JSONValue] | None = None,
-        links: list[LinkRef] | None = None,
+        attributes: Mapping[str, JSONValue] | None = None,
+        links: tuple[LinkRef, ...] | None = None,
     ) -> AbstractContextManager[Span]:
         parent = _current_span.get()
         return _TracerSpan(
             _random_id(),
             tracer=self,
             name=name,
-            attributes=attributes,
+            attributes=dict(attributes) if attributes else None,
             parent_id=parent.id if parent else None,
             links=links,
         )
 
-    def new_entry_span(
+    def new_op_span(
         self,
         name: str,
         entry: PromiseCreateEntry | StreamCreateEntry,
-        attributes: dict[str, JSONValue] | None,
-    ) -> EntrySpan:
+    ) -> OpSpan:
         event: SpanStart = {
             "type": "span.start",
             "name": name,
             "span_id": _derive_id(entry["id"]),
             "ts": time.time_ns() // 1000,
         }
-        if attributes:
-            event["attributes"] = attributes
         set_annotations(
             entry,
             metadata={
@@ -95,8 +95,9 @@ class Tracer:
                 "trace.event": cast("dict[str, JSONValue]", event),
             },
         )
-        return EntrySpan(
-            id=_derive_id(entry["id"]), tracer=self, name=name, attributes=attributes
+        return OpSpan(
+            id=_derive_id(entry["id"]),
+            tracer=self,
         )
 
     @staticmethod
@@ -105,25 +106,18 @@ class Tracer:
 
 
 @dataclass(slots=True)
-class EntrySpan:
+class OpSpan:
     id: str
     tracer: Tracer
-    name: str
-    attributes: dict[str, JSONValue] | None
 
     def new_span(
-        self, attributes: dict[str, JSONValue] | None = None
+        self, name: str, attributes: Mapping[str, JSONValue] | None = None
     ) -> AbstractContextManager[Span]:
         link: LinkRef = {
             "span_id": self.id,
             "trace_id": self.tracer.trace_id,
         }
-        if self.attributes:
-            if attributes:
-                attributes = {**self.attributes, **attributes}
-            else:
-                attributes = self.attributes
-        return self.tracer.new_span(self.name, attributes, links=[link])
+        return self.tracer.new_span(name, attributes, links=(link,))
 
     def end(self, entry: Entry) -> None:
         event: SpanEnd = {
@@ -157,8 +151,8 @@ class _TracerSpan:
     name: str
     parent_id: str | None = None
     attributes: dict[str, JSONValue] | None = None
-    links: list[LinkRef] | None = None
-    _token: Token[Span | None] | None = None
+    links: tuple[LinkRef, ...] | None = None
+    _token: Token[_TracerSpan | None] | None = None
 
     def __enter__(self) -> Self:
         start_ns = time.time_ns()
@@ -180,6 +174,12 @@ class _TracerSpan:
         token = _current_span.set(self)
         self._token = token
         return self
+
+    def record(self, key: str, value: JSONValue) -> None:
+        if a := self.attributes:
+            a[key] = value
+        else:
+            self.attributes = {key: value}
 
     def __exit__(
         self,
@@ -246,7 +246,7 @@ def setup_tracing(
 
 def span(
     name: str,
-    metadata: dict[str, JSONValue] | None = None,
+    metadata: Mapping[str, JSONValue] | None = None,
 ) -> AbstractContextManager[Span]:
     if tracer := current_tracer.get():
         return tracer.new_span(name, metadata)

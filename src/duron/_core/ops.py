@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar
-from typing_extensions import Never, dataclass_transform, overload
+from typing_extensions import dataclass_transform, overload
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Mapping, Sequence
+    from collections.abc import Callable, Coroutine, Mapping
     from contextvars import Context
 
     from duron._loop import EventLoop, OpFuture
@@ -23,14 +23,28 @@ else:
 
 _In_contra = TypeVar("_In_contra", contravariant=True)
 
-_EMPTY_DICT: dict[str, Never] = {}
+_EMPTY_DICT: dict[str, Any] = {}
 
 
 @frozen
 class OpAnnotations:
-    metadata: Mapping[str, JSONValue]
-    labels: Mapping[str, str]
-    name: str = "<unnamed>"
+    _metadata: dict[str, JSONValue]
+    _labels: dict[str, str]
+    _name: str | None
+
+    @property
+    def metadata(self) -> Mapping[str, JSONValue]:
+        return self._metadata
+
+    @property
+    def labels(self) -> Mapping[str, str]:
+        return self._labels
+
+    @property
+    def name(self) -> str:
+        if (name := self._name) is not None:
+            return name
+        return "<unnamed>"
 
     @staticmethod
     def extend(
@@ -42,23 +56,24 @@ class OpAnnotations:
     ) -> OpAnnotations:
         if not base:
             return OpAnnotations(
-                metadata={**metadata} if metadata else _EMPTY_DICT,
-                labels={**labels} if labels else _EMPTY_DICT,
-                name=name or "<unnamed>",
+                _metadata={**metadata} if metadata else _EMPTY_DICT,
+                _labels={**labels} if labels else _EMPTY_DICT,
+                _name=name,
             )
 
+        # OpAnnotations is immutable, so it's safe to use the existing dicts
         return OpAnnotations(
-            metadata={**base.metadata, **metadata} if metadata else base.metadata,
-            labels={**base.labels, **labels} if labels else base.labels,
-            name=name or base.name,
+            _metadata={**base._metadata, **metadata} if metadata else base._metadata,  # noqa: SLF001
+            _labels={**base._labels, **labels} if labels else base._labels,  # noqa: SLF001
+            _name=name if name is not None else base._name,  # noqa: SLF001
         )
 
 
 @frozen
 class FnCall:
     callable: Callable[..., Coroutine[Any, Any, object] | object]
-    args: Sequence[object]
-    kwargs: Mapping[str, object]
+    args: tuple[object, ...]
+    kwargs: dict[str, object]
     return_type: TypeHint[Any]
     context: Context
     annotations: OpAnnotations

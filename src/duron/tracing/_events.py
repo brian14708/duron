@@ -1,3 +1,4 @@
+from collections.abc import Mapping, Sequence
 from typing import Literal
 from typing_extensions import NotRequired, TypedDict
 
@@ -14,17 +15,17 @@ class SpanStart(TypedDict):
     span_id: str
     ts: int
     name: str
-    attributes: NotRequired[dict[str, JSONValue]]
+    attributes: NotRequired[Mapping[str, JSONValue]]
 
     parent_span_id: NotRequired[str]
-    links: NotRequired[list[LinkRef]]
+    links: NotRequired[Sequence[LinkRef]]
 
 
 class SpanEnd(TypedDict):
     type: Literal["span.end"]
     span_id: str
     ts: int
-    attributes: NotRequired[dict[str, JSONValue]]
+    attributes: NotRequired[Mapping[str, JSONValue]]
 
 
 class Event(TypedDict):
@@ -32,7 +33,7 @@ class Event(TypedDict):
     span_id: NotRequired[str]
     ts: int
     kind: Literal["log", "stream"]
-    attributes: NotRequired[dict[str, JSONValue]]
+    attributes: NotRequired[Mapping[str, JSONValue]]
 
 
 TraceEvent = SpanStart | SpanEnd | Event
