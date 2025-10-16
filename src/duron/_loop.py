@@ -296,8 +296,6 @@ class EventLoop(asyncio.AbstractEventLoop):
             token = _task_ctx.set(_TaskCtx(parent_id=tid))
             if exception is None:
                 _ = self.call_soon(op.set_result, result)
-            elif type(exception) is asyncio.CancelledError:
-                _ = self.call_soon(op.cancel)
             else:
                 _ = self.call_soon(op.set_exception, exception)
             _task_ctx.reset(token)

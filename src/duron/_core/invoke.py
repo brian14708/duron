@@ -33,10 +33,7 @@ from duron._core.task_manager import TaskManager
 from duron._loop import EventLoop, create_loop
 from duron.codec import Codec, JSONValue
 from duron.log import derive_id, is_entry, random_id, set_annotations
-from duron.tracing import (
-    Tracer,
-    current_tracer,
-)
+from duron.tracing import Tracer, current_tracer
 from duron.tracing._span import NULL_SPAN
 from duron.typing import Unspecified, inspect_function
 
@@ -361,11 +358,12 @@ class _InvokeRun:
             await self._task_manager.close()
 
     def now(self) -> int:
-        if self._running:
-            t = time.time_ns()
-            t //= 1_000
-            self._now = max(self._now + 1, t)
         return self._now
+
+    def tick_realtime(self) -> None:
+        t = time.time_ns()
+        t //= 1_000
+        self._now = max(self._now + 1, t)
 
     async def resume(self) -> None:
         self._lease = await self._log.acquire_lease()
@@ -400,6 +398,7 @@ class _InvokeRun:
                 await self._send_traces()
             else:
                 await waitset.block(self.now())
+            self.tick_realtime()
 
         # cleanup
         self._loop.close()
@@ -409,8 +408,9 @@ class _InvokeRun:
         return self._task.result()
 
     async def _step(self) -> WaitSet | None:
+        self._loop.tick(self.now())
+
         while True:
-            self._loop.tick(self.now())
             result = self._loop.poll_completion(self._task)
             if result is None:
                 return result
