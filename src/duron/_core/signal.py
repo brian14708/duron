@@ -4,7 +4,7 @@ import asyncio
 import sys
 from asyncio.exceptions import CancelledError
 from collections import deque
-from typing import TYPE_CHECKING, Generic
+from typing import TYPE_CHECKING, Generic, cast
 from typing_extensions import Any, TypeVar, final
 
 from duron._core.ops import (
@@ -131,7 +131,7 @@ async def create_signal(
         loop,
         StreamCreate(
             dtype=dtype,
-            observer=s,
+            observer=cast("Signal[object]", s),
             annotations=annotations,
         ),
     )

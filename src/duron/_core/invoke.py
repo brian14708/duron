@@ -90,7 +90,7 @@ class Invoke(Generic[_P, _T_co]):
         self._watchers: list[
             tuple[
                 dict[str, str],
-                StreamObserver[object],
+                StreamObserver,
             ]
         ] = []
 
@@ -207,7 +207,7 @@ class Invoke(Generic[_P, _T_co]):
         observer: ObserverStream[_T_co, None] = ObserverStream()
         self._watchers.append((
             labels,
-            cast("StreamObserver[object]", cast("StreamObserver[_T_co]", observer)),
+            cast("ObserverStream[object, None]", observer),
         ))
         return observer
 
@@ -334,7 +334,7 @@ class _InvokeRun:
         log: LogStorage,
         codec: Codec,
         *,
-        watchers: list[tuple[dict[str, str], StreamObserver[object]]] | None = None,
+        watchers: list[tuple[dict[str, str], StreamObserver]] | None = None,
     ) -> None:
         self._loop = create_loop(asyncio.get_running_loop())
         self._task = self._loop.create_task(task)
@@ -518,7 +518,7 @@ class _InvokeRun:
             offset = await self._log.append(self._lease, entry)
             await self.handle_message(offset, entry)
 
-    async def enqueue_op(self, id_: str, fut: OpFuture[object]) -> None:
+    async def enqueue_op(self, id_: str, fut: OpFuture) -> None:
         op = cast("Op", fut.params)
         match op:
             case FnCall():
@@ -566,7 +566,7 @@ class _InvokeRun:
                     entry["ts"] = self.now()
                     await self.enqueue_log(entry)
 
-                def done(f: OpFuture[object]) -> None:
+                def done(f: OpFuture) -> None:
                     if f.cancelled():
                         sid = f.id
                         if self._task_manager.has_pending(sid):

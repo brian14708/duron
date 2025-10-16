@@ -9,7 +9,7 @@ from collections import deque
 from dataclasses import dataclass
 from hashlib import blake2b
 from heapq import heappop, heappush
-from typing import TYPE_CHECKING, Generic
+from typing import TYPE_CHECKING
 from typing_extensions import (
     Any,
     TypeVar,
@@ -21,14 +21,13 @@ from typing_extensions import (
 
 from duron.log import derive_id, random_id
 
-_T = TypeVar("_T")
-
 if TYPE_CHECKING:
     import sys
     from asyncio.futures import Future
     from collections.abc import Callable, Coroutine, Generator
     from contextvars import Context
 
+    _T = TypeVar("_T")
     _Ts = TypeVarTuple("_Ts")
 
     if sys.version_info >= (3, 12):
@@ -37,13 +36,11 @@ if TYPE_CHECKING:
         _TaskCompatibleCoro = Generator[Any, None, _T] | Coroutine[Any, Any, _T]
 
 
-logger = logging.getLogger(__name__)
-
-
+logger = logging.getLogger("duron.loop")
 _task_ctx: contextvars.ContextVar[_TaskCtx] = contextvars.ContextVar("duron.task")
 
 
-class OpFuture(asyncio.Future[_T], Generic[_T]):
+class OpFuture(asyncio.Future[object]):
     __slots__: tuple[str, ...] = ("id", "params")
 
     def __init__(
@@ -59,7 +56,7 @@ class OpFuture(asyncio.Future[_T], Generic[_T]):
 
 @dataclass(slots=True)
 class WaitSet:
-    ops: list[OpFuture[object]]
+    ops: list[OpFuture]
     timer: int | None
     event: asyncio.Event
 
@@ -104,7 +101,7 @@ class EventLoop(asyncio.AbstractEventLoop):
         self._exc_handler: (
             Callable[[asyncio.AbstractEventLoop, dict[str, object]], object] | None
         ) = None
-        self._ops: dict[str, OpFuture[object]] = {}
+        self._ops: dict[str, OpFuture] = {}
         self._ctx: _TaskCtx = _TaskCtx(parent_id="")
         self._key: bytes = b""
         self._now_us: int = 0
@@ -261,13 +258,13 @@ class EventLoop(asyncio.AbstractEventLoop):
             if prev_task:
                 tasks._enter_task(self._host, prev_task)  # noqa: SLF001
 
-    def create_op(self, params: object, *, external: bool = False) -> OpFuture[object]:
+    def create_op(self, params: object, *, external: bool = False) -> OpFuture:
         if external:
             id_ = random_id()
             self._event.set()
         else:
             id_ = self.generate_op_id()
-        op_fut: OpFuture[object] = OpFuture(id_, params, self)
+        op_fut = OpFuture(id_, params, self)
         self._ops[id_] = op_fut
         return op_fut
 

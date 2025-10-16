@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar
-from typing_extensions import dataclass_transform, overload
+from typing import TYPE_CHECKING, Final, cast
+from typing_extensions import (
+    Any,
+    Protocol,
+    TypeVar,
+    dataclass_transform,
+    overload,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Mapping
@@ -20,9 +26,7 @@ if TYPE_CHECKING:
 else:
     frozen = dataclass(slots=True)
 
-_In_contra = TypeVar("_In_contra", contravariant=True)
-
-_EMPTY_DICT: dict[str, Any] = {}
+_EMPTY_DICT: Final = cast("dict[str, Any]", {})
 
 
 @frozen
@@ -36,9 +40,7 @@ class OpAnnotations:
 
     @property
     def name(self) -> str:
-        if (name := self._name) is not None:
-            return name
-        return "<unnamed>"
+        return name if (name := self._name) is not None else "<unnamed>"
 
     @staticmethod
     def extend(
@@ -70,14 +72,14 @@ class FnCall:
     annotations: OpAnnotations
 
 
-class StreamObserver(Protocol, Generic[_In_contra]):
-    def on_next(self, log_offset: int, value: _In_contra, /) -> None: ...
+class StreamObserver(Protocol):
+    def on_next(self, log_offset: int, value: object, /) -> None: ...
     def on_close(self, log_offset: int, error: Exception | None, /) -> None: ...
 
 
 @frozen
 class StreamCreate:
-    observer: StreamObserver[Any] | None
+    observer: StreamObserver | None
     dtype: TypeHint[Any]
     annotations: OpAnnotations
 
@@ -123,18 +125,20 @@ Op = (
 
 
 @overload
-def create_op(loop: EventLoop, params: FnCall) -> OpFuture[object]: ...
+def create_op(loop: EventLoop, params: FnCall) -> asyncio.Future[object]: ...
 @overload
-def create_op(loop: EventLoop, params: StreamCreate) -> OpFuture[str]: ...
+def create_op(loop: EventLoop, params: StreamCreate) -> asyncio.Future[str]: ...
 @overload
-def create_op(loop: EventLoop, params: StreamEmit) -> OpFuture[None]: ...
+def create_op(loop: EventLoop, params: StreamEmit) -> asyncio.Future[None]: ...
 @overload
-def create_op(loop: EventLoop, params: StreamClose) -> OpFuture[None]: ...
+def create_op(loop: EventLoop, params: StreamClose) -> asyncio.Future[None]: ...
 @overload
-def create_op(loop: EventLoop, params: Barrier) -> OpFuture[int]: ...
+def create_op(loop: EventLoop, params: Barrier) -> asyncio.Future[int]: ...
 @overload
-def create_op(loop: EventLoop, params: ExternalPromiseCreate) -> OpFuture[object]: ...
+def create_op(loop: EventLoop, params: ExternalPromiseCreate) -> OpFuture: ...
 @overload
-def create_op(loop: EventLoop, params: ExternalPromiseComplete) -> OpFuture[None]: ...
-def create_op(loop: EventLoop, params: Op) -> OpFuture[Any]:
+def create_op(
+    loop: EventLoop, params: ExternalPromiseComplete
+) -> asyncio.Future[None]: ...
+def create_op(loop: EventLoop, params: Op) -> asyncio.Future[Any]:
     return loop.create_op(params, external=asyncio.get_running_loop() is not loop)

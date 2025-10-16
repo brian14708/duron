@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from duron._core.context import Context
-    from duron._loop import EventLoop, OpFuture
+    from duron._loop import EventLoop
     from duron.typing import TypeHint
 
     _P = ParamSpec("_P")
@@ -192,7 +192,7 @@ async def create_stream(
         loop,
         StreamCreate(
             dtype=dtype,
-            observer=s,
+            observer=cast("ObserverStream[object, None]", s),
             annotations=annotations,
         ),
     )
@@ -396,7 +396,7 @@ class _ResumableGuard(Generic[_U, _T]):
             self._loop,
             StreamCreate(
                 dtype=self._dtype,
-                observer=self._stream,
+                observer=cast("_StreamRun[object, _T]", self._stream),
                 annotations=OpAnnotations.extend(
                     None,
                     name=self._stream.name(),
@@ -457,7 +457,7 @@ class _StreamRun(ObserverStream[_U, _T], Generic[_U, _T]):
                 annotations=OpAnnotations.extend(None, name=self.name()),
             ),
         )
-        self._task = cast("OpFuture[_T]", op)
+        self._task = cast("asyncio.Future[_T]", op)
         return op
 
     async def _worker(self, sink: StreamWriter[_U]) -> _T:

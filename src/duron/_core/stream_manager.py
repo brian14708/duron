@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 @dataclass(slots=True)
 class _StreamInfo:
-    observers: Sequence[StreamObserver[object]]
+    observers: Sequence[StreamObserver]
     dtype: TypeHint[Any]
     labels: Mapping[str, str]
     op_span: OpSpan | None
@@ -33,7 +33,7 @@ class StreamManager:
 
     def __init__(
         self,
-        watchers: list[tuple[dict[str, str], StreamObserver[object]]] | None = None,
+        watchers: list[tuple[dict[str, str], StreamObserver]] | None = None,
     ) -> None:
         self._streams: dict[
             str,
@@ -44,7 +44,7 @@ class StreamManager:
     def create_stream(
         self,
         stream_id: str,
-        observer: StreamObserver[object] | None,
+        observer: StreamObserver | None,
         dtype: TypeHint[Any],
         labels: Mapping[str, str],
         op_span: OpSpan | None,
