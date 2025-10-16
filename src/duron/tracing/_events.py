@@ -26,6 +26,8 @@ class SpanEnd(TypedDict):
     span_id: str
     ts: int
     attributes: NotRequired[Mapping[str, JSONValue]]
+    status: Literal["OK", "ERROR"]
+    status_message: NotRequired[str]
 
 
 class Event(TypedDict):

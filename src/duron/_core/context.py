@@ -191,6 +191,7 @@ class Context:
             dtype,
             annotations=OpAnnotations.extend(
                 _annotation.get(),
+                name=name,
                 labels={"name": name} if name else None,
             ),
         )

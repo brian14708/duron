@@ -1,10 +1,12 @@
 import {
+  CheckCircle2,
   Clock,
   Hash,
   Layers,
   Link as LinkIcon,
   Tag,
   X,
+  XCircle,
   Zap,
 } from "lucide-react";
 
@@ -137,7 +139,23 @@ export function DetailPanel({
               <h3 className="text-lg font-semibold break-words text-slate-900 dark:text-slate-50">
                 {selectedSpan.name}
               </h3>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
+                {selectedSpan.status && (
+                  <span
+                    className={`flex items-center gap-1 rounded border px-2 py-1 text-xs font-medium ${
+                      selectedSpan.status === "ERROR"
+                        ? "border-red-300 bg-red-50 text-red-800 dark:border-red-700 dark:bg-red-950 dark:text-red-200"
+                        : "border-green-300 bg-green-50 text-green-800 dark:border-green-700 dark:bg-green-950 dark:text-green-200"
+                    }`}
+                  >
+                    {selectedSpan.status === "ERROR" ? (
+                      <XCircle className="h-3 w-3" />
+                    ) : (
+                      <CheckCircle2 className="h-3 w-3" />
+                    )}
+                    {selectedSpan.status}
+                  </span>
+                )}
                 {selectedSpan.incomplete && (
                   <span className="rounded border border-red-300 bg-red-50 px-2 py-1 text-xs font-medium text-red-800 dark:border-red-700 dark:bg-red-950 dark:text-red-200">
                     Incomplete
@@ -159,6 +177,11 @@ export function DetailPanel({
               <p className="mt-2 text-xs text-red-600 dark:text-red-400">
                 ⚠️ This span only has a start event. The end time is estimated
                 from the trace end.
+              </p>
+            )}
+            {selectedSpan.status === "ERROR" && selectedSpan.statusMessage && (
+              <p className="mt-2 text-xs text-red-600 dark:text-red-400">
+                ❌ Error: {selectedSpan.statusMessage}
               </p>
             )}
           </div>

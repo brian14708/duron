@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import time
-from types import NoneType
 from typing import TYPE_CHECKING, Final, Generic, Literal, cast
 from typing_extensions import (
     Any,
@@ -35,9 +33,11 @@ from duron.codec import Codec, JSONValue
 from duron.log import derive_id, is_entry, random_id, set_annotations
 from duron.tracing import Tracer, current_tracer
 from duron.tracing._span import NULL_SPAN
+from duron.tracing._tracer import span
 from duron.typing import Unspecified, inspect_function
 
 if TYPE_CHECKING:
+    import contextlib
     from asyncio.exceptions import CancelledError
     from collections.abc import Callable, Coroutine
     from contextvars import Token
@@ -255,10 +255,6 @@ async def _invoke_prelude(
     assert isinstance(loop, EventLoop)  # noqa: S101
 
     with Context(job_fn, loop) as ctx:
-        if Tracer.current():
-            promise_ = await ctx.create_promise(NoneType, name="Invoke")
-        else:
-            promise_ = None
         init_params = await ctx.run(init)
         if init_params["version"] != _CURRENT_VERSION:
             msg = "version mismatch"
@@ -292,20 +288,11 @@ async def _invoke_prelude(
             elif type_ is StreamWriter:
                 _, extra_kwargs[name] = await ctx.create_stream(dtype, name=name)
         try:
-            result = await job_fn.fn(ctx, *args, **extra_kwargs, **kwargs)
-            if promise_:
-                await ctx.complete_promise(promise_[0], result=None)
-                await promise_[1]
-        except Exception as e:
-            if promise_:
-                await ctx.complete_promise(promise_[0], exception=e)
-                with contextlib.suppress(Exception):
-                    await promise_[1]
-            raise
+            with span("InvokeRun"):
+                return await job_fn.fn(ctx, *args, **extra_kwargs, **kwargs)
         finally:
             for c in closer:
                 await c.close()
-        return result
 
 
 @final
@@ -347,6 +334,8 @@ class _InvokeRun:
         self._tracer: Tracer | None = Tracer.current()
 
     async def close(self) -> None:
+        if self._tracer:
+            self._tracer.close()
         await self._send_traces(flush=True)
         if self._lease:
             await self._log.release_lease(self._lease)
@@ -387,6 +376,8 @@ class _InvokeRun:
             return self._task.result()
 
         self._running = True
+        if self._tracer:
+            self._tracer.start()
         for msg in self._pending_msg:
             await self.enqueue_log(msg)
         self._pending_msg.clear()
@@ -436,7 +427,7 @@ class _InvokeRun:
             trace_entry: Entry = {
                 "ts": self.now(),
                 "id": random_id(),
-                "type": "annotate.trace",
+                "type": "trace",
                 "events": data[i : i + 128],
                 "metadata": {
                     "trace.id": tid,
@@ -503,7 +494,7 @@ class _InvokeRun:
         elif e["type"] == "barrier":
             self._loop.post_completion(e["id"], result=offset)
         else:
-            assert_type(e["type"], Literal["promise.create", "annotate.trace"])
+            assert_type(e["type"], Literal["promise.create", "trace"])
 
     async def enqueue_log(
         self,
@@ -550,16 +541,16 @@ class _InvokeRun:
                     }
                     with (
                         op_span.new_span(op.annotations.name) if op_span else NULL_SPAN
-                    ):
+                    ) as span:
                         try:
                             result = op.callable(*op.args, **op.kwargs)
                             if asyncio.iscoroutine(result):
                                 result = await result
                             entry["result"] = self._codec.encode_json(result)
-                        except Exception as e:  # noqa: BLE001
+                            span.set_status("OK")
+                        except (Exception, asyncio.CancelledError) as e:  # noqa: BLE001
                             entry["error"] = _encode_error(e)
-                        except asyncio.CancelledError as e:
-                            entry["error"] = _encode_error(e)
+                            span.set_status("ERROR", str(e))
 
                     if op_span:
                         op_span.end(entry)

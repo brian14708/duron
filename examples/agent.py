@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import random
 import readline
 from pathlib import Path
@@ -182,19 +181,14 @@ async def main() -> None:
                         console.print("[bold magenta]     ???[/bold magenta]", result)
 
         async def writer() -> None:
-            try:
-                while True:
-                    await asyncio.sleep(0)
-                    m = await asyncio.to_thread(input, "> ")
-                    if m.strip():
-                        if m == "!":
-                            await signal_stream.send(None)
-                        else:
-                            await input_stream.send(m)
-            except EOFError:
-                os._exit(0)
-            except KeyboardInterrupt:
-                os._exit(1)
+            while True:
+                await asyncio.sleep(0)
+                m = await asyncio.to_thread(input, "> ")
+                if m.strip():
+                    if m == "!":
+                        await signal_stream.send(None)
+                    else:
+                        await input_stream.send(m)
 
         bg = [asyncio.create_task(reader()), asyncio.create_task(writer())]
         await job.start()

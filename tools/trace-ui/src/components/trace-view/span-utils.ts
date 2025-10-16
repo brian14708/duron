@@ -3,6 +3,12 @@ import type { Span } from "@/lib/trace";
 // Color mapping for different span types
 // Soft pastel palette for visual comfort
 export const getSpanColor = (span: Span): string => {
+  // Error status takes priority over everything else
+  if (span.status === "ERROR") {
+    const errorBaseColor = "bg-red-200 dark:bg-red-200";
+    return errorBaseColor;
+  }
+
   const type = span.attributes?.type as string | undefined;
 
   let baseColor: string;

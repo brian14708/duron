@@ -27,6 +27,8 @@ export interface Span {
   links?: Array<{ span_id: string; trace_id: string }>;
   events?: InstantEvent[]; // Instant events that occurred within this span
   incomplete?: boolean; // True if span only has start event, no end event
+  status?: "OK" | "ERROR";
+  statusMessage?: string;
 }
 
 // internal representation of a trace event from the log
@@ -40,6 +42,8 @@ interface TraceEvent {
   attributes?: Record<string, JSONValue>;
   links?: Array<{ span_id: string; trace_id: string }>;
   kind?: string;
+  status?: "OK" | "ERROR";
+  status_message?: string;
 }
 
 export interface TraceFile {
@@ -67,6 +71,8 @@ interface RawTraceEvent {
   attributes?: Record<string, JSONValue>;
   links?: Array<{ span_id: string; trace_id?: string }>;
   kind?: string;
+  status?: "OK" | "ERROR";
+  status_message?: string;
 }
 
 interface RawLog {
@@ -106,6 +112,8 @@ function rawEventToTraceEvent(
       trace_id: link.trace_id || traceId,
     })),
     kind: event.kind,
+    status: event.status,
+    status_message: event.status_message,
   };
 }
 
@@ -125,7 +133,7 @@ export function parseTraceLog(filename: string, content: string): TraceFile {
         continue;
       }
       if (
-        parsed.type === "annotate.trace" &&
+        parsed.type === "trace" &&
         parsed["events"] &&
         Array.isArray(parsed["events"])
       ) {
@@ -193,6 +201,8 @@ export function extractSpansFromEntries(entries: TraceEvent[]): Span[] {
         name: string;
         attributes?: Record<string, JSONValue>;
       }>;
+      status?: "OK" | "ERROR";
+      statusMessage?: string;
     }
   >();
 
@@ -233,6 +243,9 @@ export function extractSpansFromEntries(entries: TraceEvent[]): Span[] {
       if (event.attributes) {
         span.attributes = { ...span.attributes, ...event.attributes };
       }
+      // Capture status and status_message from span.end
+      span.status = event.status;
+      span.statusMessage = event.status_message;
     } else if (event.type === "event") {
       // Collect instant events
       const eventName = event.name ?? "event";
@@ -287,6 +300,8 @@ export function extractSpansFromEntries(entries: TraceEvent[]): Span[] {
       attributes: spanData.attributes,
       links: spanData.links,
       events: convertedEvents.length > 0 ? convertedEvents : undefined,
+      status: spanData.status,
+      statusMessage: spanData.statusMessage,
     };
 
     // Add incomplete flag if needed

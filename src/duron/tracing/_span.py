@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final, Protocol
+from typing import TYPE_CHECKING, Final, Literal, Protocol
 from typing_extensions import Self, final
 
 if TYPE_CHECKING:
@@ -17,6 +17,13 @@ class Span(Protocol):
         /,
     ) -> None: ...
 
+    def set_status(
+        self,
+        status: Literal["OK", "ERROR"],
+        message: str | None = None,
+        /,
+    ) -> None: ...
+
 
 @final
 class _NullSpan:
@@ -27,6 +34,12 @@ class _NullSpan:
 
     @staticmethod
     def record(_key: str, _value: JSONValue) -> None:
+        return
+
+    @staticmethod
+    def set_status(
+        _status: Literal["OK", "ERROR"], _message: str | None = None
+    ) -> None:
         return
 
     def __exit__(
