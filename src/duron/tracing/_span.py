@@ -6,7 +6,7 @@ from typing_extensions import Self, final
 if TYPE_CHECKING:
     from types import TracebackType
 
-    from duron.codec import JSONValue
+    from duron.typing import JSONValue
 
 
 class Span(Protocol):

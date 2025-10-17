@@ -4,7 +4,7 @@ import inspect
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from duron.typing._hint import Unspecified
+from duron.typing._hint import UnspecifiedType
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -15,8 +15,17 @@ if TYPE_CHECKING:
 @dataclass(slots=True)
 class FunctionType:
     return_type: TypeHint[Any]
+    """
+    The return type of the function.
+    """
     parameters: list[str]
+    """
+    The names of the parameters of the function, in order.
+    """
     parameter_types: dict[str, TypeHint[Any]]
+    """
+    A mapping of parameter names to their types.
+    """
 
 
 def inspect_function(
@@ -29,7 +38,7 @@ def inspect_function(
     return_type = (
         sig.return_annotation
         if sig.return_annotation != inspect.Parameter.empty
-        else Unspecified
+        else UnspecifiedType
     )
 
     parameter_names: list[str] = []
@@ -43,7 +52,7 @@ def inspect_function(
 
         parameter_names.append(k)
         parameter_types[p.name] = (
-            p.annotation if p.annotation != inspect.Parameter.empty else Unspecified
+            p.annotation if p.annotation != inspect.Parameter.empty else UnspecifiedType
         )
 
     return FunctionType(

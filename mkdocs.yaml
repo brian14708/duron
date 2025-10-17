@@ -44,6 +44,7 @@ plugins:
             members: true
           inventories:
             - https://docs.python.org/3/objects.inv
+            - https://typing-extensions.readthedocs.io/en/latest/objects.inv
   - mermaid2:
       arguments:
         theme: |

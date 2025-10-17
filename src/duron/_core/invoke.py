@@ -29,11 +29,11 @@ from duron._core.stream import ObserverStream, Stream, StreamWriter
 from duron._core.stream_manager import StreamManager
 from duron._core.task_manager import TaskManager
 from duron._loop import EventLoop, create_loop
-from duron.codec import Codec, JSONValue
+from duron.codec import Codec
 from duron.log import derive_id, is_entry, random_id, set_annotations
 from duron.tracing._span import NULL_SPAN
 from duron.tracing._tracer import Tracer, current_tracer, span
-from duron.typing import Unspecified, inspect_function
+from duron.typing import JSONValue, UnspecifiedType, inspect_function
 
 if TYPE_CHECKING:
     import contextlib
@@ -265,14 +265,16 @@ async def _invoke_prelude(
         args = tuple(
             codec.decode_json(
                 arg,
-                type_info.parameter_types.get(type_info.parameters[i + 1], Unspecified)
+                type_info.parameter_types.get(
+                    type_info.parameters[i + 1], UnspecifiedType
+                )
                 if i + 1 < len(type_info.parameters)
-                else Unspecified,
+                else UnspecifiedType,
             )
             for i, arg in enumerate(init_params["args"])
         )
         kwargs = {
-            k: codec.decode_json(v, type_info.parameter_types.get(k, Unspecified))
+            k: codec.decode_json(v, type_info.parameter_types.get(k, UnspecifiedType))
             for k, v in sorted(init_params["kwargs"].items())
         }
 

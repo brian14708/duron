@@ -2,7 +2,7 @@ from collections.abc import Mapping, Sequence
 from typing import Literal
 from typing_extensions import NotRequired, TypedDict
 
-from duron.codec import JSONValue
+from duron.typing import JSONValue
 
 
 class LinkRef(TypedDict):

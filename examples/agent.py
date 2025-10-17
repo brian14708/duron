@@ -25,8 +25,7 @@ from duron.contrib.storage import FileLogStorage
 from duron.tracing import Tracer, span
 
 if TYPE_CHECKING:
-    from duron.codec import JSONValue
-    from duron.typing import TypeHint
+    from duron.typing import JSONValue, TypeHint
 
 client = AsyncOpenAI()
 

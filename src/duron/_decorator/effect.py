@@ -25,7 +25,7 @@ from typing import (
 )
 from typing_extensions import final
 
-from duron.typing import Unspecified, inspect_function
+from duron.typing import UnspecifiedType, inspect_function
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -172,8 +172,8 @@ def effect(
         def decorate_ckpt(
             fn: Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]],
         ) -> CheckpointFn[_P, _S, _T]:
-            return_type: TypeHint[_S] = Unspecified
-            action_type: TypeHint[_T] = Unspecified
+            return_type: TypeHint[_S] = UnspecifiedType
+            action_type: TypeHint[_T] = UnspecifiedType
             ret = inspect_function(fn).return_type
             if get_origin(ret) is AsyncGenerator:
                 action_type, return_type = get_args(ret)

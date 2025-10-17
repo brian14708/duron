@@ -20,7 +20,6 @@ if TYPE_CHECKING:
     from contextvars import Token
     from types import TracebackType
 
-    from duron.codec import JSONValue
     from duron.log import (
         Entry,
         PromiseCompleteEntry,
@@ -30,6 +29,7 @@ if TYPE_CHECKING:
     )
     from duron.tracing._events import Event, LinkRef, SpanEnd, SpanStart, TraceEvent
     from duron.tracing._span import Span
+    from duron.typing import JSONValue
 
 current_tracer: ContextVar[Tracer | None] = ContextVar("duron.tracer", default=None)
 _current_span: ContextVar[_TracerSpan | None] = ContextVar(

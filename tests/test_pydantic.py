@@ -10,8 +10,7 @@ from duron import Context, durable
 from duron.contrib.storage import MemoryLogStorage
 
 if TYPE_CHECKING:
-    from duron.codec import JSONValue
-    from duron.typing import TypeHint
+    from duron.typing import JSONValue, TypeHint
 
 
 class PydanticPoint(pydantic.BaseModel):

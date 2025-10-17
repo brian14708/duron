@@ -6,8 +6,7 @@ from typing import TYPE_CHECKING
 from typing_extensions import Any, final
 
 if TYPE_CHECKING:
-    from duron.codec import JSONValue
-    from duron.typing import TypeHint
+    from duron.typing import JSONValue, TypeHint
 
 
 @final

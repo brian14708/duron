@@ -26,7 +26,7 @@ from duron._core.ops import (
     create_op,
 )
 from duron._loop import wrap_future
-from duron.typing import Unspecified
+from duron.typing import UnspecifiedType
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Generator, Sequence
@@ -452,7 +452,7 @@ class _StreamRun(ObserverStream[_U, _T], Generic[_U, _T]):
                 callable=self._worker,
                 args=(sink,),
                 kwargs={},
-                return_type=Unspecified,
+                return_type=UnspecifiedType,
                 context=contextvars.copy_context(),
                 annotations=OpAnnotations.extend(None, name=self.name()),
             ),

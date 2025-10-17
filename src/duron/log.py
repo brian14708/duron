@@ -7,14 +7,14 @@ from hashlib import blake2b
 from typing import TYPE_CHECKING, Literal, Protocol
 from typing_extensions import NotRequired, TypedDict
 
-from duron.codec import JSONValue
+from duron.typing import JSONValue
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Mapping
     from typing import TypeGuard
 
 
-class _BaseEntry(TypedDict):
+class BaseEntry(TypedDict):
     id: str
     # Unix timestamp in microseconds
     ts: int
@@ -27,43 +27,43 @@ class ErrorInfo(TypedDict):
     message: str
 
 
-class PromiseCreateEntry(_BaseEntry):
+class PromiseCreateEntry(BaseEntry):
     type: Literal["promise.create"]
 
 
-class PromiseCompleteEntry(_BaseEntry):
+class PromiseCompleteEntry(BaseEntry):
     type: Literal["promise.complete"]
     promise_id: str
     result: NotRequired[JSONValue]
     error: NotRequired[ErrorInfo]
 
 
-class StreamCreateEntry(_BaseEntry):
+class StreamCreateEntry(BaseEntry):
     type: Literal["stream.create"]
 
 
-class StreamEmitEntry(_BaseEntry):
+class StreamEmitEntry(BaseEntry):
     type: Literal["stream.emit"]
     stream_id: str
     value: JSONValue
 
 
-class StreamCompleteEntry(_BaseEntry):
+class StreamCompleteEntry(BaseEntry):
     type: Literal["stream.complete"]
     stream_id: str
     error: NotRequired[ErrorInfo]
 
 
-class BarrierEntry(_BaseEntry):
+class BarrierEntry(BaseEntry):
     type: Literal["barrier"]
 
 
-class TraceEntry(_BaseEntry):
+class TraceEntry(BaseEntry):
     type: Literal["trace"]
     events: list[dict[str, JSONValue]]
 
 
-AnyEntry = _BaseEntry
+AnyEntry = BaseEntry
 
 
 Entry = (

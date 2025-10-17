@@ -1,25 +1,15 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Protocol, TypeAlias, TypeGuard, cast
+from typing import TYPE_CHECKING, Protocol, TypeGuard, cast
 from typing_extensions import (
     Any,
-    TypeAliasType,
     final,
     override,
 )
 
 if TYPE_CHECKING:
-    from duron.typing import TypeHint
-
-    JSONValue: TypeAlias = (
-        dict[str, "JSONValue"] | list["JSONValue"] | str | int | float | bool | None
-    )
-else:
-    JSONValue = TypeAliasType(
-        "JSONValue",
-        "dict[str, JSONValue] | list[JSONValue] | str | int | float | bool | None",
-    )
+    from duron.typing import JSONValue, TypeHint
 
 
 def is_json_value(x: object) -> TypeGuard[JSONValue]:

@@ -14,9 +14,9 @@ if TYPE_CHECKING:
     from duron._core.ops import (
         StreamObserver,
     )
-    from duron.codec import Codec, JSONValue
+    from duron.codec import Codec
     from duron.tracing._tracer import OpSpan
-    from duron.typing import TypeHint
+    from duron.typing import JSONValue, TypeHint
 
 
 @dataclass(slots=True)
