@@ -3,15 +3,16 @@ from __future__ import annotations
 import binascii
 import pickle  # noqa: S403
 from typing import TYPE_CHECKING
-from typing_extensions import Any, final
+from typing_extensions import Any
 
 if TYPE_CHECKING:
     from duron.typing import JSONValue, TypeHint
 
 
-@final
 class PickleCodec:
-    __slots__ = ()
+    """A [codec][duron.codec.Codec] that uses Python's pickle module \
+            for serialization and deserialization.
+    """
 
     @staticmethod
     def encode_json(result: object) -> str:

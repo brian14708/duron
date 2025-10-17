@@ -28,7 +28,7 @@ from typing_extensions import (
 )
 
 from duron._core.config import config
-from duron._core.invoke import Invoke
+from duron._core.invoke import DurableRun
 from duron._core.signal import Signal
 from duron._core.stream import Stream, StreamWriter
 from duron.typing._inspect import inspect_function
@@ -70,7 +70,7 @@ class DurableFn(Generic[_P, _T_co]):
 
     def invoke(
         self, log: LogStorage, /, *, tracer: Tracer | None = None
-    ) -> AsyncContextManager[Invoke[_P, _T_co]]:
+    ) -> AsyncContextManager[DurableRun[_P, _T_co]]:
         """Create an invocation context for this durable function.
 
         Args:
@@ -80,7 +80,7 @@ class DurableFn(Generic[_P, _T_co]):
         Returns:
             Async context manager for Invoke instance
         """
-        return Invoke[_P, _T_co].invoke(self, log, tracer)
+        return DurableRun[_P, _T_co].invoke(self, log, tracer)
 
 
 @overload

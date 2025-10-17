@@ -47,8 +47,8 @@ class Codec(Protocol):
 
 
 class DefaultCodec:
-    """Default implementation of [Codec][duron.codec.Codec] that only handles
-    basic JSON-serializable types.
+    """Default implementation of [Codec][duron.codec.Codec] that only \
+            handles basic JSON-serializable types.
     """
 
     @staticmethod

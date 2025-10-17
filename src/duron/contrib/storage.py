@@ -14,6 +14,8 @@ if TYPE_CHECKING:
 
 @final
 class FileLogStorage:
+    """A [log storage][duron.log.LogStorage] that uses a file to store log entries."""
+
     __slots__ = ("_leases", "_lock", "_log_file")
 
     _log_file: Path
@@ -104,6 +106,8 @@ class FileLogStorage:
 
 @final
 class MemoryLogStorage:
+    """A [log storage][duron.log.LogStorage] that keeps log entries in memory."""
+
     __slots__ = ("_condition", "_entries", "_leases", "_lock")
 
     _entries: list[BaseEntry]

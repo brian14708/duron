@@ -82,13 +82,13 @@ class StreamClose(NamedTuple):
 class Barrier(NamedTuple): ...
 
 
-class ExternalPromiseCreate(NamedTuple):
+class FutureCreate(NamedTuple):
     return_type: TypeHint[Any]
     annotations: OpAnnotations
 
 
-class ExternalPromiseComplete(NamedTuple):
-    promise_id: str
+class FutureComplete(NamedTuple):
+    future_id: str
     value: object
     exception: Exception | None
 
@@ -99,8 +99,8 @@ Op = (
     | StreamEmit
     | StreamClose
     | Barrier
-    | ExternalPromiseCreate
-    | ExternalPromiseComplete
+    | FutureCreate
+    | FutureComplete
 )
 
 
@@ -115,10 +115,8 @@ def create_op(loop: EventLoop, params: StreamClose) -> asyncio.Future[None]: ...
 @overload
 def create_op(loop: EventLoop, params: Barrier) -> asyncio.Future[int]: ...
 @overload
-def create_op(loop: EventLoop, params: ExternalPromiseCreate) -> OpFuture: ...
+def create_op(loop: EventLoop, params: FutureCreate) -> OpFuture: ...
 @overload
-def create_op(
-    loop: EventLoop, params: ExternalPromiseComplete
-) -> asyncio.Future[None]: ...
+def create_op(loop: EventLoop, params: FutureComplete) -> asyncio.Future[None]: ...
 def create_op(loop: EventLoop, params: Op) -> asyncio.Future[Any]:
     return loop.create_op(params, external=asyncio.get_running_loop() is not loop)

@@ -5,7 +5,7 @@ import sys
 from asyncio.exceptions import CancelledError
 from collections import deque
 from typing import TYPE_CHECKING, Generic, cast
-from typing_extensions import Any, TypeVar, final
+from typing_extensions import Any, Protocol, TypeVar, final
 
 from duron._core.ops import (
     Barrier,
@@ -25,24 +25,46 @@ if TYPE_CHECKING:
     from duron._loop import EventLoop
     from duron.typing._hint import TypeHint
 
-_In_contra = TypeVar("_In_contra", contravariant=True)
+_In = TypeVar("_In", contravariant=True)  # noqa: PLC0105
 
 
 class SignalInterrupt(Exception):  # noqa: N818
+    """Exception raised when a signal interrupts an in-progress operation.
+
+    Attributes:
+        value: The value passed to the signal trigger that caused the interrupt.
+    """
+
     def __init__(self, *args: object, value: object) -> None:
         super().__init__(*args)
         self.value: object = value
 
 
+class SignalWriter(Protocol, Generic[_In]):
+    """Protocol for writing values to a signal to interrupt operations."""
+
+    async def trigger(self, value: _In, /) -> None:
+        """Trigger the signal with a value, interrupting active operations.
+
+        Args:
+            value: The value to send with the interrupt.
+        """
+        ...
+
+    async def close(self, /) -> None:
+        """Close the signal stream, preventing further triggers."""
+        ...
+
+
 @final
-class SignalWriter(Generic[_In_contra]):
+class _Writer(Generic[_In]):
     __slots__ = ("_loop", "_stream_id")
 
     def __init__(self, stream_id: str, loop: EventLoop) -> None:
         self._stream_id = stream_id
         self._loop = loop
 
-    async def trigger(self, value: _In_contra, /) -> None:
+    async def trigger(self, value: _In, /) -> None:
         await wrap_future(
             create_op(
                 self._loop,
@@ -63,12 +85,27 @@ _SENTINAL = object()
 
 
 @final
-class Signal(Generic[_In_contra]):
+class Signal(Generic[_In]):
+    """Signal context manager for interruptible operations.
+
+    Signal provides a mechanism for interrupting in-progress operations. When used
+    as an async context manager, it monitors for trigger events. If a signal is
+    triggered while code is executing within the context, a SignalInterrupt exception
+    is raised with the trigger value.
+
+    Example:
+        ```python
+        async with signal:
+            # This code can be interrupted if signal.trigger() is called
+            await long_running_operation()
+        ```
+    """
+
     def __init__(self, loop: EventLoop) -> None:
         self._loop = loop
         # task -> [offset, refcnt]
         self._tasks: dict[asyncio.Task[Any], tuple[int, int]] = {}
-        self._trigger: deque[tuple[int, _In_contra]] = deque()
+        self._trigger: deque[tuple[int, _In]] = deque()
 
     async def __aenter__(self) -> None:
         task = asyncio.current_task()
@@ -104,7 +141,7 @@ class Signal(Generic[_In_contra]):
                     _ = task.uncancel()
                 raise SignalInterrupt(value=value)
 
-    def on_next(self, offset: int, value: _In_contra) -> None:
+    def on_next(self, offset: int, value: _In) -> None:
         self._trigger.append((offset, value))
         for t, (toffset, _refcnt) in self._tasks.items():
             if toffset < offset:
@@ -122,11 +159,11 @@ class Signal(Generic[_In_contra]):
 
 async def create_signal(
     loop: EventLoop,
-    dtype: TypeHint[_In_contra],
+    dtype: TypeHint[_In],
     annotations: OpAnnotations,
-) -> tuple[Signal[_In_contra], SignalWriter[_In_contra]]:
+) -> tuple[Signal[_In], SignalWriter[_In]]:
     assert asyncio.get_running_loop() is loop  # noqa: S101
-    s: Signal[_In_contra] = Signal(loop)
+    s: Signal[_In] = Signal(loop)
     sid = await create_op(
         loop,
         StreamCreate(
@@ -135,4 +172,4 @@ async def create_signal(
             annotations=annotations,
         ),
     )
-    return (s, SignalWriter(sid, loop))
+    return (s, _Writer(sid, loop))

@@ -23,5 +23,10 @@ def set_config(
     *,
     codec: Codec | None = None,
 ) -> None:
+    """Set global configuration for Duron.
+
+    Args:
+        codec: The codec to use for serializing and deserializing data.
+    """
     if codec is not None:
         config.codec = codec

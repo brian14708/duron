@@ -3,13 +3,15 @@ site_url: "https://brian14708.github.io/duron"
 repo_url: "https://github.com/brian14708/duron"
 repo_name: "brian14708/duron"
 nav:
-  - index.md
+  - Home:
+      - index.md
   - Reference:
       - reference/duron.md
       - reference/log.md
       - reference/codec.md
       - reference/tracing.md
       - reference/typing.md
+      - reference/contrib.md
   - Trace UI: https://brian14708.github.io/duron/trace-ui/
 
 theme:
@@ -40,6 +42,7 @@ plugins:
             show_source: false
             show_submodules: false
             show_attribute_values: false
+            separate_signature: true
             merge_init_into_class: true
             members: true
           inventories:

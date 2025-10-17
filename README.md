@@ -8,7 +8,7 @@ Duron is a Python library that makes async work _replayable_. You can pause, res
 - 🧵 **Async-first** — Write `async def` functions and orchestrate them with familiar `await` syntax.
 - 🔍 **Typed & traceable** — Decorators capture type hints so inputs and outputs serialize cleanly.
 - 🗄️ **Storage-agnostic** — Start with file-based logging or plug in your own backend to match your stack.
-- 🚀 **Drop-in ready** — Works in CLI tools, web backends, or long-lived agents—no special runtime required.
+- 🚀 **Drop-in ready** — Works in CLI tools, web backends, or long-lived agents—no special runtime or extra dependencies required.
 
 ## Install
 

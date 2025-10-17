@@ -30,7 +30,7 @@ async def generate_lucky_number() -> int:
     return random.randint(1, 100)
 
 
-@duron.effect(checkpoint=True, initial=lambda: 0, reducer=int.__add__)
+@duron.effect(stateful=True, initial=lambda: 0, reducer=int.__add__)
 async def count_up(count: int, target: int) -> AsyncGenerator[int, int]:
     await asyncio.sleep(0.5)
     while count < target:

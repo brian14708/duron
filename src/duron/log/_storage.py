@@ -9,7 +9,11 @@ if TYPE_CHECKING:
 
 
 class LogStorage(Protocol):
-    """Protocol for persistent storage of operation logs."""
+    """Protocol for persistent storage of operation logs.
+
+    The lease mechanism ensures exclusive access for appending entries,
+    preventing concurrent writes from multiple processes.
+    """
 
     def stream(
         self,

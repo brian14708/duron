@@ -52,7 +52,7 @@ async def test_stream() -> None:
 async def test_stream_host() -> None:
     @durable()
     async def activity(ctx: Context) -> None:
-        stream, handle = await ctx.create_stream(int, external=True)
+        stream, handle = await ctx.create_stream(int)
 
         async def task(stream: StreamWriter[int]) -> None:
             for i in range(50):
@@ -76,7 +76,7 @@ async def test_run() -> None:
     @durable()
     async def activity(ctx: Context) -> None:
         @effect(
-            checkpoint=True,
+            stateful=True,
             initial=str,
             reducer=cast("Callable[[str, str], str]", operator.add),
         )
@@ -110,7 +110,7 @@ async def test_stream_map() -> None:
     @durable()
     async def activity(ctx: Context) -> None:
         @effect(
-            checkpoint=True,
+            stateful=True,
             initial=str,
             reducer=cast("Callable[[str, str], str]", operator.add),
         )
@@ -120,7 +120,7 @@ async def test_stream_map() -> None:
                 s = yield chunk
                 await asyncio.sleep(0)
 
-        async with ctx.run_stream(f) as stream:
+        async with ctx.stream(f) as stream:
             async for s in stream.map(lambda s: s.upper()):
                 assert s == s.upper()
             return
@@ -135,7 +135,7 @@ async def test_stream_map() -> None:
 async def test_stream_peek() -> None:
     @durable()
     async def activity(ctx: Context) -> list[int]:
-        stream, write = await ctx.create_stream(int, external=True)
+        stream, write = await ctx.create_stream(int)
 
         async def f() -> None:
             for i in range(30):
@@ -176,7 +176,7 @@ async def test_stream_cross_loop() -> None:
     @durable()
     async def activity(ctx: Context) -> list[str]:
         @effect(
-            checkpoint=True,
+            stateful=True,
             initial=str,
             reducer=cast("Callable[[str, str], str]", operator.add),
         )
@@ -186,7 +186,7 @@ async def test_stream_cross_loop() -> None:
                 s = yield chunk
                 await asyncio.sleep(0)
 
-        async with ctx.run_stream(f) as stream:
+        async with ctx.stream(f) as stream:
             s = stream.map(lambda x: x * 2)
 
             async def g() -> list[str]:

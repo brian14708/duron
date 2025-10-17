@@ -1,12 +1,3 @@
-"""Effect function decorators for side effects in durable workflows.
-
-This module provides the `@effect` decorator which wraps side-effecting
-async functions. Effects:
-- Run once per unique input during replay
-- Record their return values to the log
-- Support checkpointing for streaming operations (AsyncGenerator)
-"""
-
 from __future__ import annotations
 
 import functools
@@ -40,7 +31,7 @@ _P = ParamSpec("_P")
 
 
 @final
-class CheckpointFn(Generic[_P, _S, _T]):
+class StatefulFn(Generic[_P, _S, _T]):
     def __init__(
         self,
         fn: Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]],
@@ -92,7 +83,7 @@ def effect(
 @overload
 def effect(
     *,
-    checkpoint: Literal[False] = ...,
+    stateful: Literal[False] = ...,
 ) -> Callable[
     [Callable[_P, Coroutine[Any, Any, _T_co]]],
     EffectFn[_P, _T_co],
@@ -100,19 +91,19 @@ def effect(
 @overload
 def effect(
     *,
-    checkpoint: Literal[True],
+    stateful: Literal[True],
     initial: Callable[[], _S],
     reducer: Callable[[_S, _T], _S],
 ) -> Callable[
     [Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]]],
-    CheckpointFn[_P, _S, _T],
+    StatefulFn[_P, _S, _T],
 ]: ...
 def effect(
     fn: Callable[_P, Coroutine[Any, Any, _T_co]] | None = None,
     /,
     *,
-    # checkpoint parameters
-    checkpoint: bool = False,
+    # stateful parameters
+    stateful: bool = False,
     initial: Callable[[], _S] | None = None,
     reducer: Callable[[_S, _T], _S] | None = None,
 ) -> (
@@ -123,7 +114,7 @@ def effect(
     ]
     | Callable[
         [Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]]],
-        CheckpointFn[_P, _S, _T],
+        StatefulFn[_P, _S, _T],
     ]
 ):
     """Decorator to mark async functions as effects.
@@ -131,9 +122,9 @@ def effect(
     Effects are operations that interact with the outside world.
 
     Args:
-        checkpoint: Enable checkpoint mode for async generators
-        initial: Factory function for initial state (required with `checkpoint=True`)
-        reducer: Function to reduce actions into state (required with `checkpoint=True`)
+        stateful: Whether the effect is stateful.
+        initial: Factory function for initial state (required with `stateful=True`)
+        reducer: Function to reduce actions into state (required with `stateful=True`)
 
     Example:
         Basic example:
@@ -143,9 +134,9 @@ def effect(
             return await http_client.get(url)
         ```
 
-        Checkpointing example:
+        Stateful example:
         ```python
-        @duron.effect(checkpoint=True, initial=lambda: 0, reducer=int.__add__)
+        @duron.effect(stateful=True, initial=lambda: 0, reducer=int.__add__)
         async def count_items(state: int, items: list) -> AsyncGenerator[int, int]:
             # restore based on `state`
             for item in items:
@@ -156,7 +147,7 @@ def effect(
         Function wrapper that can be invoked with [ctx.run()][duron.Context.run]
 
     Raises:
-        ValueError: If checkpoint is True but initial or reducer is not provided.
+        ValueError: If stateful is True but initial or reducer is not provided.
     """
     if fn is not None:
         return EffectFn(
@@ -164,20 +155,20 @@ def effect(
             return_type=inspect_function(fn).return_type,
         )
 
-    if checkpoint:
+    if stateful:
         if not initial or not reducer:
-            msg = "initial and reducer must be provided for checkpoint ops"
+            msg = "initial and reducer must be provided for stateful ops"
             raise ValueError(msg)
 
-        def decorate_ckpt(
+        def decorate_stateful(
             fn: Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]],
-        ) -> CheckpointFn[_P, _S, _T]:
+        ) -> StatefulFn[_P, _S, _T]:
             return_type: TypeHint[_S] = UnspecifiedType
             action_type: TypeHint[_T] = UnspecifiedType
             ret = inspect_function(fn).return_type
             if get_origin(ret) is AsyncGenerator:
                 action_type, return_type = get_args(ret)
-            return CheckpointFn(
+            return StatefulFn(
                 fn=fn,
                 initial=initial,
                 reducer=reducer,
@@ -185,7 +176,7 @@ def effect(
                 return_type=return_type,
             )
 
-        return decorate_ckpt
+        return decorate_stateful
 
     def decorate(
         fn: Callable[_P, Coroutine[Any, Any, _T_co]],

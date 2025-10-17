@@ -162,7 +162,7 @@ async def test_external_promise() -> None:
 
     @durable
     async def activity(ctx: Context) -> int:
-        a, b = await ctx.create_promise(int)
+        a, b = await ctx.create_future(int)
         v["data"] = a
         return await b
 
@@ -175,7 +175,7 @@ async def test_external_promise() -> None:
                 if v.get("data") is None:
                     await asyncio.sleep(0.01)
                     continue
-                await t.complete_promise(v["data"], result=9)
+                await t.complete_future(v["data"], result=9)
                 break
 
         bg = asyncio.create_task(do())
@@ -223,33 +223,6 @@ async def test_external_stream_write() -> None:
 
     async with activity.invoke(log) as invoke:
         output_stream = invoke.open_stream("writer", "r")
-
-        await invoke.start()
-
-        async def bg() -> list[int]:
-            values: list[int] = [value async for value in output_stream]
-            return values
-
-        b = asyncio.create_task(bg())
-        result = await invoke.wait()
-        assert result == 42
-        assert await b == list(range(10))
-
-
-@pytest.mark.asyncio
-async def test_watch_stream() -> None:
-    @durable
-    async def activity(ctx: Context) -> int:
-        _, sink = await ctx.create_stream(int, name="output")
-        for i in range(10):
-            await sink.send(i)
-        await sink.close()
-        return 42
-
-    log = MemoryLogStorage()
-
-    async with activity.invoke(log) as invoke:
-        output_stream = invoke.watch_stream({"name": "output"})
 
         await invoke.start()
 

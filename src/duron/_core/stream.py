@@ -40,46 +40,40 @@ if TYPE_CHECKING:
     _P = ParamSpec("_P")
 
 _T = TypeVar("_T")
-_S_co = TypeVar("_S_co", covariant=True, default=None)
 _U = TypeVar("_U")
-_In_contra = TypeVar("_In_contra", contravariant=True)
+_Result = TypeVar("_Result", covariant=True, default=None)  # noqa: PLC0105
+_In = TypeVar("_In", contravariant=True)  # noqa: PLC0105
 
 
-class StreamWriter(Protocol, Generic[_In_contra]):
-    async def send(self, value: _In_contra, /) -> None: ...
-    async def close(self, error: Exception | None = None, /) -> None: ...
+class StreamWriter(Protocol, Generic[_In]):
+    """Protocol for writing values to a stream."""
 
+    async def send(self, value: _In, /) -> None:
+        """Send a value to the stream.
 
-@final
-class _Writer(Generic[_In_contra]):
-    __slots__ = ("_loop", "_stream_id")
+        Args:
+            value: The value to send to stream consumers.
+        """
+        ...
 
-    def __init__(self, steram_id: str, loop: EventLoop) -> None:
-        self._stream_id = steram_id
-        self._loop = loop
+    async def close(self, error: Exception | None = None, /) -> None:
+        """Close the stream, optionally with an error.
 
-    async def send(self, value: _In_contra, /) -> None:
-        await create_op(
-            self._loop,
-            StreamEmit(stream_id=self._stream_id, value=value),
-        )
-
-    async def close(self, exception: Exception | None = None, /) -> None:
-        await create_op(
-            self._loop,
-            StreamClose(stream_id=self._stream_id, exception=exception),
-        )
+        Args:
+            error: Optional exception to signal an error condition to consumers.
+        """
+        ...
 
 
 @final
-class _ExternalWriter(Generic[_In_contra]):
+class _Writer(Generic[_In]):
     __slots__ = ("_loop", "_stream_id")
 
     def __init__(self, stream_id: str, loop: EventLoop) -> None:
         self._stream_id = stream_id
         self._loop = loop
 
-    async def send(self, value: _In_contra, /) -> None:
+    async def send(self, value: _In, /) -> None:
         await wrap_future(
             create_op(
                 self._loop,
@@ -96,7 +90,23 @@ class _ExternalWriter(Generic[_In_contra]):
         )
 
 
-class Stream(ABC, Awaitable[_S_co], Generic[_T, _S_co]):
+class Stream(ABC, Awaitable[_Result], Generic[_T, _Result]):
+    """Abstract base class for readable streams.
+
+    Usage as async iterator:
+        ```python
+        stream, writer = await ctx.create_stream(int)
+        async for value in stream:
+            print(value)
+        ```
+
+    Usage as context manager:
+        ```python
+        async with stream as ops:
+            offset, value = await ops.next()
+        ```
+    """
+
     @abstractmethod
     async def _start(self) -> None: ...
     @abstractmethod
@@ -126,7 +136,7 @@ class Stream(ABC, Awaitable[_S_co], Generic[_T, _S_co]):
         finally:
             await self._shutdown()
 
-    async def __aenter__(self) -> StreamOp[_T, _S_co]:
+    async def __aenter__(self) -> StreamOp[_T, _Result]:
         assert not self._started  # noqa: S101
         self._started = True
         await self._start()
@@ -143,34 +153,82 @@ class Stream(ABC, Awaitable[_S_co], Generic[_T, _S_co]):
     # collect methods
 
     async def collect(self) -> list[_T]:
+        """Consume all values from the stream and return them as a list.
+
+        Returns:
+            A list containing all values emitted by the stream.
+        """
         result: list[_T] = [e async for e in self]
         return result
 
     async def discard(self) -> None:
+        """Consume all values from the stream without collecting them."""
         async for _ in self:
             pass
 
     # stream methods
 
-    def map(self, fn: Callable[[_T], _U]) -> Stream[_U, _S_co]:
+    def map(self, fn: Callable[[_T], _U]) -> Stream[_U, _Result]:
+        """Transform stream values using a mapping function.
+
+        Args:
+            fn: Function to apply to each value in the stream.
+
+        Returns:
+            A new stream that yields transformed values.
+        """
         return _Map(self, fn)
 
     def broadcast(
         self,
         n: int,
     ) -> AbstractAsyncContextManager[Sequence[Stream[_T, None]]]:
+        """Broadcast stream values to multiple consumers.
+
+        Args:
+            n: Number of broadcast streams to create.
+
+        Returns:
+            An async context manager yielding a sequence of n streams, each
+            receiving all values from the source stream.
+        """
         return _Broadcast(self, n)
 
 
 @final
-class StreamOp(Generic[_T, _S_co]):
-    def __init__(self, stream: Stream[_T, _S_co]) -> None:
+class StreamOp(Generic[_T, _Result]):
+    """Operations on a stream obtained from using it as an async context manager.
+
+    StreamOp provides advanced methods for consuming stream values.
+    """
+
+    def __init__(self, stream: Stream[_T, _Result]) -> None:
         self._stream = stream
 
     async def next(self) -> tuple[int, _T]:
+        """Wait for and return the next value from the stream.
+
+        Returns:
+            A tuple of (offset, value) where offset is the operation offset and
+            value is the emitted stream value.
+
+        Raises:
+            StreamClosed: When the stream has been closed.
+        """  # noqa: DOC502
         return await self._stream._next()  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
 
     async def next_nowait(self, ctx: Context) -> AsyncGenerator[tuple[int, _T]]:
+        """Yield available values from the stream without blocking.
+
+        Yields values that have already been emitted up to the current barrier
+        offset. Does not wait for new values.
+
+        Args:
+            ctx: The duron context for determining the current barrier offset.
+
+        Yields:
+            Tuples of (offset, value) for each available value.
+        """
         offset = await ctx.barrier()
         try:
             while True:
@@ -183,9 +241,22 @@ async def create_stream(
     loop: EventLoop,
     dtype: TypeHint[_T],
     annotations: OpAnnotations,
-    *,
-    external: bool = False,
 ) -> tuple[Stream[_T, None], StreamWriter[_T]]:
+    """Create a new bidirectional stream for inter-operation communication.
+
+    Creates a stream for sending values between operations with deterministic
+    replay. The stream can be consumed via async iteration or context manager,
+    while the writer is used to send values from other operations.
+
+    Args:
+        loop: The event loop to create the stream on.
+        dtype: Type hint for values sent through the stream.
+        annotations: Operation annotations for tracing and debugging.
+
+    Returns:
+        A tuple of (stream, writer) where stream is used to consume values and
+        writer is used to send values and close the stream.
+    """
     assert asyncio.get_running_loop() is loop  # noqa: S101
     s: ObserverStream[_T, None] = ObserverStream()
     sid = await create_op(
@@ -196,13 +267,22 @@ async def create_stream(
             annotations=annotations,
         ),
     )
-    if external:
-        return (s, _ExternalWriter(sid, loop))
     return (s, _Writer(sid, loop))
 
 
 @final
 class StreamClosed(Exception):  # noqa: N818
+    """Exception raised when attempting to read from a closed stream.
+
+    This exception is raised when a stream consumer tries to get the next value
+    from a stream that has been closed. If the stream was closed with an error,
+    that error is available via the reason property.
+
+    Attributes:
+        offset: The operation offset at which the stream was closed.
+        reason: The exception that caused the stream to close, if any.
+    """
+
     __slots__ = ("offset",)
 
     def __init__(
@@ -220,18 +300,17 @@ class StreamClosed(Exception):  # noqa: N818
         return cast("Exception | None", self.__cause__)
 
 
-@final
 class EmptyStream(Exception):  # noqa: N818
     __slots__ = ()
 
 
-class ObserverStream(Stream[_T, _S_co], Generic[_T, _S_co]):
+class ObserverStream(Stream[_T, _Result], Generic[_T, _Result]):
     def __init__(self) -> None:
         super().__init__()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._event: asyncio.Event | None = None
         self._buffer: deque[tuple[int, _T | StreamClosed]] = deque()
-        self._waiter: Awaitable[_S_co] | None = None
+        self._waiter: Awaitable[_Result] | None = None
 
     @override
     async def _start(self) -> None:
@@ -283,7 +362,7 @@ class ObserverStream(Stream[_T, _S_co], Generic[_T, _S_co]):
         self._send_close(offset, exc)
 
     @override
-    def __await__(self) -> Generator[Any, Any, _S_co]:
+    def __await__(self) -> Generator[Any, Any, _Result]:
         if self._waiter is None:
             msg = "Stream is not started"
             raise RuntimeError(msg)
@@ -291,8 +370,8 @@ class ObserverStream(Stream[_T, _S_co], Generic[_T, _S_co]):
 
 
 @final
-class _Map(Stream[_U, _S_co], Generic[_T, _U, _S_co]):
-    def __init__(self, stream: Stream[_T, _S_co], fn: Callable[[_T], _U]) -> None:
+class _Map(Stream[_U, _Result], Generic[_T, _U, _Result]):
+    def __init__(self, stream: Stream[_T, _Result], fn: Callable[[_T], _U]) -> None:
         super().__init__()
         self._stream = stream
         self._fn = fn
@@ -316,7 +395,7 @@ class _Map(Stream[_U, _S_co], Generic[_T, _U, _S_co]):
         return await self._stream._shutdown()  # noqa: SLF001
 
     @override
-    def __await__(self) -> Generator[Any, Any, _S_co]:
+    def __await__(self) -> Generator[Any, Any, _Result]:
         return self._stream.__await__()
 
 
@@ -356,7 +435,7 @@ class _Broadcast(Generic[_T]):
                 await self._task
 
 
-def run_stream(
+def run_stateful(
     loop: EventLoop,
     dtype: TypeHint[Any],
     initial: _T,
@@ -367,7 +446,7 @@ def run_stream(
     **kwargs: _P.kwargs,
 ) -> AbstractAsyncContextManager[Stream[_U, _T]]:
     assert asyncio.get_running_loop() is loop  # noqa: S101
-    s: _StreamRun[_U, _T] = _StreamRun(
+    s: _StatefulRun[_U, _T] = _StatefulRun(
         loop,
         initial,
         reducer,
@@ -375,34 +454,34 @@ def run_stream(
         *args,
         **kwargs,
     )
-    return _ResumableGuard(loop, s, dtype)
+    return _StatefulGuard(loop, s, dtype)
 
 
 @final
-class _ResumableGuard(Generic[_U, _T]):
+class _StatefulGuard(Generic[_U, _T]):
     def __init__(
         self,
         loop: EventLoop,
-        resumable: _StreamRun[_U, _T],
+        stateful: _StatefulRun[_U, _T],
         dtype: TypeHint[Any],
     ) -> None:
         self._loop = loop
-        self._stream = resumable
+        self._stream = stateful
         self._task: asyncio.Future[object] | None = None
         self._dtype = dtype
 
-    async def __aenter__(self) -> _StreamRun[_U, _T]:
+    async def __aenter__(self) -> _StatefulRun[_U, _T]:
         sid = await create_op(
             self._loop,
             StreamCreate(
                 dtype=self._dtype,
-                observer=cast("_StreamRun[object, _T]", self._stream),
+                observer=cast("_StatefulRun[object, _T]", self._stream),
                 annotations=OpAnnotations(
                     name=self._stream.name(),
                 ),
             ),
         )
-        sink: StreamWriter[_U] = _ExternalWriter(sid, self._loop)
+        sink: StreamWriter[_U] = _Writer(sid, self._loop)
         self._task = self._stream.start_worker(sink)
         return self._stream
 
@@ -419,7 +498,7 @@ class _ResumableGuard(Generic[_U, _T]):
 
 
 @final
-class _StreamRun(ObserverStream[_U, _T], Generic[_U, _T]):
+class _StatefulRun(ObserverStream[_U, _T], Generic[_U, _T]):
     def __init__(
         self,
         loop: EventLoop,

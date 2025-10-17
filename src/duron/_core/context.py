@@ -16,15 +16,15 @@ from typing_extensions import (
 
 from duron._core.ops import (
     Barrier,
-    ExternalPromiseComplete,
-    ExternalPromiseCreate,
     FnCall,
+    FutureComplete,
+    FutureCreate,
     OpAnnotations,
     create_op,
 )
 from duron._core.signal import create_signal
-from duron._core.stream import create_stream, run_stream
-from duron._decorator.effect import CheckpointFn, EffectFn
+from duron._core.stream import create_stream, run_stateful
+from duron._decorator.effect import EffectFn, StatefulFn
 from duron.typing import inspect_function
 
 if TYPE_CHECKING:
@@ -71,6 +71,14 @@ class Context:
 
     @staticmethod
     def current() -> Context:
+        """Get the currently active Context.
+
+        Returns:
+            The active Context instance.
+
+        Raises:
+            RuntimeError: If no duron context is currently active.
+        """
         ctx = _context.get()
         if ctx is None:
             msg = "No duron context is active"
@@ -88,7 +96,7 @@ class Context:
     @overload
     async def run(
         self,
-        fn: Callable[_P, _T] | CheckpointFn[_P, _T, Any],
+        fn: Callable[_P, _T] | StatefulFn[_P, _T, Any],
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
@@ -97,7 +105,7 @@ class Context:
         self,
         fn: Callable[_P, Coroutine[Any, Any, _T] | _T]
         | EffectFn[_P, _T]
-        | CheckpointFn[_P, _T, Any],
+        | StatefulFn[_P, _T, Any],
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
@@ -115,9 +123,9 @@ class Context:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
 
-        if isinstance(fn, CheckpointFn):
-            async with self.run_stream(
-                cast("CheckpointFn[_P, _T, Any]", fn), *args, **kwargs
+        if isinstance(fn, StatefulFn):
+            async with self.stream(
+                cast("StatefulFn[_P, _T, Any]", fn), *args, **kwargs
             ) as stream:
                 await stream.discard()
                 return await stream
@@ -143,17 +151,30 @@ class Context:
         )
         return cast("_T", await op)
 
-    def run_stream(
+    def stream(
         self,
-        fn: CheckpointFn[_P, _T, _S],
+        fn: StatefulFn[_P, _T, _S],
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
     ) -> AsyncContextManager[Stream[_S, _T]]:
+        """Stream stateful function partial results.
+
+        Args:
+            fn: The stateful function to stream.
+            *args: Positional arguments to pass to the function.
+            **kwargs: Keyword arguments to pass to the function.
+
+        Raises:
+            RuntimeError: If called outside of the context's event loop.
+
+        Returns:
+            An async context manager that yields a Stream of the function's results.
+        """
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
-        return run_stream(
+        return run_stateful(
             self._loop,
             fn.action_type,
             fn.initial(),
@@ -169,9 +190,21 @@ class Context:
         /,
         *,
         name: str | None = None,
-        external: bool = False,
         labels: Mapping[str, str] | None = None,
     ) -> tuple[Stream[_T, None], StreamWriter[_T]]:
+        """Create a new stream within the context.
+
+        Args:
+            dtype: The data type of the stream.
+            name: Optional name for the stream.
+            labels: Optional labels for the stream.
+
+        Raises:
+            RuntimeError: If called outside of the context's event loop.
+
+        Returns:
+            Reader and writer for the created stream.
+        """
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
@@ -191,7 +224,6 @@ class Context:
         return await create_stream(
             self._loop,
             dtype,
-            external=external,
             annotations=annotations,
         )
 
@@ -203,6 +235,19 @@ class Context:
         name: str | None = None,
         labels: Mapping[str, str] | None = None,
     ) -> tuple[Signal[_T], SignalWriter[_T]]:
+        """Create a new signal within the context.
+
+        Args:
+            dtype: The data type of the stream.
+            name: Optional name for the stream.
+            labels: Optional labels for the stream.
+
+        Raises:
+            RuntimeError: If called outside of the context's event loop.
+
+        Returns:
+            Reader and writer for the created stream.
+        """
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
@@ -220,9 +265,13 @@ class Context:
                 labels={"name": name},
             )
 
-        return await create_signal(self._loop, dtype, annotations=annotations)
+        return await create_signal(
+            self._loop,
+            dtype,
+            annotations=annotations,
+        )
 
-    async def create_promise(
+    async def create_future(
         self,
         dtype: type[_T],
         /,
@@ -230,6 +279,19 @@ class Context:
         name: str | None = None,
         labels: Mapping[str, str] | None = None,
     ) -> tuple[str, asyncio.Future[_T]]:
+        """Create a new external future object within the context.
+
+        Args:
+            dtype: The data type of the stream.
+            name: Optional name for the stream.
+            labels: Optional labels for the stream.
+
+        Raises:
+            RuntimeError: If called outside of the context's event loop.
+
+        Returns:
+            Reader and writer for the created stream.
+        """
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
@@ -246,7 +308,7 @@ class Context:
             )
         fut = create_op(
             self._loop,
-            ExternalPromiseCreate(
+            FutureCreate(
                 return_type=dtype,
                 annotations=annotations,
             ),
@@ -257,54 +319,106 @@ class Context:
         )
 
     async def barrier(self) -> int:
+        """Create a barrier operation that records the current execution offset.
+
+        Raises:
+            RuntimeError: If called outside of the context's event loop.
+
+        Returns:
+            The log offset at the point of the barrier.
+        """
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
         return await create_op(self._loop, Barrier())
 
     def time(self) -> float:
+        """Get the current deterministic time in seconds.
+
+        This provides a deterministic timestamp that is consistent during replay.
+        Use this instead of `time.time()` to ensure deterministic behavior.
+
+        Raises:
+            RuntimeError: If called outside of the context's event loop.
+
+        Returns:
+            The current time in seconds as a float.
+        """
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
         return self._loop.time()
 
     def time_ns(self) -> int:
+        """Get the current deterministic time in nanoseconds.
+
+        This provides a deterministic timestamp that is consistent during replay.
+        Use this instead of `time.time_ns()` to ensure deterministic behavior.
+
+        Raises:
+            RuntimeError: If called outside of the context's event loop.
+
+        Returns:
+            The current time in nanoseconds as an integer.
+        """
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
         return self._loop.time_us() * 1_000
 
     def random(self) -> Random:
+        """Get a deterministic random number generator.
+
+        This provides a seeded Random instance that produces consistent results
+        during replay. Use this instead of the `random` module to ensure
+        deterministic behavior.
+
+        Raises:
+            RuntimeError: If called outside of the context's event loop.
+
+        Returns:
+            A Random instance seeded with a deterministic operation ID.
+        """
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context random can only be used in the context loop"
             raise RuntimeError(msg)
         return Random(self._loop.generate_op_id())  # noqa: S311
 
     @overload
-    async def complete_promise(
+    async def complete_future(
         self,
-        id_: str,
+        future_id: str,
         *,
         result: object,
     ) -> None: ...
     @overload
-    async def complete_promise(
+    async def complete_future(
         self,
-        id_: str,
+        future_id: str,
         *,
         exception: Exception,
     ) -> None: ...
-    async def complete_promise(
+    async def complete_future(
         self,
-        id_: str,
+        future_id: str,
         *,
         result: object | None = None,
         exception: Exception | None = None,
     ) -> None:
+        """Complete an external future with a result or exception.
+
+        This method completes a future that was created with `create_future()`,
+        allowing external async work to integrate with duron's checkpointing.
+
+        Args:
+            future_id: The ID of the future to complete.
+            result: The result value to set on the future.
+            exception: The exception to set on the future.
+        """
         await create_op(
             self._loop,
-            ExternalPromiseComplete(
-                promise_id=id_,
+            FutureComplete(
+                future_id=future_id,
                 value=result,
                 exception=exception,
             ),

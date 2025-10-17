@@ -17,9 +17,9 @@ from typing_extensions import (
 from duron._core.context import Context
 from duron._core.ops import (
     Barrier,
-    ExternalPromiseComplete,
-    ExternalPromiseCreate,
     FnCall,
+    FutureComplete,
+    FutureCreate,
     StreamClose,
     StreamCreate,
     StreamEmit,
@@ -72,7 +72,7 @@ _CURRENT_VERSION: Final = 0
 
 
 @final
-class Invoke(Generic[_P, _T_co]):
+class DurableRun(Generic[_P, _T_co]):
     __slots__ = ("_fn", "_log", "_run", "_watchers")
 
     def __init__(
@@ -95,10 +95,11 @@ class Invoke(Generic[_P, _T_co]):
         fn: DurableFn[_P, _T_co],
         log: LogStorage,
         tracer: Tracer | None,
-    ) -> contextlib.AbstractAsyncContextManager[Invoke[_P, _T_co]]:
-        return _InvokeGuard(Invoke(fn, log), tracer)
+    ) -> contextlib.AbstractAsyncContextManager[DurableRun[_P, _T_co]]:
+        return _InvokeGuard(DurableRun(fn, log), tracer)
 
     async def start(self, *args: _P.args, **kwargs: _P.kwargs) -> None:
+        """Start a new invocation of the durable function."""
         codec = self._fn.codec
 
         def prelude() -> InitParams:
@@ -120,6 +121,7 @@ class Invoke(Generic[_P, _T_co]):
         await self._run.resume()
 
     async def resume(self) -> None:
+        """Resume a previously started invocation."""
         type_info = inspect_function(self._fn.fn)
         prelude = _invoke_prelude(self._fn, type_info, _resume_init)
         self._run = _InvokeRun(
@@ -131,6 +133,15 @@ class Invoke(Generic[_P, _T_co]):
         await self._run.resume()
 
     async def wait(self) -> _T_co:
+        """Wait for the durable function invocation to complete \
+                and return its result.
+
+        Raises:
+            RuntimeError: If the job has not been started.
+
+        Returns:
+            The result of the durable function invocation.
+        """
         if self._run is None:
             msg = "Job not started"
             raise RuntimeError(msg)
@@ -142,33 +153,40 @@ class Invoke(Generic[_P, _T_co]):
             self._run = None
 
     @overload
-    async def complete_promise(
+    async def complete_future(
         self,
         id_: str,
         *,
         result: object,
     ) -> None: ...
     @overload
-    async def complete_promise(
+    async def complete_future(
         self,
         id_: str,
         *,
         exception: Exception,
     ) -> None: ...
-    async def complete_promise(
+    async def complete_future(
         self,
         id_: str,
         *,
         result: object | None = None,
         exception: Exception | None = None,
     ) -> None:
+        """Complete an external future with the given result \
+                or exception.
+
+        Raises:
+            ValueError: If neither result nor exception is provided.
+            RuntimeError: If the job has not been started.
+        """
         if self._run is None:
             msg = "Job not started"
             raise RuntimeError(msg)
         if exception is not None:
-            await self._run.complete_external_promise(id_, exception=exception)
+            await self._run.complete_external_future(id_, exception=exception)
         elif result is not None:
-            await self._run.complete_external_promise(id_, result=result)
+            await self._run.complete_external_future(id_, result=result)
         else:
             msg = "Either result or error must be provided"
             raise ValueError(msg)
@@ -180,6 +198,23 @@ class Invoke(Generic[_P, _T_co]):
     def open_stream(
         self, name: str, mode: Literal["w", "r"]
     ) -> StreamWriter[Any] | Stream[Any, None]:
+        """Open a runtime provided stream for reading or writing.
+
+        Note:
+            - Must be called before starting or resuming the job.
+
+        Args:
+            name: The name of the stream parameter to open.
+            mode: The mode to open the stream in.
+
+        Raises:
+            RuntimeError: If called after the job has started.
+            ValueError: If the stream parameter is not found.
+
+        Returns:
+            A [StreamWriter][duron.StreamWriter] for writing, \
+                    or a [Stream][duron.Stream] for reading.
+        """
         if self._run is not None:
             msg = "open_stream() must be called before start() or resume()"
             raise RuntimeError(msg)
@@ -190,23 +225,13 @@ class Invoke(Generic[_P, _T_co]):
             msg = f"Stream parameter '{name}' not found"
             raise ValueError(msg)
         if mode == "r":
-            return self.watch_stream({"name": name})
+            observer: ObserverStream[_T_co, None] = ObserverStream()
+            self._watchers.append((
+                {"name": name},
+                cast("ObserverStream[object, None]", observer),
+            ))
+            return observer
         return _StreamWriter(self, name)
-
-    def watch_stream(
-        self,
-        labels: dict[str, str],
-    ) -> Stream[_T_co, None]:
-        if self._run is not None:
-            msg = "create_watcher() must be called before start() or resume()"
-            raise RuntimeError(msg)
-
-        observer: ObserverStream[_T_co, None] = ObserverStream()
-        self._watchers.append((
-            labels,
-            cast("ObserverStream[object, None]", observer),
-        ))
-        return observer
 
     def get_run(self) -> _InvokeRun:
         if self._run is None:
@@ -219,12 +244,12 @@ class Invoke(Generic[_P, _T_co]):
 class _InvokeGuard(Generic[_P, _T_co]):
     __slots__ = ("_job", "_token", "_tracer")
 
-    def __init__(self, job: Invoke[_P, _T_co], tracer: Tracer | None) -> None:
+    def __init__(self, job: DurableRun[_P, _T_co], tracer: Tracer | None) -> None:
         self._job = job
         self._tracer = tracer
         self._token: Token[Tracer | None] | None = None
 
-    async def __aenter__(self) -> Invoke[_P, _T_co]:
+    async def __aenter__(self) -> DurableRun[_P, _T_co]:
         self._token = current_tracer.set(self._tracer)
         return self._job
 
@@ -668,7 +693,7 @@ class _InvokeRun:
                     "type": "barrier",
                 }
                 await self.enqueue_log(barrier_entry)
-            case ExternalPromiseCreate():
+            case FutureCreate():
                 promise_create_entry = {
                     "ts": self.now(),
                     "id": id_,
@@ -684,12 +709,12 @@ class _InvokeRun:
                     )
                 self._task_manager.add_future(id_, op.return_type)
                 await self.enqueue_log(promise_create_entry)
-            case ExternalPromiseComplete():
+            case FutureComplete():
                 promise_complete_entry: PromiseCompleteEntry = {
                     "ts": self.now(),
                     "id": id_,
                     "type": "promise.complete",
-                    "promise_id": op.promise_id,
+                    "promise_id": op.future_id,
                 }
                 if op.exception is not None:
                     promise_complete_entry["error"] = _encode_error(op.exception)
@@ -697,13 +722,13 @@ class _InvokeRun:
                     promise_complete_entry["result"] = self._codec.encode_json(op.value)
 
                 if self._tracer:
-                    self._tracer.end_op_span(op.promise_id, promise_complete_entry)
+                    self._tracer.end_op_span(op.future_id, promise_complete_entry)
                 await self.enqueue_log(promise_complete_entry)
                 self._loop.post_completion(id_, result=None)
             case _:
                 assert_never(op)
 
-    async def complete_external_promise(
+    async def complete_external_future(
         self,
         id_: str,
         *,
@@ -813,7 +838,7 @@ def _decode_error(error_info: ErrorInfo) -> Exception | CancelledError:
 class _StreamWriter(Generic[_T]):
     __slots__ = ("_invoke", "_name")
 
-    def __init__(self, invoke: Invoke[..., Any], name: str) -> None:
+    def __init__(self, invoke: DurableRun[..., Any], name: str) -> None:
         self._invoke = invoke
         self._name = name
 

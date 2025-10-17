@@ -1,10 +1,12 @@
 from duron._core.config import set_config as set_config
 from duron._core.context import Context as Context
+from duron._core.invoke import DurableRun as DurableRun
 from duron._core.signal import Signal as Signal
 from duron._core.signal import SignalInterrupt as SignalInterrupt
 from duron._core.signal import SignalWriter as SignalWriter
 from duron._core.stream import Stream as Stream
 from duron._core.stream import StreamClosed as StreamClosed
+from duron._core.stream import StreamOp as StreamOp
 from duron._core.stream import StreamWriter as StreamWriter
 from duron._decorator.durable import DurableFn as DurableFn
 from duron._decorator.durable import durable as durable
