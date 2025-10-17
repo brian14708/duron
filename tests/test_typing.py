@@ -90,7 +90,7 @@ def test_positional_only_and_keyword_only() -> None:
 
     result = inspect_function(func_with_special_args)
 
-    assert result.parameters == ["_a", "_b", "_c"]
+    assert result.parameters == ["_a", "_b"]
     assert result.parameter_types == {"_a": int, "_b": str, "_c": float}
     assert result.return_type is bool
 

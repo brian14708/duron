@@ -1,28 +1,27 @@
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from typing_extensions import NamedTuple
 
 from duron.typing._hint import UnspecifiedType
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping, Sequence
 
     from duron.typing._hint import TypeHint
 
 
-@dataclass(slots=True)
-class FunctionType:
+class FunctionType(NamedTuple):
     return_type: TypeHint[Any]
     """
     The return type of the function.
     """
-    parameters: list[str]
+    parameters: Sequence[str]
     """
     The names of the parameters of the function, in order.
     """
-    parameter_types: dict[str, TypeHint[Any]]
+    parameter_types: Mapping[str, TypeHint[Any]]
     """
     A mapping of parameter names to their types.
     """
@@ -50,9 +49,12 @@ def inspect_function(
         }:
             continue
 
-        parameter_names.append(k)
+        if p.kind is not inspect.Parameter.KEYWORD_ONLY:
+            parameter_names.append(k)
         parameter_types[p.name] = (
-            p.annotation if p.annotation != inspect.Parameter.empty else UnspecifiedType
+            p.annotation
+            if p.annotation is not inspect.Parameter.empty
+            else UnspecifiedType
         )
 
     return FunctionType(
