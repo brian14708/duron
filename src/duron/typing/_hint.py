@@ -14,6 +14,9 @@ class _Unspecified:
 
 Unspecified: Final = _Unspecified()
 Provided: Final = cast("Any", ...)
+"""
+Mark a parameter as provided when invoked.
+"""
 
 
 MYPY = False

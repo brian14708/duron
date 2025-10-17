@@ -1,7 +1,16 @@
+"""Effect function decorators for side effects in durable workflows.
+
+This module provides the `@effect` decorator which wraps side-effecting
+async functions. Effects:
+- Run once per unique input during replay
+- Record their return values to the log
+- Support checkpointing for streaming operations (AsyncGenerator)
+"""
+
 from __future__ import annotations
 
+import functools
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -14,6 +23,7 @@ from typing import (
     get_origin,
     overload,
 )
+from typing_extensions import final
 
 from duron.typing import Unspecified, inspect_function
 
@@ -29,13 +39,22 @@ _T_co = TypeVar("_T_co", covariant=True)
 _P = ParamSpec("_P")
 
 
-@dataclass(slots=True)
+@final
 class CheckpointFn(Generic[_P, _S, _T]):
-    fn: Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]]
-    initial: Callable[[], _S]
-    reducer: Callable[[_S, _T], _S]
-    action_type: TypeHint[_T]
-    return_type: TypeHint[_S]
+    def __init__(
+        self,
+        fn: Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]],
+        initial: Callable[[], _S],
+        reducer: Callable[[_S, _T], _S],
+        action_type: TypeHint[_T],
+        return_type: TypeHint[_S],
+    ) -> None:
+        self.fn = fn
+        self.initial = initial
+        self.reducer = reducer
+        self.action_type = action_type
+        self.return_type = return_type
+        functools.update_wrapper(self, fn)
 
     def __call__(
         self,
@@ -46,10 +65,16 @@ class CheckpointFn(Generic[_P, _S, _T]):
         return self.fn(state, *args, **kwargs)
 
 
-@dataclass(slots=True)
+@final
 class EffectFn(Generic[_P, _T_co]):
-    fn: Callable[_P, Coroutine[Any, Any, _T_co]]
-    return_type: TypeHint[Any]
+    def __init__(
+        self,
+        fn: Callable[_P, Coroutine[Any, Any, _T_co]],
+        return_type: TypeHint[Any],
+    ) -> None:
+        self.fn = fn
+        self.return_type = return_type
+        functools.update_wrapper(self, fn)
 
     def __call__(
         self,
@@ -101,6 +126,38 @@ def effect(
         CheckpointFn[_P, _S, _T],
     ]
 ):
+    """Decorator to mark async functions as effects.
+
+    Effects are operations that interact with the outside world.
+
+    Args:
+        checkpoint: Enable checkpoint mode for async generators
+        initial: Factory function for initial state (required with `checkpoint=True`)
+        reducer: Function to reduce actions into state (required with `checkpoint=True`)
+
+    Example:
+        Basic example:
+        ```python
+        @duron.effect
+        async def fetch_data(url: str) -> dict:
+            return await http_client.get(url)
+        ```
+
+        Checkpointing example:
+        ```python
+        @duron.effect(checkpoint=True, initial=lambda: 0, reducer=int.__add__)
+        async def count_items(state: int, items: list) -> AsyncGenerator[int, int]:
+            # restore based on `state`
+            for item in items:
+                yield 1
+        ```
+
+    Returns:
+        Function wrapper that can be invoked with [ctx.run()][duron.Context.run]
+
+    Raises:
+        ValueError: If checkpoint is True but initial or reducer is not provided.
+    """
     if fn is not None:
         return EffectFn(
             fn=fn,

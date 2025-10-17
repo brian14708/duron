@@ -4,7 +4,12 @@ repo_url: "https://github.com/brian14708/duron"
 repo_name: "brian14708/duron"
 nav:
   - index.md
-  - reference.md
+  - Reference:
+      - reference/duron.md
+      - reference/log.md
+      - reference/codec.md
+      - reference/tracing.md
+      - reference/typing.md
   - Trace UI: https://brian14708.github.io/duron/trace-ui/
 
 theme:
@@ -25,7 +30,20 @@ theme:
     - navigation.tabs
 plugins:
   - search
-  - mkdocstrings
+  - autorefs
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            show_source: false
+            show_submodules: false
+            show_attribute_values: false
+            merge_init_into_class: true
+            members: true
+          inventories:
+            - https://docs.python.org/3/objects.inv
   - mermaid2:
       arguments:
         theme: |

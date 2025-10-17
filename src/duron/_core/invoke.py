@@ -31,9 +31,8 @@ from duron._core.task_manager import TaskManager
 from duron._loop import EventLoop, create_loop
 from duron.codec import Codec, JSONValue
 from duron.log import derive_id, is_entry, random_id, set_annotations
-from duron.tracing import Tracer, current_tracer
 from duron.tracing._span import NULL_SPAN
-from duron.tracing._tracer import span
+from duron.tracing._tracer import Tracer, current_tracer, span
 from duron.typing import Unspecified, inspect_function
 
 if TYPE_CHECKING:
@@ -100,6 +99,8 @@ class Invoke(Generic[_P, _T_co]):
         return _InvokeGuard(Invoke(fn, log), tracer)
 
     async def start(self, *args: _P.args, **kwargs: _P.kwargs) -> None:
+        codec = self._fn.codec
+
         def prelude() -> InitParams:
             return {
                 "version": _CURRENT_VERSION,
@@ -108,7 +109,6 @@ class Invoke(Generic[_P, _T_co]):
                 "nonce": random_id(),
             }
 
-        codec = self._fn.codec
         type_info = inspect_function(self._fn.fn)
         p = _invoke_prelude(self._fn, type_info, prelude)
         self._run = _InvokeRun(

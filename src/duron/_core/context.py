@@ -105,6 +105,15 @@ class Context:
         *args: _P.args,
         **kwargs: _P.kwargs,
     ) -> _T:
+        """
+        Run a function within the context.
+
+        Returns:
+            The result of the function call.
+
+        Raises:
+            RuntimeError: If called outside of the context's event loop.
+        """
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
