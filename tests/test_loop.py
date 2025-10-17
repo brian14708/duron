@@ -6,7 +6,7 @@ from typing_extensions import overload
 
 import pytest
 
-from duron._loop import create_loop  # noqa: PLC2701
+from duron._loop import create_loop
 
 
 @pytest.mark.asyncio

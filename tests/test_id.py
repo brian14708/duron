@@ -1,6 +1,6 @@
 import pytest
 
-from duron.log import (
+from duron._loop import (
     derive_id,
     random_id,
 )

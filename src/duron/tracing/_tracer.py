@@ -11,7 +11,7 @@ from hashlib import blake2b
 from typing import TYPE_CHECKING, Literal, cast
 from typing_extensions import Self, override
 
-from duron.log import set_annotations
+from duron.log._helper import set_annotations
 from duron.tracing._span import NULL_SPAN
 
 if TYPE_CHECKING:
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from contextvars import Token
     from types import TracebackType
 
-    from duron.log import (
+    from duron.log._entry import (
         Entry,
         PromiseCompleteEntry,
         PromiseCreateEntry,

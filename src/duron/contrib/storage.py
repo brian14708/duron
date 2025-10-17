@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast, final
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from duron.log import AnyEntry, Entry
+    from duron.log import BaseEntry, Entry
 
 
 @final
@@ -32,7 +32,7 @@ class FileLogStorage:
         /,
         *,
         live: bool,
-    ) -> AsyncGenerator[tuple[int, AnyEntry], None]:
+    ) -> AsyncGenerator[tuple[int, BaseEntry], None]:
         if not self._log_file.exists():
             return
 
@@ -52,7 +52,7 @@ class FileLogStorage:
                         if isinstance(entry, dict):
                             yield (
                                 line_start_offset,
-                                cast("AnyEntry", cast("object", entry)),
+                                cast("BaseEntry", cast("object", entry)),
                             )
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         pass
@@ -71,7 +71,7 @@ class FileLogStorage:
                             if isinstance(entry, dict):
                                 yield (
                                     line_start_offset,
-                                    cast("AnyEntry", cast("object", entry)),
+                                    cast("BaseEntry", cast("object", entry)),
                                 )
                         except (json.JSONDecodeError, UnicodeDecodeError):
                             pass
@@ -106,12 +106,12 @@ class FileLogStorage:
 class MemoryLogStorage:
     __slots__ = ("_condition", "_entries", "_leases", "_lock")
 
-    _entries: list[AnyEntry]
+    _entries: list[BaseEntry]
     _leases: bytes | None
     _lock: asyncio.Lock
     _condition: asyncio.Condition
 
-    def __init__(self, entries: list[AnyEntry] | None = None) -> None:
+    def __init__(self, entries: list[BaseEntry] | None = None) -> None:
         self._entries = entries or []
         self._leases = None
         self._lock = asyncio.Lock()
@@ -123,7 +123,7 @@ class MemoryLogStorage:
         /,
         *,
         live: bool,
-    ) -> AsyncGenerator[tuple[int, AnyEntry], None]:
+    ) -> AsyncGenerator[tuple[int, BaseEntry], None]:
         start_index: int = start + 1 if start is not None else 0
 
         # Yield existing entries
@@ -172,10 +172,10 @@ class MemoryLogStorage:
                 raise ValueError(msg)
 
             offset = len(self._entries)
-            self._entries.append(cast("AnyEntry", cast("object", entry)))
+            self._entries.append(cast("BaseEntry", cast("object", entry)))
             self._condition.notify_all()
             return offset
 
-    async def entries(self) -> list[AnyEntry]:
+    async def entries(self) -> list[BaseEntry]:
         async with self._lock:
             return self._entries.copy()

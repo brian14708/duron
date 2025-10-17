@@ -28,9 +28,9 @@ from duron._core.signal import Signal
 from duron._core.stream import ObserverStream, Stream, StreamWriter
 from duron._core.stream_manager import StreamManager
 from duron._core.task_manager import TaskManager
-from duron._loop import EventLoop, create_loop
+from duron._loop import EventLoop, create_loop, derive_id, random_id
 from duron.codec import Codec
-from duron.log import derive_id, is_entry, random_id, set_annotations
+from duron.log._helper import is_entry, set_annotations
 from duron.tracing._span import NULL_SPAN
 from duron.tracing._tracer import Tracer, current_tracer, span
 from duron.typing import JSONValue, UnspecifiedType, inspect_function
@@ -50,17 +50,17 @@ if TYPE_CHECKING:
     from duron._decorator.durable import DurableFn
     from duron._loop import OpFuture, WaitSet
     from duron.codec import Codec
-    from duron.log import (
+    from duron.log._entry import (
         BarrierEntry,
         Entry,
         ErrorInfo,
-        LogStorage,
         PromiseCompleteEntry,
         PromiseCreateEntry,
         StreamCompleteEntry,
         StreamCreateEntry,
         StreamEmitEntry,
     )
+    from duron.log._storage import LogStorage
     from duron.typing import FunctionType
 
 

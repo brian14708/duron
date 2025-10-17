@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import binascii
 import contextlib
 import contextvars
 import logging
+import os
 from asyncio import events, tasks
 from collections import deque
 from dataclasses import dataclass
@@ -18,8 +20,6 @@ from typing_extensions import (
     overload,
     override,
 )
-
-from duron.log import derive_id, random_id
 
 if TYPE_CHECKING:
     import sys
@@ -403,3 +403,16 @@ def wrap_future(
     future.add_done_callback(done)
     dst_future.add_done_callback(dst_done)
     return dst_future
+
+
+def random_id() -> str:
+    return binascii.b2a_base64(os.urandom(12), newline=False).decode()
+
+
+def derive_id(base: str, *, context: bytes = b"", key: bytes = b"") -> str:
+    return binascii.b2a_base64(
+        blake2b(
+            binascii.a2b_base64(base), salt=context, key=key, digest_size=12
+        ).digest(),
+        newline=False,
+    ).decode()
