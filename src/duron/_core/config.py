@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from duron.codec import DefaultCodec
+from duron.codec._base import DefaultCodec
 
 if TYPE_CHECKING:
     from duron.codec import Codec

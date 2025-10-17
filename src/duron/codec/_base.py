@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol, TypeGuard, cast
-from typing_extensions import (
-    Any,
-)
+from typing_extensions import Any
 
 if TYPE_CHECKING:
     from duron.typing import JSONValue, TypeHint
