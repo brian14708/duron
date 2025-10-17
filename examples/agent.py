@@ -22,7 +22,7 @@ import duron
 from duron import Provided, Signal, SignalInterrupt, Stream, StreamWriter
 from duron.codec import Codec
 from duron.contrib.storage import FileLogStorage
-from duron.tracing import Tracer, span
+from duron.tracing import create_tracer, span
 
 if TYPE_CHECKING:
     from duron.typing import JSONValue, TypeHint
@@ -159,7 +159,9 @@ async def main() -> None:
     args = parser.parse_args()
 
     log_storage = FileLogStorage(Path("data") / f"{args.session_id}.jsonl")
-    async with agent_fn.invoke(log_storage, tracer=Tracer(args.session_id)) as job:
+    async with agent_fn.invoke(
+        log_storage, tracer=create_tracer(args.session_id)
+    ) as job:
         input_stream: StreamWriter[str] = job.open_stream("input_", "w")
         signal_stream: StreamWriter[None] = job.open_stream("signal", "w")
         stream: Stream[tuple[str, str]] = job.open_stream("output", "r")

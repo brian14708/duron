@@ -10,19 +10,33 @@ if TYPE_CHECKING:
 
 
 class Span(Protocol):
+    """Protocol for tracing spans that represent units of work."""
+
     def record(
         self,
-        key: str,
-        value: JSONValue,
-        /,
-    ) -> None: ...
+        **kwargs: JSONValue,
+    ) -> None:
+        """Record an attribute on this span.
+
+        Args:
+            **kwargs: JSON-serializable value to record
+        """
+        ...
 
     def set_status(
         self,
         status: Literal["OK", "ERROR"],
         message: str | None = None,
         /,
-    ) -> None: ...
+    ) -> None:
+        """Set the status of this span.
+
+        Args:
+            status: Either "OK" for successful completion or "ERROR" for failure
+            message: Optional status message, typically used with "ERROR" status
+                    to provide error details
+        """
+        ...
 
 
 @final
@@ -33,7 +47,7 @@ class _NullSpan:
         return self
 
     @staticmethod
-    def record(_key: str, _value: JSONValue) -> None:
+    def record(**_kwargs: JSONValue) -> None:
         return
 
     @staticmethod

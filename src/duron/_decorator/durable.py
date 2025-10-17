@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from duron._core.context import Context
     from duron.codec import Codec
     from duron.log import LogStorage
-    from duron.tracing import Tracer
+    from duron.tracing._tracer import Tracer
     from duron.typing import TypeHint
 
 

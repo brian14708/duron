@@ -9,13 +9,13 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from hashlib import blake2b
 from typing import TYPE_CHECKING, Literal, cast
-from typing_extensions import Self, override
+from typing_extensions import NamedTuple, Self, override
 
 from duron.log._helper import set_annotations
 from duron.tracing._span import NULL_SPAN
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
     from contextlib import AbstractContextManager
     from contextvars import Token
     from types import TracebackType
@@ -23,9 +23,7 @@ if TYPE_CHECKING:
     from duron.log._entry import (
         Entry,
         PromiseCompleteEntry,
-        PromiseCreateEntry,
         StreamCompleteEntry,
-        StreamCreateEntry,
     )
     from duron.tracing._events import Event, LinkRef, SpanEnd, SpanStart, TraceEvent
     from duron.tracing._span import Span
@@ -50,7 +48,7 @@ class Tracer:
         "_lock",
         "_open_spans",
         "_state",
-        "instance_id",
+        "run_id",
         "trace_id",
     )
 
@@ -59,10 +57,10 @@ class Tracer:
         trace_id: str,
         /,
         *,
-        instance_id: str | None = None,
+        run_id: str | None = None,
     ) -> None:
         self.trace_id: str = trace_id
-        self.instance_id: str = instance_id or _trace_id()
+        self.run_id: str = run_id or _trace_id()
         self._events: list[TraceEvent] = []
         self._lock = threading.Lock()
         self._state: TracerState = TracerState.INIT
@@ -75,10 +73,9 @@ class Tracer:
                 return
 
             if self._state == TracerState.INIT:
-                # Buffer events in INIT state
-                self._init_buffer.append(event)
-                # Track open/closed spans
                 if event["type"] == "span.start":
+                    # only keep span.start events in INIT state
+                    self._init_buffer.append(event)
                     self._open_spans[event["span_id"]] = event
                 elif event["type"] == "span.end":
                     self._open_spans.pop(event["span_id"], None)
@@ -91,47 +88,20 @@ class Tracer:
                     self._open_spans.pop(event["span_id"], None)
 
     def start(self) -> None:
-        """Transition to STARTED state, clear completed spans, emit remaining."""
         with self._lock:
             if self._state != TracerState.INIT:
                 return
 
-            # Find all span IDs that have been completed (have both start and end)
-            completed_span_ids: set[str] = set()
-            span_ends: set[str] = set()
-
-            for event in self._init_buffer:
-                if event["type"] == "span.end":
-                    span_ends.add(event["span_id"])
-
-            for event in self._init_buffer:
-                if event["type"] == "span.start" and event["span_id"] in span_ends:
-                    completed_span_ids.add(event["span_id"])
-
-            # Filter out completed spans (both start and end) and their related events
-            # Keep only span.start events for incomplete spans and other events
             for event in self._init_buffer:
                 event_span_id = event.get("span_id")
 
-                # Skip completed span events (both start and end)
-                if event_span_id in completed_span_ids:
-                    continue
+                if event_span_id in self._open_spans:
+                    self._events.append(event)
 
-                # Skip span.end events for incomplete spans (keep only starts)
-                if event["type"] == "span.end":
-                    continue
-
-                # Emit everything else (span.start for incomplete spans, other events)
-                self._events.append(event)
-
-            # Clear the init buffer
             self._init_buffer.clear()
-
-            # Transition to STARTED state
             self._state = TracerState.STARTED
 
     def close(self) -> None:
-        """Transition to CLOSED state and mark all open spans as failed."""
         with self._lock:
             if self._state == TracerState.CLOSED or self._state == TracerState.INIT:
                 return
@@ -145,14 +115,12 @@ class Tracer:
                     "status_message": "tracer closed",
                 }
                 self._events.append(end_event)
-
             self._open_spans.clear()
-
             self._state = TracerState.CLOSED
 
     def pop_events(self, *, flush: bool) -> list[dict[str, JSONValue]]:
         with self._lock:
-            if len(self._events) < 16 and not flush:
+            if len(self._events) < 4 and not flush:
                 return []
 
             old, self._events = self._events, []
@@ -162,27 +130,35 @@ class Tracer:
         self,
         name: str,
         attributes: Mapping[str, JSONValue] | None = None,
-        links: tuple[LinkRef, ...] | None = None,
+        links: Iterable[LinkRef] | None = None,
     ) -> AbstractContextManager[Span]:
         parent = _current_span.get()
-        return _TracerSpan(
-            _random_id(),
-            tracer=self,
-            name=name,
-            attributes=dict(attributes) if attributes else None,
-            parent_id=parent.id if parent else None,
-            links=links,
-        )
+        id_ = _random_id()
+        evnt: SpanStart = {
+            "type": "span.start",
+            "span_id": id_,
+            "ts": -1,
+            "name": name,
+        }
+        if parent:
+            evnt["parent_span_id"] = parent.id
+        if attributes:
+            evnt["attributes"] = attributes
+        if links:
+            evnt["links"] = tuple(links)
+
+        return _TracerSpan(id_, tracer=self, start_event=evnt)
 
     def new_op_span(
         self,
         name: str,
-        entry: PromiseCreateEntry | StreamCreateEntry,
+        entry: Entry,
     ) -> OpSpan:
+        id_ = _derive_id(entry["id"])
         event: SpanStart = {
             "type": "span.start",
             "name": name,
-            "span_id": _derive_id(entry["id"]),
+            "span_id": id_,
             "ts": time.time_ns() // 1000,
         }
         set_annotations(
@@ -192,10 +168,7 @@ class Tracer:
                 "trace.event": cast("dict[str, JSONValue]", event),
             },
         )
-        return OpSpan(
-            id=_derive_id(entry["id"]),
-            tracer=self,
-        )
+        return OpSpan(id=id_, tracer=self)
 
     def end_op_span(
         self, origin_entry_id: str, entry: PromiseCompleteEntry | StreamCompleteEntry
@@ -207,8 +180,7 @@ class Tracer:
         return current_tracer.get()
 
 
-@dataclass(slots=True)
-class OpSpan:
+class OpSpan(NamedTuple):
     id: str
     tracer: Tracer
 
@@ -251,40 +223,28 @@ class OpSpan:
 class _TracerSpan:
     id: str
     tracer: Tracer
-    name: str
-    parent_id: str | None = None
-    attributes: dict[str, JSONValue] | None = None
-    links: tuple[LinkRef, ...] | None = None
+    start_event: SpanStart | None
     _token: Token[_TracerSpan | None] | None = None
     _status: Literal["OK", "ERROR"] | None = None
     _status_message: str | None = None
+    _attributes: dict[str, JSONValue] | None = None
 
     def __enter__(self) -> Self:
         start_ns = time.time_ns()
-        evnt: SpanStart = {
-            "type": "span.start",
-            "span_id": self.id,
-            "ts": start_ns // 1000,
-            "name": self.name,
-        }
-        if self.parent_id:
-            evnt["parent_span_id"] = self.parent_id
-        if self.attributes:
-            evnt["attributes"] = self.attributes
-            self.attributes = None
-        if self.links:
-            evnt["links"] = self.links
-            self.links = None
-        self.tracer.emit_event(evnt)
-        token = _current_span.set(self)
-        self._token = token
+        if self.start_event:
+            self.start_event["ts"] = start_ns // 1000
+            self.tracer.emit_event(self.start_event)
+            self.start_event = None
+            token = _current_span.set(self)
+            self._token = token
         return self
 
-    def record(self, key: str, value: JSONValue) -> None:
-        if a := self.attributes:
-            a[key] = value
+    def record(self, **kwargs: JSONValue) -> None:
+        if a := self._attributes:
+            for key, value in kwargs.items():
+                a[key] = value
         else:
-            self.attributes = {key: value}
+            self._attributes = kwargs
 
     def set_status(
         self, status: Literal["OK", "ERROR"], message: str | None = None
@@ -298,30 +258,29 @@ class _TracerSpan:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        # Set status based on exception if not explicitly set
-        if self._status is None:
-            if exc_type is not None:
-                self._status = "ERROR"
-                if self._status_message is None and exc_value is not None:
-                    self._status_message = str(exc_value)
-            else:
-                self._status = "OK"
-
-        end_ns = time.time_ns()
-        evnt: SpanEnd = {
-            "type": "span.end",
-            "span_id": self.id,
-            "ts": end_ns // 1000,
-            "status": self._status,
-        }
-        if self.attributes:
-            evnt["attributes"] = self.attributes
-            self.attributes = None
-        if self._status_message:
-            evnt["status_message"] = self._status_message
-
-        self.tracer.emit_event(evnt)
         if self._token:
+            if self._status is None:
+                if exc_type is not None:
+                    self._status = "ERROR"
+                    if exc_value is not None:
+                        self._status_message = str(exc_value)
+                else:
+                    self._status = "OK"
+
+            end_ns = time.time_ns()
+            evnt: SpanEnd = {
+                "type": "span.end",
+                "span_id": self.id,
+                "ts": end_ns // 1000,
+                "status": self._status,
+            }
+            if self._attributes:
+                evnt["attributes"] = self._attributes
+                self._attributes = None
+            if self._status_message:
+                evnt["status_message"] = self._status_message
+
+            self.tracer.emit_event(evnt)
             _current_span.reset(self._token)
 
 
@@ -348,13 +307,27 @@ def setup_tracing(
     level: int = logging.INFO,
     *,
     logger: logging.Logger | None = None,
-) -> _LoggingHandler:
+) -> None:
+    """Configure logging integration to capture log messages as trace events.
+
+    Installs a logging handler that emits log records as trace events, attaching
+    them to the current span if one exists. This enables correlation of log
+    messages with trace spans.
+
+    Args:
+        level: Minimum logging level to capture (default: logging.INFO)
+        logger: Target logger to configure. If None, configures the root logger.
+
+    Raises:
+        RuntimeError: if the logging handler is already configured.
+    """
     target_logger = logger if logger is not None else logging.getLogger()
 
     # Check if handler already exists to avoid duplicates
     for handler in target_logger.handlers:
         if isinstance(handler, _LoggingHandler):
-            return handler
+            msg = "Logging handler for tracing is already configured."
+            raise RuntimeError(msg)  # noqa: TRY004
 
     handler = _LoggingHandler()
     handler.setLevel(level)
@@ -364,16 +337,43 @@ def setup_tracing(
     if target_logger.level == logging.NOTSET or target_logger.level > level:
         target_logger.setLevel(level)
 
-    return handler
-
 
 def span(
     name: str,
     metadata: Mapping[str, JSONValue] | None = None,
 ) -> AbstractContextManager[Span]:
+    """Create a new tracing span within the current tracer context.
+
+    Args:
+        name: Human-readable name for the span (e.g., "fetch_user", "process_data")
+        metadata: Optional attributes to attach to the span. Must be JSON-serializable.
+
+    Returns:
+        A context manager that enters the span on entry and exits on exit.
+    """
     if tracer := current_tracer.get():
         return tracer.new_span(name, metadata)
     return NULL_SPAN
+
+
+def create_tracer(
+    trace_id: str,
+    *,
+    run_id: str | None = None,
+) -> Tracer:
+    """Create a new Tracer with the given trace_id and optional run_id.
+
+    `trace_id` should be unique and remain constant across retries of the same
+    task. `run_id` should be unique for each a task run.
+
+    Args:
+        trace_id (str): The trace identifier
+        run_id (str | None): The run identifier. If None, a random id will be generated.
+
+    Returns:
+        Tracer: A new Tracer instance.
+    """
+    return Tracer(trace_id, run_id=run_id)
 
 
 def _random_id() -> str:

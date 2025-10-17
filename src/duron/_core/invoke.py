@@ -423,7 +423,7 @@ class _InvokeRun:
     async def _send_traces(self, *, flush: bool = False) -> None:
         if not self._tracer:
             return
-        tid = self._tracer.instance_id
+        tid = self._tracer.run_id
         data = self._tracer.pop_events(flush=flush)
         for i in range(0, len(data), 128):
             trace_entry: Entry = {
