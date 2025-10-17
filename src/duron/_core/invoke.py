@@ -527,7 +527,7 @@ class _InvokeRun:
                 )
                 if self._tracer:
                     op_span = self._tracer.new_op_span(
-                        op.annotations.name,
+                        op.annotations.get_name(),
                         promise_create_entry,
                     )
                 else:
@@ -542,7 +542,9 @@ class _InvokeRun:
                         "promise_id": id_,
                     }
                     with (
-                        op_span.new_span(op.annotations.name) if op_span else NULL_SPAN
+                        op_span.new_span(op.annotations.get_name())
+                        if op_span
+                        else NULL_SPAN
                     ) as span:
                         try:
                             result = op.callable(*op.args, **op.kwargs)
@@ -593,7 +595,7 @@ class _InvokeRun:
                 }
                 if self._tracer:
                     op_span = self._tracer.new_op_span(
-                        "stream:" + op.annotations.name,
+                        "stream:" + op.annotations.get_name(),
                         stream_create_entry,
                     )
                 else:
@@ -678,7 +680,7 @@ class _InvokeRun:
                 )
                 if self._tracer:
                     _ = self._tracer.new_op_span(
-                        op.annotations.name, promise_create_entry
+                        op.annotations.get_name(), promise_create_entry
                     )
                 self._task_manager.add_future(id_, op.return_type)
                 await self.enqueue_log(promise_create_entry)

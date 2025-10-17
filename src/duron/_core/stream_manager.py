@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 class _StreamInfo:
     observers: Sequence[StreamObserver]
     dtype: TypeHint[Any]
-    labels: Mapping[str, str]
+    labels: Mapping[str, str] | None
     op_span: OpSpan | None
 
 
@@ -46,13 +46,13 @@ class StreamManager:
         stream_id: str,
         observer: StreamObserver | None,
         dtype: TypeHint[Any],
-        labels: Mapping[str, str],
+        labels: Mapping[str, str] | None,
         op_span: OpSpan | None,
     ) -> None:
         observers = [
             watcher
             for matcher, watcher in self._watchers
-            if _match_labels(labels, matcher)
+            if labels and _match_labels(labels, matcher)
         ]
         if observer:
             observers.append(observer)

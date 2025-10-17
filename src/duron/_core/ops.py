@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, NamedTuple
 from typing_extensions import (
     Any,
     Protocol,
     TypeVar,
-    dataclass_transform,
     overload,
 )
 
@@ -20,50 +18,38 @@ if TYPE_CHECKING:
 
     _T = TypeVar("_T")
 
-    @dataclass_transform(frozen_default=True)
-    def frozen(_cls: type[_T]) -> type[_T]: ...
 
-else:
-    frozen = dataclass(slots=True)
+class OpAnnotations(NamedTuple):
+    labels: Mapping[str, str] | None = None
+    name: str | None = None
 
-_EMPTY_DICT: Final = cast("dict[str, Any]", {})
+    def get_name(self) -> str:
+        return self.name or "<unnamed>"
 
-
-@frozen
-class OpAnnotations:
-    _labels: dict[str, str]
-    _name: str | None
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        return self._labels
-
-    @property
-    def name(self) -> str:
-        return name if (name := self._name) is not None else "<unnamed>"
-
-    @staticmethod
     def extend(
-        base: OpAnnotations | None,
+        self,
         *,
         name: str | None = None,
         labels: Mapping[str, str] | None = None,
     ) -> OpAnnotations:
-        if not base:
-            return OpAnnotations(
-                _labels={**labels} if labels else _EMPTY_DICT,
-                _name=name,
-            )
-
-        # OpAnnotations is immutable, so it's safe to use the existing dicts
         return OpAnnotations(
-            _labels={**base._labels, **labels} if labels else base._labels,  # noqa: SLF001
-            _name=name if name is not None else base._name,  # noqa: SLF001
+            labels=_merge_dict(self.labels, labels),
+            name=name if name is not None else self.name,
         )
 
 
-@frozen
-class FnCall:
+def _merge_dict(
+    base: Mapping[str, _T] | None,
+    extra: Mapping[str, _T] | None,
+) -> dict[str, _T] | None:
+    if base is None:
+        return {**extra} if extra else None
+    if extra is None:
+        return {**base} if base else None
+    return {**base, **extra}
+
+
+class FnCall(NamedTuple):
     callable: Callable[..., Coroutine[Any, Any, object] | object]
     args: tuple[object, ...]
     kwargs: dict[str, object]
@@ -77,37 +63,31 @@ class StreamObserver(Protocol):
     def on_close(self, log_offset: int, error: Exception | None, /) -> None: ...
 
 
-@frozen
-class StreamCreate:
+class StreamCreate(NamedTuple):
     observer: StreamObserver | None
     dtype: TypeHint[Any]
     annotations: OpAnnotations
 
 
-@frozen
-class StreamEmit:
+class StreamEmit(NamedTuple):
     stream_id: str
     value: object
 
 
-@frozen
-class StreamClose:
+class StreamClose(NamedTuple):
     stream_id: str
     exception: Exception | None
 
 
-@frozen
-class Barrier: ...
+class Barrier(NamedTuple): ...
 
 
-@frozen
-class ExternalPromiseCreate:
+class ExternalPromiseCreate(NamedTuple):
     return_type: TypeHint[Any]
     annotations: OpAnnotations
 
 
-@frozen
-class ExternalPromiseComplete:
+class ExternalPromiseComplete(NamedTuple):
     promise_id: str
     value: object
     exception: Exception | None

@@ -397,8 +397,7 @@ class _ResumableGuard(Generic[_U, _T]):
             StreamCreate(
                 dtype=self._dtype,
                 observer=cast("_StreamRun[object, _T]", self._stream),
-                annotations=OpAnnotations.extend(
-                    None,
+                annotations=OpAnnotations(
                     name=self._stream.name(),
                 ),
             ),
@@ -454,7 +453,7 @@ class _StreamRun(ObserverStream[_U, _T], Generic[_U, _T]):
                 kwargs={},
                 return_type=UnspecifiedType,
                 context=contextvars.copy_context(),
-                annotations=OpAnnotations.extend(None, name=self.name()),
+                annotations=OpAnnotations(name=self.name()),
             ),
         )
         self._task = cast("asyncio.Future[_T]", op)

@@ -28,7 +28,7 @@ from duron._decorator.effect import CheckpointFn, EffectFn
 from duron.typing import inspect_function
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    from collections.abc import Callable, Coroutine, Mapping
     from contextvars import Token
     from types import TracebackType
 
@@ -43,9 +43,6 @@ if TYPE_CHECKING:
     _P = ParamSpec("_P")
 
 _context: ContextVar[Context | None] = ContextVar("duron.context", default=None)
-_annotation: ContextVar[OpAnnotations | None] = ContextVar(
-    "duron.context.annotation", default=None
-)
 
 
 @final
@@ -139,8 +136,7 @@ class Context:
                 kwargs=kwargs,
                 return_type=return_type,
                 context=contextvars.copy_context(),
-                annotations=OpAnnotations.extend(
-                    _annotation.get(),
+                annotations=OpAnnotations(
                     name=cast("str", getattr(callable_, "__name__", repr(callable_))),
                 ),
             ),
@@ -174,52 +170,85 @@ class Context:
         *,
         name: str | None = None,
         external: bool = False,
+        labels: Mapping[str, str] | None = None,
     ) -> tuple[Stream[_T, None], StreamWriter[_T]]:
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
+
+        annotations = OpAnnotations()
+        if labels:
+            annotations = OpAnnotations.extend(
+                annotations,
+                labels=labels,
+            )
+        if name:
+            annotations = OpAnnotations.extend(
+                annotations,
+                name=name,
+                labels={"name": name},
+            )
         return await create_stream(
             self._loop,
             dtype,
             external=external,
-            annotations=OpAnnotations.extend(
-                _annotation.get(),
-                name=name,
-                labels={"name": name} if name else None,
-            ),
+            annotations=annotations,
         )
 
     async def create_signal(
-        self, dtype: TypeHint[_T], /, *, name: str | None = None
+        self,
+        dtype: TypeHint[_T],
+        /,
+        *,
+        name: str | None = None,
+        labels: Mapping[str, str] | None = None,
     ) -> tuple[Signal[_T], SignalWriter[_T]]:
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
-        return await create_signal(
-            self._loop,
-            dtype,
-            annotations=OpAnnotations.extend(
-                _annotation.get(),
+
+        annotations = OpAnnotations()
+        if labels:
+            annotations = OpAnnotations.extend(
+                annotations,
+                labels=labels,
+            )
+        if name:
+            annotations = OpAnnotations.extend(
+                annotations,
                 name=name,
-                labels={"name": name} if name else None,
-            ),
-        )
+                labels={"name": name},
+            )
+
+        return await create_signal(self._loop, dtype, annotations=annotations)
 
     async def create_promise(
-        self, dtype: type[_T], /, *, name: str | None = None
+        self,
+        dtype: type[_T],
+        /,
+        *,
+        name: str | None = None,
+        labels: Mapping[str, str] | None = None,
     ) -> tuple[str, asyncio.Future[_T]]:
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
+
+        annotations = OpAnnotations()
+        if labels:
+            annotations = annotations.extend(
+                labels=labels,
+            )
+        if name:
+            annotations = annotations.extend(
+                name=name,
+                labels={"name": name},
+            )
         fut = create_op(
             self._loop,
             ExternalPromiseCreate(
                 return_type=dtype,
-                annotations=OpAnnotations.extend(
-                    _annotation.get(),
-                    name=name,
-                    labels={"name": name} if name else None,
-                ),
+                annotations=annotations,
             ),
         )
         return (
