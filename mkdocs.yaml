@@ -24,8 +24,8 @@ theme:
       scheme: slate
       primary: black
       accent: indigo
-  icon:
-    logo: material/head-sync
+  logo: images/icon.svg
+  favicon: images/icon.svg
   features:
     - navigation.tabs
 plugins:
