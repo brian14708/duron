@@ -15,7 +15,7 @@ class _Config:
 
 
 config = _Config(
-    codec=DefaultCodec(),
+    codec=DefaultCodec,
 )
 
 
