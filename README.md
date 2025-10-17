@@ -1,5 +1,7 @@
 # 🌀 Duron
 
+[![PyPI - Version](https://img.shields.io/pypi/v/duron)](https://pypi.org/project/duron)
+
 Duron is a Python library that makes async work _replayable_. You can pause, resume, or rerun async functions without redoing completed steps. Wrap your side effects once, keep orchestration deterministic, and Duron logs every result so repeated runs stay safe.
 
 ## Why Duron?
@@ -15,7 +17,7 @@ Duron is a Python library that makes async work _replayable_. You can pause, res
 Duron requires **Python 3.10+**.
 
 ```bash
-pip install git+https://github.com/brian14708/duron.git
+pip install duron
 ```
 
 ## Quickstart

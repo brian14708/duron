@@ -10,7 +10,7 @@ hide:
 Duron requires **Python 3.10+**.
 
 ```bash
-pip install git+https://github.com/brian14708/duron.git
+pip install duron
 ```
 
 ## Quickstart
