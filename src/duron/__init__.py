@@ -12,3 +12,5 @@ from duron._decorator.durable import DurableFn as DurableFn
 from duron._decorator.durable import durable as durable
 from duron._decorator.effect import effect as effect
 from duron.typing import Provided as Provided
+
+__version__ = "0.0.2"
