@@ -14,15 +14,10 @@ class _Config:
     codec: Codec
 
 
-config = _Config(
-    codec=DefaultCodec,
-)
+config = _Config(codec=DefaultCodec)
 
 
-def set_config(
-    *,
-    codec: Codec | None = None,
-) -> None:
+def set_config(*, codec: Codec | None = None) -> None:
     """Set global configuration for Duron.
 
     Args:

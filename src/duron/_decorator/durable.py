@@ -10,14 +10,7 @@ as orchestration functions. Durable functions:
 from __future__ import annotations
 
 import functools
-from typing import (
-    TYPE_CHECKING,
-    Concatenate,
-    Generic,
-    cast,
-    get_args,
-    get_origin,
-)
+from typing import TYPE_CHECKING, Concatenate, Generic, cast, get_args, get_origin
 from typing_extensions import (
     Any,
     AsyncContextManager,
@@ -61,10 +54,7 @@ class DurableFn(Generic[_P, _T_co]):
         functools.update_wrapper(self, fn)
 
     def __call__(
-        self,
-        ctx: Context,
-        *args: _P.args,
-        **kwargs: _P.kwargs,
+        self, ctx: Context, *args: _P.args, **kwargs: _P.kwargs
     ) -> Coroutine[Any, Any, _T_co]:
         return self.fn(ctx, *args, **kwargs)
 
@@ -85,13 +75,11 @@ class DurableFn(Generic[_P, _T_co]):
 
 @overload
 def durable(
-    f: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]],
-    /,
+    f: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]], /
 ) -> DurableFn[_P, _T_co]: ...
 @overload
 def durable(
-    *,
-    codec: Codec | None = None,
+    *, codec: Codec | None = None
 ) -> Callable[
     [Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]]],
     DurableFn[_P, _T_co],
@@ -123,9 +111,7 @@ def durable(
         ```python
         @duron.durable
         async def my_workflow(
-            ctx: duron.Context,
-            user_id: str,
-            stream: duron.Stream[int] = duron.Provided,
+            ctx: duron.Context, user_id: str, stream: duron.Stream[int] = duron.Provided
         ) -> User: ...
         ```
 
@@ -149,9 +135,7 @@ def durable(
     return decorate
 
 
-def _parse_type(
-    tp: TypeHint[Any],
-) -> tuple[type, TypeHint[Any]] | None:
+def _parse_type(tp: TypeHint[Any]) -> tuple[type, TypeHint[Any]] | None:
     origin = get_origin(tp)
     args = get_args(tp)
 

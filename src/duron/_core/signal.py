@@ -7,21 +7,13 @@ from collections import deque
 from typing import TYPE_CHECKING, Generic, cast
 from typing_extensions import Any, Protocol, TypeVar, final
 
-from duron._core.ops import (
-    Barrier,
-    StreamClose,
-    StreamCreate,
-    StreamEmit,
-    create_op,
-)
+from duron._core.ops import Barrier, StreamClose, StreamCreate, StreamEmit, create_op
 from duron._loop import wrap_future
 
 if TYPE_CHECKING:
     from types import TracebackType
 
-    from duron._core.ops import (
-        OpAnnotations,
-    )
+    from duron._core.ops import OpAnnotations
     from duron._loop import EventLoop
     from duron.typing._hint import TypeHint
 
@@ -66,18 +58,14 @@ class _Writer(Generic[_In]):
 
     async def trigger(self, value: _In, /) -> None:
         await wrap_future(
-            create_op(
-                self._loop,
-                StreamEmit(stream_id=self._stream_id, value=value),
-            ),
+            create_op(self._loop, StreamEmit(stream_id=self._stream_id, value=value))
         )
 
     async def close(self, /) -> None:
         await wrap_future(
             create_op(
-                self._loop,
-                StreamClose(stream_id=self._stream_id, exception=None),
-            ),
+                self._loop, StreamClose(stream_id=self._stream_id, exception=None)
+            )
         )
 
 
@@ -158,18 +146,14 @@ class Signal(Generic[_In]):
 
 
 async def create_signal(
-    loop: EventLoop,
-    dtype: TypeHint[_In],
-    annotations: OpAnnotations,
+    loop: EventLoop, dtype: TypeHint[_In], annotations: OpAnnotations
 ) -> tuple[Signal[_In], SignalWriter[_In]]:
     assert asyncio.get_running_loop() is loop  # noqa: S101
     s: Signal[_In] = Signal(loop)
     sid = await create_op(
         loop,
         StreamCreate(
-            dtype=dtype,
-            observer=cast("Signal[object]", s),
-            annotations=annotations,
+            dtype=dtype, observer=cast("Signal[object]", s), annotations=annotations
         ),
     )
     return (s, _Writer(sid, loop))

@@ -28,11 +28,7 @@ class FileLogStorage:
         self._lock = asyncio.Lock()
 
     async def stream(
-        self,
-        start: int | None,
-        /,
-        *,
-        live: bool,
+        self, start: int | None, /, *, live: bool
     ) -> AsyncGenerator[tuple[int, BaseEntry], None]:
         if not self._log_file.exists():
             return
@@ -120,11 +116,7 @@ class MemoryLogStorage:
         self._condition = asyncio.Condition(self._lock)
 
     async def stream(
-        self,
-        start: int | None,
-        /,
-        *,
-        live: bool,
+        self, start: int | None, /, *, live: bool
     ) -> AsyncGenerator[tuple[int, BaseEntry], None]:
         start_index: int = start + 1 if start is not None else 0
 
@@ -133,10 +125,7 @@ class MemoryLogStorage:
             entries_snapshot = self._entries.copy()
 
         for index in range(start_index, len(entries_snapshot)):
-            yield (
-                index,
-                entries_snapshot[index],
-            )
+            yield (index, entries_snapshot[index])
 
         # If live mode, continue monitoring for new entries
         if live:
@@ -150,10 +139,7 @@ class MemoryLogStorage:
                     current_length = len(self._entries)
 
                 for index in range(last_seen_index + 1, current_length):
-                    yield (
-                        index,
-                        self._entries[index],
-                    )
+                    yield (index, self._entries[index])
                     last_seen_index = index
 
     async def acquire_lease(self) -> bytes:

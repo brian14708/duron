@@ -20,11 +20,7 @@ if TYPE_CHECKING:
     from contextvars import Token
     from types import TracebackType
 
-    from duron.log._entry import (
-        Entry,
-        PromiseCompleteEntry,
-        StreamCompleteEntry,
-    )
+    from duron.log._entry import Entry, PromiseCompleteEntry, StreamCompleteEntry
     from duron.tracing._events import Event, LinkRef, SpanEnd, SpanStart, TraceEvent
     from duron.tracing._span import Span
     from duron.typing import JSONValue
@@ -52,13 +48,7 @@ class Tracer:
         "trace_id",
     )
 
-    def __init__(
-        self,
-        trace_id: str,
-        /,
-        *,
-        run_id: str | None = None,
-    ) -> None:
+    def __init__(self, trace_id: str, /, *, run_id: str | None = None) -> None:
         self.trace_id: str = trace_id
         self.run_id: str = run_id or _trace_id()
         self._events: list[TraceEvent] = []
@@ -134,12 +124,7 @@ class Tracer:
     ) -> AbstractContextManager[Span]:
         parent = _current_span.get()
         id_ = _random_id()
-        evnt: SpanStart = {
-            "type": "span.start",
-            "span_id": id_,
-            "ts": -1,
-            "name": name,
-        }
+        evnt: SpanStart = {"type": "span.start", "span_id": id_, "ts": -1, "name": name}
         if parent:
             evnt["parent_span_id"] = parent.id
         if attributes:
@@ -149,11 +134,7 @@ class Tracer:
 
         return _TracerSpan(id_, tracer=self, start_event=evnt)
 
-    def new_op_span(
-        self,
-        name: str,
-        entry: Entry,
-    ) -> OpSpan:
+    def new_op_span(self, name: str, entry: Entry) -> OpSpan:
         id_ = _derive_id(entry["id"])
         event: SpanStart = {
             "type": "span.start",
@@ -187,10 +168,7 @@ class OpSpan(NamedTuple):
     def new_span(
         self, name: str, attributes: Mapping[str, JSONValue] | None = None
     ) -> AbstractContextManager[Span]:
-        link: LinkRef = {
-            "span_id": self.id,
-            "trace_id": self.tracer.trace_id,
-        }
+        link: LinkRef = {"span_id": self.id, "trace_id": self.tracer.trace_id}
         return self.tracer.new_span(name, attributes, links=(link,))
 
     def end(self, entry: PromiseCompleteEntry | StreamCompleteEntry) -> None:
@@ -304,9 +282,7 @@ class _LoggingHandler(logging.Handler):
 
 
 def setup_tracing(
-    level: int = logging.INFO,
-    *,
-    logger: logging.Logger | None = None,
+    level: int = logging.INFO, *, logger: logging.Logger | None = None
 ) -> None:
     """Configure logging integration to capture log messages as trace events.
 
@@ -339,8 +315,7 @@ def setup_tracing(
 
 
 def span(
-    name: str,
-    metadata: Mapping[str, JSONValue] | None = None,
+    name: str, metadata: Mapping[str, JSONValue] | None = None
 ) -> AbstractContextManager[Span]:
     """Create a new tracing span within the current tracer context.
 
@@ -356,11 +331,7 @@ def span(
     return NULL_SPAN
 
 
-def create_tracer(
-    trace_id: str,
-    *,
-    run_id: str | None = None,
-) -> Tracer:
+def create_tracer(trace_id: str, *, run_id: str | None = None) -> Tracer:
     """Create a new Tracer with the given trace_id and optional run_id.
 
     `trace_id` should be unique and remain constant across retries of the same

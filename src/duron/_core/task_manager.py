@@ -30,10 +30,7 @@ class TaskManager:
         "_tasks",
     )
 
-    def __init__(
-        self,
-        on_error: Callable[[TaskError], None],
-    ) -> None:
+    def __init__(self, on_error: Callable[[TaskError], None]) -> None:
         self._pending_task: dict[
             str,
             tuple[
@@ -81,11 +78,7 @@ class TaskManager:
         elif (e := t.exception()) is not None:
             self._on_error(TaskError(e))
 
-    def add_future(
-        self,
-        task_id: str,
-        return_type: TypeHint[Any],
-    ) -> None:
+    def add_future(self, task_id: str, return_type: TypeHint[Any]) -> None:
         self._futures[task_id] = return_type
 
     def has_future(self, task_id: str) -> bool:

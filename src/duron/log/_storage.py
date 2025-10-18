@@ -16,11 +16,7 @@ class LogStorage(Protocol):
     """
 
     def stream(
-        self,
-        start: int | None,
-        /,
-        *,
-        live: bool,
+        self, start: int | None, /, *, live: bool
     ) -> AsyncGenerator[tuple[int, BaseEntry], None]:
         """Stream log entries from storage.
 

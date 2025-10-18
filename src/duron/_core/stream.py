@@ -8,14 +8,7 @@ from asyncio.exceptions import CancelledError
 from collections import deque
 from collections.abc import Awaitable
 from typing import TYPE_CHECKING, Concatenate, Generic, cast
-from typing_extensions import (
-    Any,
-    ParamSpec,
-    Protocol,
-    TypeVar,
-    final,
-    override,
-)
+from typing_extensions import Any, ParamSpec, Protocol, TypeVar, final, override
 
 from duron._core.ops import (
     FnCall,
@@ -75,18 +68,14 @@ class _Writer(Generic[_In]):
 
     async def send(self, value: _In, /) -> None:
         await wrap_future(
-            create_op(
-                self._loop,
-                StreamEmit(stream_id=self._stream_id, value=value),
-            ),
+            create_op(self._loop, StreamEmit(stream_id=self._stream_id, value=value))
         )
 
     async def close(self, exception: Exception | None = None, /) -> None:
         await wrap_future(
             create_op(
-                self._loop,
-                StreamClose(stream_id=self._stream_id, exception=exception),
-            ),
+                self._loop, StreamClose(stream_id=self._stream_id, exception=exception)
+            )
         )
 
 
@@ -180,8 +169,7 @@ class Stream(ABC, Awaitable[_Result], Generic[_T, _Result]):
         return _Map(self, fn)
 
     def broadcast(
-        self,
-        n: int,
+        self, n: int
     ) -> AbstractAsyncContextManager[Sequence[Stream[_T, None]]]:
         """Broadcast stream values to multiple consumers.
 
@@ -238,9 +226,7 @@ class StreamOp(Generic[_T, _Result]):
 
 
 async def create_stream(
-    loop: EventLoop,
-    dtype: TypeHint[_T],
-    annotations: OpAnnotations,
+    loop: EventLoop, dtype: TypeHint[_T], annotations: OpAnnotations
 ) -> tuple[Stream[_T, None], StreamWriter[_T]]:
     """Create a new bidirectional stream for inter-operation communication.
 
@@ -285,12 +271,7 @@ class StreamClosed(Exception):  # noqa: N818
 
     __slots__ = ("offset",)
 
-    def __init__(
-        self,
-        *args: object,
-        offset: int,
-        reason: Exception | None,
-    ) -> None:
+    def __init__(self, *args: object, offset: int, reason: Exception | None) -> None:
         super().__init__(*args)
         self.offset = offset
         self.__cause__ = reason
@@ -446,24 +427,14 @@ def run_stateful(
     **kwargs: _P.kwargs,
 ) -> AbstractAsyncContextManager[Stream[_U, _T]]:
     assert asyncio.get_running_loop() is loop  # noqa: S101
-    s: _StatefulRun[_U, _T] = _StatefulRun(
-        loop,
-        initial,
-        reducer,
-        fn,
-        *args,
-        **kwargs,
-    )
+    s: _StatefulRun[_U, _T] = _StatefulRun(loop, initial, reducer, fn, *args, **kwargs)
     return _StatefulGuard(loop, s, dtype)
 
 
 @final
 class _StatefulGuard(Generic[_U, _T]):
     def __init__(
-        self,
-        loop: EventLoop,
-        stateful: _StatefulRun[_U, _T],
-        dtype: TypeHint[Any],
+        self, loop: EventLoop, stateful: _StatefulRun[_U, _T], dtype: TypeHint[Any]
     ) -> None:
         self._loop = loop
         self._stream = stateful
@@ -476,9 +447,7 @@ class _StatefulGuard(Generic[_U, _T]):
             StreamCreate(
                 dtype=self._dtype,
                 observer=cast("_StatefulRun[object, _T]", self._stream),
-                annotations=OpAnnotations(
-                    name=self._stream.name(),
-                ),
+                annotations=OpAnnotations(name=self._stream.name()),
             ),
         )
         sink: StreamWriter[_U] = _Writer(sid, self._loop)

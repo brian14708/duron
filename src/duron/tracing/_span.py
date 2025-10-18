@@ -12,10 +12,7 @@ if TYPE_CHECKING:
 class Span(Protocol):
     """Protocol for tracing spans that represent units of work."""
 
-    def record(
-        self,
-        **kwargs: JSONValue,
-    ) -> None:
+    def record(self, **kwargs: JSONValue) -> None:
         """Record an attribute on this span.
 
         Args:
@@ -24,10 +21,7 @@ class Span(Protocol):
         ...
 
     def set_status(
-        self,
-        status: Literal["OK", "ERROR"],
-        message: str | None = None,
-        /,
+        self, status: Literal["OK", "ERROR"], message: str | None = None, /
     ) -> None:
         """Set the status of this span.
 

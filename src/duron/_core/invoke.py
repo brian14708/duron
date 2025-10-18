@@ -42,10 +42,7 @@ if TYPE_CHECKING:
     from contextvars import Token
     from types import TracebackType
 
-    from duron._core.ops import (
-        Op,
-        StreamObserver,
-    )
+    from duron._core.ops import Op, StreamObserver
     from duron._core.signal import SignalWriter
     from duron._decorator.durable import DurableFn
     from duron._loop import OpFuture, WaitSet
@@ -75,26 +72,15 @@ _CURRENT_VERSION: Final = 0
 class DurableRun(Generic[_P, _T_co]):
     __slots__ = ("_fn", "_log", "_run", "_watchers")
 
-    def __init__(
-        self,
-        fn: DurableFn[_P, _T_co],
-        log: LogStorage,
-    ) -> None:
+    def __init__(self, fn: DurableFn[_P, _T_co], log: LogStorage) -> None:
         self._fn = fn
         self._log = log
         self._run: _InvokeRun | None = None
-        self._watchers: list[
-            tuple[
-                dict[str, str],
-                StreamObserver,
-            ]
-        ] = []
+        self._watchers: list[tuple[dict[str, str], StreamObserver]] = []
 
     @staticmethod
     def invoke(
-        fn: DurableFn[_P, _T_co],
-        log: LogStorage,
-        tracer: Tracer | None,
+        fn: DurableFn[_P, _T_co], log: LogStorage, tracer: Tracer | None
     ) -> contextlib.AbstractAsyncContextManager[DurableRun[_P, _T_co]]:
         return _InvokeGuard(DurableRun(fn, log), tracer)
 
@@ -112,12 +98,7 @@ class DurableRun(Generic[_P, _T_co]):
 
         type_info = inspect_function(self._fn.fn)
         p = _invoke_prelude(self._fn, type_info, prelude)
-        self._run = _InvokeRun(
-            p,
-            self._log,
-            codec,
-            watchers=self._watchers,
-        )
+        self._run = _InvokeRun(p, self._log, codec, watchers=self._watchers)
         await self._run.resume()
 
     async def resume(self) -> None:
@@ -125,10 +106,7 @@ class DurableRun(Generic[_P, _T_co]):
         type_info = inspect_function(self._fn.fn)
         prelude = _invoke_prelude(self._fn, type_info, _resume_init)
         self._run = _InvokeRun(
-            prelude,
-            self._log,
-            self._fn.codec,
-            watchers=self._watchers,
+            prelude, self._log, self._fn.codec, watchers=self._watchers
         )
         await self._run.resume()
 
@@ -153,19 +131,9 @@ class DurableRun(Generic[_P, _T_co]):
             self._run = None
 
     @overload
-    async def complete_future(
-        self,
-        id_: str,
-        *,
-        result: object,
-    ) -> None: ...
+    async def complete_future(self, id_: str, *, result: object) -> None: ...
     @overload
-    async def complete_future(
-        self,
-        id_: str,
-        *,
-        exception: Exception,
-    ) -> None: ...
+    async def complete_future(self, id_: str, *, exception: Exception) -> None: ...
     async def complete_future(
         self,
         id_: str,
@@ -465,34 +433,22 @@ class _InvokeRun:
                 "id": random_id(),
                 "type": "trace",
                 "events": data[i : i + 128],
-                "metadata": {
-                    "trace.id": tid,
-                },
+                "metadata": {"trace.id": tid},
             }
             await self.enqueue_log(trace_entry)
 
-    async def handle_message(
-        self,
-        offset: int,
-        e: Entry,
-    ) -> None:
+    async def handle_message(self, offset: int, e: Entry) -> None:
         if e["type"] == "promise.complete":
             id_ = e["promise_id"]
             (return_type,) = self._task_manager.complete_task(id_)
             if "error" in e:
-                self._loop.post_completion(
-                    id_,
-                    exception=_decode_error(e["error"]),
-                )
+                self._loop.post_completion(id_, exception=_decode_error(e["error"]))
             elif "result" in e:
                 try:
                     result = self._codec.decode_json(e["result"], return_type)
                     self._loop.post_completion(id_, result=result)
                 except Exception as exc:  # noqa: BLE001
-                    self._loop.post_completion(
-                        id_,
-                        exception=exc,
-                    )
+                    self._loop.post_completion(id_, exception=exc)
             else:
                 msg = f"Invalid promise.complete entry: {e!r}"
                 raise ValueError(msg)
@@ -532,10 +488,7 @@ class _InvokeRun:
         else:
             assert_type(e["type"], Literal["promise.create", "trace"])
 
-    async def enqueue_log(
-        self,
-        entry: Entry,
-    ) -> None:
+    async def enqueue_log(self, entry: Entry) -> None:
         if not self._running:
             self._pending_msg.append(entry)
         elif self._lease is None:
@@ -555,14 +508,10 @@ class _InvokeRun:
                     "type": "promise.create",
                 }
 
-                set_annotations(
-                    promise_create_entry,
-                    labels=op.annotations.labels,
-                )
+                set_annotations(promise_create_entry, labels=op.annotations.labels)
                 if self._tracer:
                     op_span = self._tracer.new_op_span(
-                        op.annotations.get_name(),
-                        promise_create_entry,
+                        op.annotations.get_name(), promise_create_entry
                     )
                 else:
                     op_span = None
@@ -617,24 +566,16 @@ class _InvokeRun:
                 }
                 if self._tracer:
                     op_span = self._tracer.new_op_span(
-                        "stream:" + op.annotations.get_name(),
-                        stream_create_entry,
+                        "stream:" + op.annotations.get_name(), stream_create_entry
                     )
                 else:
                     op_span = None
 
                 self._stream_manager.create_stream(
-                    stream_id,
-                    op.observer,
-                    op.dtype,
-                    op.annotations.labels,
-                    op_span,
+                    stream_id, op.observer, op.dtype, op.annotations.labels, op_span
                 )
 
-                set_annotations(
-                    stream_create_entry,
-                    labels=op.annotations.labels,
-                )
+                set_annotations(stream_create_entry, labels=op.annotations.labels)
                 await self.enqueue_log(stream_create_entry)
 
             case StreamEmit():
@@ -651,11 +592,7 @@ class _InvokeRun:
                     if op_span:
                         op_span.attach(
                             stream_emit_entry,
-                            {
-                                "type": "event",
-                                "ts": self.now(),
-                                "kind": "stream",
-                            },
+                            {"type": "event", "ts": self.now(), "kind": "stream"},
                         )
                     await self.enqueue_log(stream_emit_entry)
             case StreamClose():
@@ -696,10 +633,7 @@ class _InvokeRun:
                     "id": id_,
                     "type": "promise.create",
                 }
-                set_annotations(
-                    promise_create_entry,
-                    labels=op.annotations.labels,
-                )
+                set_annotations(promise_create_entry, labels=op.annotations.labels)
                 if self._tracer:
                     _ = self._tracer.new_op_span(
                         op.annotations.get_name(), promise_create_entry
@@ -753,11 +687,7 @@ class _InvokeRun:
             self._tracer.end_op_span(id_, entry)
         await self.enqueue_log(entry)
 
-    async def send_stream(
-        self,
-        matcher: dict[str, str],
-        value: object,
-    ) -> int:
+    async def send_stream(self, matcher: dict[str, str], value: object) -> int:
         cnt = 0
         ts = self.now()
         matching_streams = self._stream_manager.find_matching_streams(matcher)
@@ -771,22 +701,13 @@ class _InvokeRun:
                 "value": self._codec.encode_json(value),
             }
             if entry_span:
-                entry_span.attach(
-                    entry,
-                    {
-                        "type": "event",
-                        "ts": ts,
-                        "kind": "stream",
-                    },
-                )
+                entry_span.attach(entry, {"type": "event", "ts": ts, "kind": "stream"})
             await self.enqueue_log(entry)
             cnt += 1
         return cnt
 
     async def close_stream(
-        self,
-        matcher: dict[str, str],
-        exc: Exception | None = None,
+        self, matcher: dict[str, str], exc: Exception | None = None
     ) -> int:
         cnt = 0
         ts = self.now()
@@ -815,14 +736,8 @@ def _resume_init() -> InitParams:
 
 def _encode_error(error: Exception | CancelledError) -> ErrorInfo:
     if type(error) is asyncio.CancelledError:
-        return {
-            "code": -2,
-            "message": repr(error),
-        }
-    return {
-        "code": -1,
-        "message": repr(error),
-    }
+        return {"code": -2, "message": repr(error)}
+    return {"code": -1, "message": repr(error)}
 
 
 def _decode_error(error_info: ErrorInfo) -> Exception | CancelledError:

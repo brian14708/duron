@@ -3,17 +3,12 @@ from __future__ import annotations
 from asyncio import CancelledError
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-from typing_extensions import (
-    Any,
-    final,
-)
+from typing_extensions import Any, final
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
 
-    from duron._core.ops import (
-        StreamObserver,
-    )
+    from duron._core.ops import StreamObserver
     from duron.codec import Codec
     from duron.tracing._tracer import OpSpan
     from duron.typing import JSONValue, TypeHint
@@ -32,13 +27,9 @@ class StreamManager:
     __slots__ = ("_streams", "_watchers")
 
     def __init__(
-        self,
-        watchers: list[tuple[dict[str, str], StreamObserver]] | None = None,
+        self, watchers: list[tuple[dict[str, str], StreamObserver]] | None = None
     ) -> None:
-        self._streams: dict[
-            str,
-            _StreamInfo,
-        ] = {}
+        self._streams: dict[str, _StreamInfo] = {}
         self._watchers = watchers or []
 
     def create_stream(
@@ -57,12 +48,7 @@ class StreamManager:
         if observer:
             observers.append(observer)
 
-        self._streams[stream_id] = _StreamInfo(
-            observers,
-            dtype,
-            labels,
-            op_span,
-        )
+        self._streams[stream_id] = _StreamInfo(observers, dtype, labels, op_span)
 
     def send_to_stream(
         self, stream_id: str, codec: Codec, offset: int, value: JSONValue

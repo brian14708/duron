@@ -2,12 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, NamedTuple
-from typing_extensions import (
-    Any,
-    Protocol,
-    TypeVar,
-    overload,
-)
+from typing_extensions import Any, Protocol, TypeVar, overload
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Mapping
@@ -27,10 +22,7 @@ class OpAnnotations(NamedTuple):
         return self.name or "<unnamed>"
 
     def extend(
-        self,
-        *,
-        name: str | None = None,
-        labels: Mapping[str, str] | None = None,
+        self, *, name: str | None = None, labels: Mapping[str, str] | None = None
     ) -> OpAnnotations:
         return OpAnnotations(
             labels=_merge_dict(self.labels, labels),
@@ -39,8 +31,7 @@ class OpAnnotations(NamedTuple):
 
 
 def _merge_dict(
-    base: Mapping[str, _T] | None,
-    extra: Mapping[str, _T] | None,
+    base: Mapping[str, _T] | None, extra: Mapping[str, _T] | None
 ) -> dict[str, _T] | None:
     if base is None:
         return {**extra} if extra else None

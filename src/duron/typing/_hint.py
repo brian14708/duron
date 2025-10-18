@@ -24,9 +24,7 @@ Mark a parameter as provided when invoked.
 MYPY = False
 if MYPY:
     TypeHint = TypeAliasType(
-        "TypeHint",
-        type[_T] | _UnspecifiedType | UnionType,
-        type_params=(_T,),
+        "TypeHint", type[_T] | _UnspecifiedType | UnionType, type_params=(_T,)
     )
     """
     A type representing [typing_extensions.TypeForm][] or

@@ -27,9 +27,7 @@ class FunctionType(NamedTuple):
     """
 
 
-def inspect_function(
-    fn: Callable[..., object],
-) -> FunctionType:
+def inspect_function(fn: Callable[..., object]) -> FunctionType:
     try:
         sig = inspect.signature(fn, eval_str=True)
     except NameError:
@@ -43,10 +41,7 @@ def inspect_function(
     parameter_names: list[str] = []
     parameter_types: dict[str, TypeHint[Any]] = {}
     for k, p in sig.parameters.items():
-        if p.kind in {
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        }:
+        if p.kind in {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}:
             continue
 
         if p.kind is not inspect.Parameter.KEYWORD_ONLY:

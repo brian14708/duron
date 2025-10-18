@@ -48,10 +48,7 @@ class StatefulFn(Generic[_P, _S, _T]):
         functools.update_wrapper(self, fn)
 
     def __call__(
-        self,
-        state: _S,
-        *args: _P.args,
-        **kwargs: _P.kwargs,
+        self, state: _S, *args: _P.args, **kwargs: _P.kwargs
     ) -> AsyncGenerator[_T, _S]:
         return self.fn(state, *args, **kwargs)
 
@@ -59,35 +56,24 @@ class StatefulFn(Generic[_P, _S, _T]):
 @final
 class EffectFn(Generic[_P, _T_co]):
     def __init__(
-        self,
-        fn: Callable[_P, Coroutine[Any, Any, _T_co]],
-        return_type: TypeHint[Any],
+        self, fn: Callable[_P, Coroutine[Any, Any, _T_co]], return_type: TypeHint[Any]
     ) -> None:
         self.fn = fn
         self.return_type = return_type
         functools.update_wrapper(self, fn)
 
     def __call__(
-        self,
-        *args: _P.args,
-        **kwargs: _P.kwargs,
+        self, *args: _P.args, **kwargs: _P.kwargs
     ) -> Coroutine[Any, Any, _T_co]:
         return self.fn(*args, **kwargs)
 
 
 @overload
-def effect(
-    fn: Callable[_P, Coroutine[Any, Any, _T_co]],
-    /,
-) -> EffectFn[_P, _T_co]: ...
+def effect(fn: Callable[_P, Coroutine[Any, Any, _T_co]], /) -> EffectFn[_P, _T_co]: ...
 @overload
 def effect(
-    *,
-    stateful: Literal[False] = ...,
-) -> Callable[
-    [Callable[_P, Coroutine[Any, Any, _T_co]]],
-    EffectFn[_P, _T_co],
-]: ...
+    *, stateful: Literal[False] = ...
+) -> Callable[[Callable[_P, Coroutine[Any, Any, _T_co]]], EffectFn[_P, _T_co]]: ...
 @overload
 def effect(
     *,
@@ -95,8 +81,7 @@ def effect(
     initial: Callable[[], _S],
     reducer: Callable[[_S, _T], _S],
 ) -> Callable[
-    [Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]]],
-    StatefulFn[_P, _S, _T],
+    [Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]]], StatefulFn[_P, _S, _T]
 ]: ...
 def effect(
     fn: Callable[_P, Coroutine[Any, Any, _T_co]] | None = None,
@@ -108,13 +93,9 @@ def effect(
     reducer: Callable[[_S, _T], _S] | None = None,
 ) -> (
     EffectFn[_P, _T_co]
+    | Callable[[Callable[_P, Coroutine[Any, Any, _T_co]]], EffectFn[_P, _T_co]]
     | Callable[
-        [Callable[_P, Coroutine[Any, Any, _T_co]]],
-        EffectFn[_P, _T_co],
-    ]
-    | Callable[
-        [Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]]],
-        StatefulFn[_P, _S, _T],
+        [Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]]], StatefulFn[_P, _S, _T]
     ]
 ):
     """Decorator to mark async functions as effects.
@@ -150,10 +131,7 @@ def effect(
         ValueError: If stateful is True but initial or reducer is not provided.
     """
     if fn is not None:
-        return EffectFn(
-            fn=fn,
-            return_type=inspect_function(fn).return_type,
-        )
+        return EffectFn(fn=fn, return_type=inspect_function(fn).return_type)
 
     if stateful:
         if not initial or not reducer:
@@ -178,12 +156,7 @@ def effect(
 
         return decorate_stateful
 
-    def decorate(
-        fn: Callable[_P, Coroutine[Any, Any, _T_co]],
-    ) -> EffectFn[_P, _T_co]:
-        return EffectFn(
-            fn=fn,
-            return_type=inspect_function(fn).return_type,
-        )
+    def decorate(fn: Callable[_P, Coroutine[Any, Any, _T_co]]) -> EffectFn[_P, _T_co]:
+        return EffectFn(fn=fn, return_type=inspect_function(fn).return_type)
 
     return decorate

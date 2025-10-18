@@ -12,14 +12,7 @@ from dataclasses import dataclass
 from hashlib import blake2b
 from heapq import heappop, heappush
 from typing import TYPE_CHECKING
-from typing_extensions import (
-    Any,
-    TypeVar,
-    TypeVarTuple,
-    Unpack,
-    overload,
-    override,
-)
+from typing_extensions import Any, TypeVar, TypeVarTuple, Unpack, overload, override
 
 if TYPE_CHECKING:
     import sys
@@ -44,10 +37,7 @@ class OpFuture(asyncio.Future[object]):
     __slots__: tuple[str, ...] = ("id", "params")
 
     def __init__(
-        self,
-        id_: str,
-        params: object,
-        loop: asyncio.AbstractEventLoop,
+        self, id_: str, params: object, loop: asyncio.AbstractEventLoop
     ) -> None:
         super().__init__(loop=loop)
         self.id = id_
@@ -127,12 +117,7 @@ class EventLoop(asyncio.AbstractEventLoop):
         *args: Unpack[_Ts],
         context: Context | None = None,
     ) -> asyncio.Handle:
-        h = asyncio.Handle(
-            callback,
-            args,
-            self,
-            context=context,
-        )
+        h = asyncio.Handle(callback, args, self, context=context)
         self._ready.append(h)
         if asyncio.get_running_loop() is self._host:
             self._event.set()
@@ -147,11 +132,7 @@ class EventLoop(asyncio.AbstractEventLoop):
         context: Context | None = None,
     ) -> asyncio.TimerHandle:
         th = asyncio.TimerHandle(
-            int(when * 1e6),
-            callback,
-            args,
-            loop=self,
-            context=context,
+            int(when * 1e6), callback, args, loop=self, context=context
         )
         heappush(self._timers, th)
         if asyncio.get_running_loop() is self._host:
@@ -194,9 +175,7 @@ class EventLoop(asyncio.AbstractEventLoop):
 
     @override
     def create_task(
-        self,
-        coro: _TaskCompatibleCoro[_T],
-        **kwargs: Any,
+        self, coro: _TaskCompatibleCoro[_T], **kwargs: Any
     ) -> asyncio.Task[_T]:
         token = _task_ctx.set(_TaskCtx(parent_id=self.generate_op_id()))
         task = asyncio.Task(coro, loop=self, **kwargs)
@@ -244,11 +223,7 @@ class EventLoop(asyncio.AbstractEventLoop):
 
             if task.done():
                 return None
-            return WaitSet(
-                ops=[*self._ops.values()],
-                timer=deadline,
-                event=self._event,
-            )
+            return WaitSet(ops=[*self._ops.values()], timer=deadline, event=self._event)
         finally:
             events._set_running_loop(self._host)  # noqa: SLF001
             if prev_task:
@@ -265,18 +240,10 @@ class EventLoop(asyncio.AbstractEventLoop):
         return op_fut
 
     @overload
-    def post_completion(
-        self,
-        id_: str,
-        *,
-        result: object,
-    ) -> None: ...
+    def post_completion(self, id_: str, *, result: object) -> None: ...
     @overload
     def post_completion(
-        self,
-        id_: str,
-        *,
-        exception: Exception | asyncio.CancelledError,
+        self, id_: str, *, exception: Exception | asyncio.CancelledError
     ) -> None: ...
     def post_completion(
         self,
@@ -359,9 +326,7 @@ class EventLoop(asyncio.AbstractEventLoop):
         pass
 
 
-def create_loop(
-    parent_loop: asyncio.AbstractEventLoop,
-) -> EventLoop:
+def create_loop(parent_loop: asyncio.AbstractEventLoop) -> EventLoop:
     return EventLoop(parent_loop)  # type: ignore[abstract]
 
 
@@ -379,9 +344,7 @@ def _copy_future_state(source: asyncio.Future[_T], dest: asyncio.Future[_T]) -> 
 
 
 def wrap_future(
-    future: asyncio.Future[_T],
-    *,
-    loop: asyncio.AbstractEventLoop | None = None,
+    future: asyncio.Future[_T], *, loop: asyncio.AbstractEventLoop | None = None
 ) -> asyncio.Future[_T]:
     src_loop = future.get_loop()
     dst_loop = loop or asyncio.get_running_loop()

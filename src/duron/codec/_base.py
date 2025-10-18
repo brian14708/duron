@@ -29,10 +29,7 @@ class Codec(Protocol):
         ...
 
     def decode_json(
-        self,
-        encoded: JSONValue,
-        expected_type: TypeHint[Any],
-        /,
+        self, encoded: JSONValue, expected_type: TypeHint[Any], /
     ) -> object:
         """Reconstruct a Python object from a JSON value during log replay.
 

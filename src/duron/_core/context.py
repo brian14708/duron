@@ -145,18 +145,14 @@ class Context:
                 return_type=return_type,
                 context=contextvars.copy_context(),
                 annotations=OpAnnotations(
-                    name=cast("str", getattr(callable_, "__name__", repr(callable_))),
+                    name=cast("str", getattr(callable_, "__name__", repr(callable_)))
                 ),
             ),
         )
         return cast("_T", await op)
 
     def stream(
-        self,
-        fn: StatefulFn[_P, _T, _S],
-        /,
-        *args: _P.args,
-        **kwargs: _P.kwargs,
+        self, fn: StatefulFn[_P, _T, _S], /, *args: _P.args, **kwargs: _P.kwargs
     ) -> AsyncContextManager[Stream[_S, _T]]:
         """Stream stateful function partial results.
 
@@ -175,13 +171,7 @@ class Context:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
         return run_stateful(
-            self._loop,
-            fn.action_type,
-            fn.initial(),
-            fn.reducer,
-            fn.fn,
-            *args,
-            **kwargs,
+            self._loop, fn.action_type, fn.initial(), fn.reducer, fn.fn, *args, **kwargs
         )
 
     async def create_stream(
@@ -211,21 +201,12 @@ class Context:
 
         annotations = OpAnnotations()
         if labels:
-            annotations = OpAnnotations.extend(
-                annotations,
-                labels=labels,
-            )
+            annotations = OpAnnotations.extend(annotations, labels=labels)
         if name:
             annotations = OpAnnotations.extend(
-                annotations,
-                name=name,
-                labels={"name": name},
+                annotations, name=name, labels={"name": name}
             )
-        return await create_stream(
-            self._loop,
-            dtype,
-            annotations=annotations,
-        )
+        return await create_stream(self._loop, dtype, annotations=annotations)
 
     async def create_signal(
         self,
@@ -254,22 +235,13 @@ class Context:
 
         annotations = OpAnnotations()
         if labels:
-            annotations = OpAnnotations.extend(
-                annotations,
-                labels=labels,
-            )
+            annotations = OpAnnotations.extend(annotations, labels=labels)
         if name:
             annotations = OpAnnotations.extend(
-                annotations,
-                name=name,
-                labels={"name": name},
+                annotations, name=name, labels={"name": name}
             )
 
-        return await create_signal(
-            self._loop,
-            dtype,
-            annotations=annotations,
-        )
+        return await create_signal(self._loop, dtype, annotations=annotations)
 
     async def create_future(
         self,
@@ -298,25 +270,13 @@ class Context:
 
         annotations = OpAnnotations()
         if labels:
-            annotations = annotations.extend(
-                labels=labels,
-            )
+            annotations = annotations.extend(labels=labels)
         if name:
-            annotations = annotations.extend(
-                name=name,
-                labels={"name": name},
-            )
+            annotations = annotations.extend(name=name, labels={"name": name})
         fut = create_op(
-            self._loop,
-            FutureCreate(
-                return_type=dtype,
-                annotations=annotations,
-            ),
+            self._loop, FutureCreate(return_type=dtype, annotations=annotations)
         )
-        return (
-            fut.id,
-            cast("asyncio.Future[_T]", fut),
-        )
+        return (fut.id, cast("asyncio.Future[_T]", fut))
 
     async def barrier(self) -> int:
         """Create a barrier operation that records the current execution offset.
@@ -385,18 +345,10 @@ class Context:
         return Random(self._loop.generate_op_id())  # noqa: S311
 
     @overload
-    async def complete_future(
-        self,
-        future_id: str,
-        *,
-        result: object,
-    ) -> None: ...
+    async def complete_future(self, future_id: str, *, result: object) -> None: ...
     @overload
     async def complete_future(
-        self,
-        future_id: str,
-        *,
-        exception: Exception,
+        self, future_id: str, *, exception: Exception
     ) -> None: ...
     async def complete_future(
         self,
@@ -417,9 +369,5 @@ class Context:
         """
         await create_op(
             self._loop,
-            FutureComplete(
-                future_id=future_id,
-                value=result,
-                exception=exception,
-            ),
+            FutureComplete(future_id=future_id, value=result, exception=exception),
         )
