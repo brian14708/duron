@@ -1,9 +1,10 @@
 ---
-title: Duron
 hide:
   - toc
   - navigation
 ---
+
+# Duron
 
 ## Install
 
