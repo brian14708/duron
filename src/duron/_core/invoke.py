@@ -336,7 +336,7 @@ class _InvokeRun:
         if self._tracer:
             self._tracer.close()
         await self._send_traces(flush=True)
-        if self._lease:
+        if self._lease is not None:
             await self._log.release_lease(self._lease)
             self._lease = None
 

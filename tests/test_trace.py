@@ -9,7 +9,7 @@ import pytest
 from duron import Context, durable
 from duron.contrib.storage import MemoryLogStorage
 from duron.log._helper import is_entry
-from duron.tracing import create_tracer, span
+from duron.tracing import Tracer, span
 
 if TYPE_CHECKING:
     from duron.typing import JSONValue
@@ -45,7 +45,7 @@ async def test_trace() -> None:
             s.set_status("OK")
 
     log = MemoryLogStorage()
-    async with activity.invoke(log, tracer=create_tracer("abc")) as t:
+    async with activity.invoke(log, tracer=Tracer("abc")) as t:
         await t.start()
         await t.wait()
 

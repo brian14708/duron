@@ -288,14 +288,14 @@ async def main():
 Enable tracing to understand workflow execution:
 
 ```python
-from duron.tracing import create_tracer, setup_tracing
+from duron.tracing import Tracer, setup_tracing
 
 setup_tracing()  # Configure logging
 
 async def main():
     async with greeting_flow.invoke(
         storage,
-        tracer=create_tracer("session-123")
+        tracer=Tracer("session-123")
     ) as job:
         await job.start("Alice")
         result = await job.wait()

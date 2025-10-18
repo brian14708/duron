@@ -49,6 +49,16 @@ class Tracer:
     )
 
     def __init__(self, trace_id: str, /, *, run_id: str | None = None) -> None:
+        """Create a new Tracer with the given trace_id and optional run_id.
+
+        `trace_id` should be unique and remain constant across retries of the same
+        task. `run_id` should be unique for each a task run.
+
+        Args:
+            trace_id (str): The trace identifier
+            run_id (str | None): The run identifier. If None, a random id will be \
+                    generated.
+        """
         self.trace_id: str = trace_id
         self.run_id: str = run_id or _trace_id()
         self._events: list[TraceEvent] = []
@@ -329,22 +339,6 @@ def span(
     if tracer := current_tracer.get():
         return tracer.new_span(name, metadata)
     return NULL_SPAN
-
-
-def create_tracer(trace_id: str, *, run_id: str | None = None) -> Tracer:
-    """Create a new Tracer with the given trace_id and optional run_id.
-
-    `trace_id` should be unique and remain constant across retries of the same
-    task. `run_id` should be unique for each a task run.
-
-    Args:
-        trace_id (str): The trace identifier
-        run_id (str | None): The run identifier. If None, a random id will be generated.
-
-    Returns:
-        Tracer: A new Tracer instance.
-    """
-    return Tracer(trace_id, run_id=run_id)
 
 
 def _random_id() -> str:
