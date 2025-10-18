@@ -5,7 +5,7 @@ repo_name: "brian14708/duron"
 nav:
   - Home:
       - index.md
-  - Reference:
+  - Reference: &references
       - reference/duron.md
       - reference/log.md
       - reference/codec.md
@@ -45,6 +45,7 @@ plugins:
             separate_signature: true
             merge_init_into_class: true
             members: true
+            docstring_section_style: list
           inventories:
             - https://docs.python.org/3/objects.inv
             - https://typing-extensions.readthedocs.io/en/latest/objects.inv
@@ -52,6 +53,9 @@ plugins:
       arguments:
         theme: |
           ^(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light'
+  - llmstxt:
+      sections:
+        API Reference: *references
 markdown_extensions:
   - pymdownx.superfences:
       custom_fences:

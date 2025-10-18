@@ -55,6 +55,7 @@ lint = [
 ]
 docs = [
     "mkdocs",
+    "mkdocs-llmstxt",
     "mkdocs-material",
     "mkdocs-mermaid2-plugin",
     "mkdocstrings[python]",
