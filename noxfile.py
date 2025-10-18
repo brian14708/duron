@@ -36,7 +36,7 @@ def test(s: nox.Session) -> None:
     _ = s.run("pytest")
 
 
-@nox.session
+@nox.session()
 def type_check(s: nox.Session) -> None:
     install_deps(s, ["typing", "examples"])
     _ = s.run("mypy", ".")

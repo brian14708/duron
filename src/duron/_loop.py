@@ -199,11 +199,7 @@ class EventLoop(asyncio.AbstractEventLoop):
         **kwargs: Any,
     ) -> asyncio.Task[_T]:
         token = _task_ctx.set(_TaskCtx(parent_id=self.generate_op_id()))
-        task = asyncio.Task(
-            coro,
-            loop=self,
-            **kwargs,
-        )
+        task = asyncio.Task(coro, loop=self, **kwargs)
         _task_ctx.reset(token)
         return task
 

@@ -27,7 +27,7 @@ from duron._core.ops import (
 from duron._core.signal import Signal
 from duron._core.stream import ObserverStream, Stream, StreamWriter
 from duron._core.stream_manager import StreamManager
-from duron._core.task_manager import TaskManager
+from duron._core.task_manager import TaskError, TaskManager
 from duron._loop import EventLoop, create_loop, derive_id, random_id
 from duron.codec import Codec
 from duron.log._helper import is_entry, set_annotations
@@ -356,9 +356,13 @@ class _InvokeRun:
         self._pending_msg: list[Entry] = []
         self._prev_ops: set[str] = set()
         self._now = 0
-        self._task_manager = TaskManager()
         self._stream_manager = StreamManager(watchers)
         self._tracer: Tracer | None = Tracer.current()
+
+        def cancel_task(e: TaskError) -> None:
+            self._loop.call_soon(self._task.cancel, e)
+
+        self._task_manager = TaskManager(cancel_task)
 
     async def close(self) -> None:
         if self._tracer:
@@ -399,31 +403,36 @@ class _InvokeRun:
         self._pending_msg = msgs
 
     async def run(self) -> object:
-        if self._task.done():
-            return self._task.result()
+        try:
+            if self._task.done():
+                return self._task.result()
 
-        self._running = True
-        if self._tracer:
-            self._tracer.start()
-        for msg in self._pending_msg:
-            await self.enqueue_log(msg)
-        self._pending_msg.clear()
-        self._task_manager.start()
-
-        while waitset := await self._step():
+            self._running = True
             if self._tracer:
-                await waitset.block(self.now(), 1_000_000)
-                await self._send_traces()
-            else:
-                await waitset.block(self.now())
-            self.tick_realtime()
+                self._tracer.start()
+            for msg in self._pending_msg:
+                await self.enqueue_log(msg)
+            self._pending_msg.clear()
+            self._task_manager.start()
 
-        # cleanup
-        self._loop.close()
-        await self._task_manager.close()
-        await self._send_traces(flush=True)
+            while waitset := await self._step():
+                if self._tracer:
+                    await waitset.block(self.now(), 1_000_000)
+                    await self._send_traces()
+                else:
+                    await waitset.block(self.now())
+                self.tick_realtime()
 
-        return self._task.result()
+            # cleanup
+            self._loop.close()
+            await self._task_manager.close()
+            await self._send_traces(flush=True)
+
+            return self._task.result()
+        except asyncio.CancelledError as e:
+            if e.args and isinstance(e.args[0], TaskError):
+                raise e.args[0].exception from e
+            raise
 
     async def _step(self) -> WaitSet | None:
         self._loop.tick(self.now())
@@ -586,28 +595,16 @@ class _InvokeRun:
                     entry["ts"] = self.now()
                     await self.enqueue_log(entry)
 
-                def done(f: OpFuture) -> None:
-                    if f.cancelled():
-                        sid = f.id
-                        if self._task_manager.has_pending(sid):
-                            # pending task cancelled, should be
-                            # completed by a promise.complete
-                            pass
-                        elif (
-                            task := self._task_manager.get_task(sid)
-                        ) and not task.done():
-                            _ = task.get_loop().call_soon(task.cancel)
-
                 sid = id_
                 if self._running:
-                    self._task_manager.add_task(
-                        sid,
-                        cb(),
-                        op.context,
-                        op.return_type,
-                    )
+                    self._task_manager.add_task(sid, cb(), op.context, op.return_type)
                 else:
                     self._task_manager.add_pending(sid, cb, op.context, op.return_type)
+
+                def done(f: OpFuture) -> None:
+                    if f.cancelled():
+                        self._task_manager.cancel_task(f.id)
+
                 fut.add_done_callback(done)
 
             case StreamCreate():

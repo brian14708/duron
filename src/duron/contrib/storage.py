@@ -4,7 +4,7 @@ import asyncio
 import json
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, cast, final
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -12,7 +12,6 @@ if TYPE_CHECKING:
     from duron.log import BaseEntry, Entry
 
 
-@final
 class FileLogStorage:
     """A [log storage][duron.log.LogStorage] that uses a file to store log entries."""
 
@@ -104,7 +103,6 @@ class FileLogStorage:
                 return offset
 
 
-@final
 class MemoryLogStorage:
     """A [log storage][duron.log.LogStorage] that keeps log entries in memory."""
 

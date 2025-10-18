@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import sys
 from typing import TYPE_CHECKING
-from typing_extensions import Any, TypeVar, final
+from typing_extensions import Any, NamedTuple, TypeVar, final
 
 if TYPE_CHECKING:
     import contextvars
@@ -15,11 +15,25 @@ if TYPE_CHECKING:
 _T = TypeVar("_T")
 
 
+class TaskError(NamedTuple):
+    exception: BaseException
+
+
 @final
 class TaskManager:
-    __slots__ = ("_cleanup_task", "_done_tasks", "_futures", "_pending_task", "_tasks")
+    __slots__ = (
+        "_cleanup_task",
+        "_done_tasks",
+        "_futures",
+        "_on_error",
+        "_pending_task",
+        "_tasks",
+    )
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        on_error: Callable[[TaskError], None],
+    ) -> None:
         self._pending_task: dict[
             str,
             tuple[
@@ -32,6 +46,7 @@ class TaskManager:
         self._done_tasks: asyncio.Queue[asyncio.Future[None] | None] = asyncio.Queue()
         self._futures: dict[str, TypeHint[Any]] = {}
         self._cleanup_task: asyncio.Task[None] = asyncio.create_task(self._cleanup())
+        self._on_error: Callable[[TaskError], None] = on_error
 
     async def _cleanup(self) -> None:
         while True:
@@ -56,7 +71,15 @@ class TaskManager:
         context: contextvars.Context,
         return_type: TypeHint[Any],
     ) -> None:
-        self._tasks[task_id] = (_create_task_context(future, context), return_type)
+        t = _create_task_context(future, context=context)
+        t.add_done_callback(self._done_callback)
+        self._tasks[task_id] = (t, return_type)
+
+    def _done_callback(self, t: asyncio.Task[Any]) -> None:
+        if t.cancelled():
+            pass
+        elif (e := t.exception()) is not None:
+            self._on_error(TaskError(e))
 
     def add_future(
         self,
@@ -68,19 +91,19 @@ class TaskManager:
     def has_future(self, task_id: str) -> bool:
         return task_id in self._futures
 
-    def get_task(self, task_id: str) -> asyncio.Future[Any] | None:
+    def cancel_task(self, task_id: str) -> None:
         t = self._tasks.get(task_id, None)
-        return t[0] if t else None
+        if t and not t[0].done():
+            _ = t[0].cancel()
 
     def has_pending(self, task_id: str) -> bool:
         return task_id in self._pending_task
 
     def start(self) -> None:
         for task_id, (task_fn, context, return_type) in self._pending_task.items():
-            self._tasks[task_id] = (
-                _create_task_context(task_fn(), context),
-                return_type,
-            )
+            t = _create_task_context(task_fn(), context=context)
+            t.add_done_callback(self._done_callback)
+            self._tasks[task_id] = (t, return_type)
         self._pending_task.clear()
 
     async def close(self) -> None:
@@ -111,15 +134,11 @@ class TaskManager:
 
 
 if sys.version_info >= (3, 11):
-
-    def _create_task_context(
-        coro: Coroutine[Any, Any, _T], context: contextvars.Context
-    ) -> asyncio.Task[_T]:
-        return asyncio.create_task(coro, context=context)
+    _create_task_context = asyncio.create_task
 
 else:
 
     def _create_task_context(
-        coro: Coroutine[Any, Any, _T], context: contextvars.Context
+        coro: Coroutine[Any, Any, _T], *, context: contextvars.Context
     ) -> asyncio.Task[_T]:
         return context.run(asyncio.create_task, coro)
