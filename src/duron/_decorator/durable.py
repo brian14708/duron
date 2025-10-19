@@ -13,7 +13,6 @@ import functools
 from typing import TYPE_CHECKING, Concatenate, Generic, cast, get_args, get_origin
 from typing_extensions import (
     Any,
-    AsyncContextManager,
     ParamSpec,
     TypeVar,
     final,
@@ -28,6 +27,7 @@ from duron.typing._inspect import inspect_function
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Iterable
+    from contextlib import AbstractAsyncContextManager
 
     from duron._core.context import Context
     from duron.codec import Codec
@@ -60,7 +60,7 @@ class DurableFn(Generic[_P, _T_co]):
 
     def invoke(
         self, log: LogStorage, /, *, tracer: Tracer | None = None
-    ) -> AsyncContextManager[DurableRun[_P, _T_co]]:
+    ) -> AbstractAsyncContextManager[DurableRun[_P, _T_co]]:
         """Create an invocation context for this durable function.
 
         Args:

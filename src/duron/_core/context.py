@@ -7,7 +7,6 @@ from random import Random
 from typing import TYPE_CHECKING, cast
 from typing_extensions import (
     Any,
-    AsyncContextManager,
     ParamSpec,
     TypeVar,
     final,
@@ -29,6 +28,7 @@ from duron.typing import inspect_function
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Mapping
+    from contextlib import AbstractAsyncContextManager
     from contextvars import Token
     from types import TracebackType
 
@@ -153,7 +153,7 @@ class Context:
 
     def stream(
         self, fn: StatefulFn[_P, _T, _S], /, *args: _P.args, **kwargs: _P.kwargs
-    ) -> AsyncContextManager[Stream[_S, _T]]:
+    ) -> AbstractAsyncContextManager[Stream[_S, _T]]:
         """Stream stateful function partial results.
 
         Args:
