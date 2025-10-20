@@ -57,10 +57,11 @@ def op_single() -> set[str]:
         waitset = loop.poll_completion(tsk)
         if expect:
             assert waitset
-            assert len(waitset.ops) == n
-            assert {o.params for o in waitset.ops}.issubset(expect)
-            ids.update(o.id for o in waitset.ops)
-            return [o.id for o in waitset.ops]
+            pending = loop.pending_ops()
+            assert len(pending) == n
+            assert {o.params for o in pending}.issubset(expect)
+            ids.update(o.id for o in pending)
+            return [o.id for o in pending]
         assert waitset is None
         return None
 

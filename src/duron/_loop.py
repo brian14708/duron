@@ -17,7 +17,7 @@ from typing_extensions import Any, TypeVar, TypeVarTuple, Unpack, overload, over
 if TYPE_CHECKING:
     import sys
     from asyncio.futures import Future
-    from collections.abc import Callable, Coroutine, Generator
+    from collections.abc import Callable, Coroutine, Generator, Sequence
     from contextvars import Context
 
     _T = TypeVar("_T")
@@ -46,7 +46,7 @@ class OpFuture(asyncio.Future[object]):
 
 @dataclass(slots=True)
 class WaitSet:
-    ops: list[OpFuture]
+    added: Sequence[OpFuture]
     timer: int | None
     event: asyncio.Event
 
@@ -74,6 +74,7 @@ class _TaskCtx:
 
 class EventLoop(asyncio.AbstractEventLoop):
     __slots__: tuple[str, ...] = (
+        "_added",
         "_closed",
         "_ctx",
         "_event",
@@ -98,6 +99,7 @@ class EventLoop(asyncio.AbstractEventLoop):
         self._closed: bool = False
         self._event: asyncio.Event = asyncio.Event()  # loop = _host
         self._timers: list[asyncio.TimerHandle] = []
+        self._added: list[OpFuture] = []
 
     def set_key(self, key: bytes) -> None:
         # Derive a fixed-length key from the provided key
@@ -223,11 +225,16 @@ class EventLoop(asyncio.AbstractEventLoop):
 
             if task.done():
                 return None
-            return WaitSet(ops=[*self._ops.values()], timer=deadline, event=self._event)
+
+            added, self._added = self._added, []
+            return WaitSet(added=added, timer=deadline, event=self._event)
         finally:
             events._set_running_loop(self._host)  # noqa: SLF001
             if prev_task:
                 tasks._enter_task(self._host, prev_task)  # noqa: SLF001
+
+    def pending_ops(self) -> Sequence[OpFuture]:
+        return tuple(self._ops.values())
 
     def create_op(self, params: object, *, external: bool = False) -> OpFuture:
         if external:
@@ -237,6 +244,7 @@ class EventLoop(asyncio.AbstractEventLoop):
             id_ = self.generate_op_id()
         op_fut = OpFuture(id_, params, self)
         self._ops[id_] = op_fut
+        self._added.append(op_fut)
         return op_fut
 
     @overload
@@ -276,7 +284,7 @@ class EventLoop(asyncio.AbstractEventLoop):
                 p = self.poll_completion(op)
                 if p is not None:
                     logger.warning(
-                        "Event loop closed with pending operations: %r", p.ops
+                        "Event loop closed with pending operations: %r", self._ops
                     )
         while self._timers:
             th = heappop(self._timers)

@@ -299,7 +299,6 @@ class _InvokeRun:
         "_loop",
         "_now",
         "_pending_msg",
-        "_prev_ops",
         "_running",
         "_stream_manager",
         "_task",
@@ -322,7 +321,6 @@ class _InvokeRun:
         self._running: bool = False
         self._lease: bytes | None = None
         self._pending_msg: list[Entry] = []
-        self._prev_ops: set[str] = set()
         self._now = 0
         self._stream_manager = StreamManager(watchers)
         self._tracer: Tracer | None = Tracer.current()
@@ -409,20 +407,12 @@ class _InvokeRun:
 
         while True:
             result = self._loop.poll_completion(self._task)
-            if result is None:
+            if result is None or not result.added:
                 return result
 
-            new_ops = False
-            for s in result.ops:
+            for s in result.added:
                 sid = s.id
-                if sid not in self._prev_ops:
-                    await self.enqueue_op(sid, s)
-                    new_ops = True
-            if new_ops or len(self._prev_ops) != len(result.ops):
-                self._prev_ops.clear()
-                self._prev_ops.update(s.id for s in result.ops)
-            if not new_ops:
-                return result
+                await self.enqueue_op(sid, s)
 
     async def _send_traces(self, *, flush: bool = False) -> None:
         if not self._tracer:
