@@ -44,6 +44,7 @@ plugins:
             show_submodules: false
             show_attribute_values: false
             separate_signature: true
+            overloads_only: true
             merge_init_into_class: true
             members: true
             docstring_section_style: list
