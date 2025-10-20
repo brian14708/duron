@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import functools
+import inspect
 from contextvars import ContextVar
 from random import Random
 from typing import TYPE_CHECKING, cast
@@ -131,11 +133,21 @@ class Context:
                 return await stream
 
         if isinstance(fn, EffectFn):
+            callable_ = fn.fn
             return_type = fn.return_type
+        elif inspect.iscoroutinefunction(fn):
+            callable_ = fn
+            return_type = inspect_function(fn).return_type
         else:
+
+            async def wrapper(  # noqa: RUF029
+                *args: _P.args, **kwargs: _P.kwargs
+            ) -> object:
+                return fn(*args, **kwargs)
+
+            callable_ = functools.update_wrapper(wrapper, fn)
             return_type = inspect_function(fn).return_type
 
-        callable_ = fn.fn if isinstance(fn, EffectFn) else fn
         op = create_op(
             self._loop,
             FnCall(

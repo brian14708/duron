@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from typing_extensions import Any, Protocol, TypeVar, overload
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Mapping
+    from collections.abc import Callable, Coroutine, Mapping, Sequence
     from contextvars import Context
 
     from duron._loop import EventLoop, OpFuture
@@ -41,9 +41,9 @@ def _merge_dict(
 
 
 class FnCall(NamedTuple):
-    callable: Callable[..., Coroutine[Any, Any, object] | object]
-    args: tuple[object, ...]
-    kwargs: dict[str, object]
+    callable: Callable[..., Coroutine[Any, Any, object]]
+    args: Sequence[object]
+    kwargs: Mapping[str, object]
     return_type: TypeHint[Any]
     context: Context
     annotations: OpAnnotations

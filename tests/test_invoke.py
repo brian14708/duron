@@ -26,7 +26,7 @@ async def test_invoke() -> None:
             ctx.run(u),
             ctx.run(u),
         )
-        _ = await ctx.run(lambda: asyncio.sleep(0.1))
+        _ = await ctx.run(asyncio.sleep, 0.1)
         return i + ":".join(x)
 
     log = MemoryLogStorage()
@@ -50,7 +50,7 @@ async def test_invoke() -> None:
 async def test_invoke_error() -> None:
     @durable()
     async def activity(ctx: Context) -> None:
-        _ = await ctx.run(lambda: asyncio.sleep(0.1))
+        _ = await ctx.run(asyncio.sleep, 0.1)
 
         def error() -> int:
             msg = "test error"
@@ -75,7 +75,7 @@ async def test_resume() -> None:
 
     @durable()
     async def activity(ctx: Context, s: str) -> str:
-        _ = await ctx.run(lambda: asyncio.sleep(sleep))
+        _ = await ctx.run(asyncio.sleep, sleep)
         return s
 
     log = MemoryLogStorage()
@@ -96,8 +96,8 @@ async def test_cancel() -> None:
     @durable()
     async def activity(ctx: Context, s: str) -> str:
         with contextlib.suppress(asyncio.TimeoutError):
-            _ = await asyncio.wait_for(ctx.run(lambda: asyncio.sleep(9999)), 0.1)
-        _ = await asyncio.wait_for(ctx.run(lambda: asyncio.sleep(9999)), 0.1)
+            _ = await asyncio.wait_for(ctx.run(asyncio.sleep, 9999), 0.1)
+        _ = await asyncio.wait_for(ctx.run(asyncio.sleep, 9999), 0.1)
         return s
 
     log = MemoryLogStorage()

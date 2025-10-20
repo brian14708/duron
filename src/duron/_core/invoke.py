@@ -530,9 +530,7 @@ class _InvokeRun:
                         else NULL_SPAN
                     ) as span:
                         try:
-                            result = op.callable(*op.args, **op.kwargs)
-                            if asyncio.iscoroutine(result):
-                                result = await result
+                            result = await op.callable(*op.args, **op.kwargs)
                             entry["result"] = self._codec.encode_json(result)
                             span.set_status("OK")
                         except (Exception, asyncio.CancelledError) as e:  # noqa: BLE001
