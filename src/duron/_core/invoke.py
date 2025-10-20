@@ -383,12 +383,14 @@ class _InvokeRun:
             self._pending_msg.clear()
             self._task_manager.start()
 
+            self.tick_realtime()
             while waitset := await self._step():
                 if self._tracer:
                     await waitset.block(self.now(), 1_000_000)
                     await self._send_traces()
                 else:
                     await waitset.block(self.now())
+                _ = await self._step()
                 self.tick_realtime()
 
             # cleanup

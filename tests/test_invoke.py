@@ -111,6 +111,37 @@ async def test_cancel() -> None:
             _ = await t.wait()
 
 
+@pytest.mark.asyncio
+async def test_timing() -> None:
+    @durable()
+    async def activity(
+        ctx: Context,
+    ) -> int:
+        cnt = 0
+
+        rnd = ctx.random()
+
+        async def do(t: float) -> bool:
+            try:
+                _ = await asyncio.wait_for(ctx.run(asyncio.sleep, t), 0.1)
+            except asyncio.TimeoutError:
+                return True
+            return False
+
+        for f in await asyncio.gather(*[do(rnd.random() * 0.2) for _ in range(100)]):
+            if f:
+                cnt += 1
+        return cnt
+
+    log = MemoryLogStorage()
+    async with activity.invoke(log) as t:
+        await t.start()
+        a = await t.wait()
+    async with activity.invoke(log) as t:
+        await t.resume()
+        assert a == await t.wait()
+
+
 @dataclass
 class CustomPoint:
     x: int
