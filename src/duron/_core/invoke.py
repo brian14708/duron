@@ -28,7 +28,7 @@ from duron._core.signal import Signal
 from duron._core.stream import ObserverStream, Stream, StreamWriter
 from duron._core.stream_manager import StreamManager
 from duron._core.task_manager import TaskError, TaskManager
-from duron._loop import EventLoop, create_loop, derive_id, random_id
+from duron._loop import EventLoop, create_loop, random_id
 from duron.codec import Codec
 from duron.log._helper import is_entry, set_annotations
 from duron.tracing._span import NULL_SPAN
@@ -520,7 +520,7 @@ class _InvokeRun:
                 async def cb() -> None:
                     entry: PromiseCompleteEntry = {
                         "ts": -1,
-                        "id": derive_id(id_),
+                        "id": random_id(),
                         "type": "promise.complete",
                         "promise_id": id_,
                     }
@@ -670,7 +670,7 @@ class _InvokeRun:
         now_us = self.now()
         entry: PromiseCompleteEntry = {
             "ts": now_us,
-            "id": derive_id(id_),
+            "id": random_id(),
             "type": "promise.complete",
             "promise_id": id_,
         }
