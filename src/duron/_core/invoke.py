@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import TYPE_CHECKING, Final, Generic, Literal, cast
 from typing_extensions import (
@@ -36,7 +37,6 @@ from duron.tracing._tracer import Tracer, current_tracer, span
 from duron.typing import JSONValue, UnspecifiedType, inspect_function
 
 if TYPE_CHECKING:
-    import contextlib
     from asyncio.exceptions import CancelledError
     from collections.abc import Callable, Coroutine
     from contextvars import Token
@@ -311,6 +311,7 @@ class _InvokeRun:
         "_stream_manager",
         "_task",
         "_task_manager",
+        "_task_run",
         "_tracer",
     )
 
@@ -332,6 +333,7 @@ class _InvokeRun:
         self._now = 0
         self._stream_manager = StreamManager(watchers)
         self._tracer: Tracer | None = Tracer.current()
+        self._task_run: asyncio.Task[object] | None = None
 
         def cancel_task(e: TaskError) -> None:
             self._loop.call_soon(self._task.cancel, e)
@@ -339,6 +341,10 @@ class _InvokeRun:
         self._task_manager = TaskManager(cancel_task)
 
     async def close(self) -> None:
+        if self._task_run:
+            self._task_run.cancel()
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await self._task_run
         if self._tracer:
             self._tracer.close()
         await self._send_traces(flush=True)
@@ -375,8 +381,15 @@ class _InvokeRun:
             msg for msg in self._pending_msg if msg["id"] not in recvd_msgs
         ]
         self._pending_msg = msgs
+        self._task_run = asyncio.create_task(self._run())
 
     async def run(self) -> object:
+        if self._task_run is None:
+            msg = "Run has not been started. Call resume() first."
+            raise RuntimeError(msg)
+        return await asyncio.shield(self._task_run)
+
+    async def _run(self) -> object:
         try:
             if self._task.done():
                 return self._task.result()

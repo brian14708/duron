@@ -267,6 +267,36 @@ async def test_external_stream_write() -> None:
         assert await b == list(range(10))
 
 
+@pytest.mark.asyncio
+async def test_invoke_wait_multiple() -> None:
+    async def u() -> str:
+        for _ in range(random.randint(1, 10)):
+            await asyncio.sleep(0.001)
+        return str(uuid.uuid4())
+
+    @durable()
+    async def activity(ctx: Context, i: str) -> str:
+        x = await asyncio.gather(
+            ctx.run(u),
+            ctx.run(u),
+        )
+        _ = await ctx.run(asyncio.sleep, 0.1)
+        return i + ":".join(x)
+
+    log = MemoryLogStorage()
+    async with invoke(activity, log) as t:
+        await t.start("test")
+        await asyncio.sleep(0)
+    async with invoke(activity, log) as t:
+        await t.start("test")
+        while True:
+            try:
+                _ = await asyncio.wait_for(t.wait(), 0.001)
+                break
+            except asyncio.TimeoutError:
+                continue
+
+
 @durable
 async def activity(ctx: Context) -> int:
     for _i in range(100):
