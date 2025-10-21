@@ -20,16 +20,16 @@ async def test_timer() -> None:
             )
         return 0
 
-    loop = create_loop(asyncio.get_event_loop())
+    loop = await create_loop()
     loop.tick(time.time_ns() // 1000)
-    tsk = loop.create_task(timer())
+    tsk = loop.schedule_task(timer())
     while (waitset := loop.poll_completion(tsk)) is not None:
         await waitset.block(time.time_ns() // 1000)
         loop.tick(time.time_ns() // 1000)
     assert tsk.result() == 0
 
 
-def op_single() -> set[str]:
+async def op_single() -> set[str]:
     async def op1(x: int) -> None:
         _ = await loop.create_op(x)
 
@@ -45,9 +45,9 @@ def op_single() -> set[str]:
         _ = await loop.create_op(6)
 
     ids: set[str] = set()
-    loop = create_loop(asyncio.get_event_loop())
+    loop = await create_loop()
     loop.tick(time.time_ns() // 1000)
-    tsk = loop.create_task(op())
+    tsk = loop.schedule_task(op())
 
     @overload
     def tick(n: int, expect: set[int]) -> list[str]: ...
@@ -76,7 +76,7 @@ def op_single() -> set[str]:
 
 
 @pytest.mark.asyncio
-async def test_op() -> None:  # noqa: RUF029
+async def test_op() -> None:
     baseline = {
         "CUTqQC+RvaeRnRZ5",
         "Kk2VFV+vWKGg1vRT",
@@ -86,4 +86,26 @@ async def test_op() -> None:  # noqa: RUF029
         "yZ1BFLcquViZJEQC",
     }
     for _ in range(4):
-        assert op_single() == baseline
+        assert await op_single() == baseline
+
+
+@pytest.mark.asyncio
+async def test_close() -> None:
+    cleanup = 0
+
+    async def f(*, start_child: bool = True) -> None:
+        nonlocal cleanup
+
+        try:
+            if start_child:
+                leak = asyncio.create_task(f(start_child=False))
+                _ = leak
+            await asyncio.sleep(9999)
+        finally:
+            cleanup += 1
+
+    loop = await create_loop()
+    tsk = loop.schedule_task(f())
+    _ = loop.poll_completion(tsk)
+    loop.close()
+    assert cleanup == 2

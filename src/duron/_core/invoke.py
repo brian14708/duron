@@ -108,15 +108,17 @@ class DurableRun(Generic[_P, _T_co]):
 
         type_info = inspect_function(self._fn.fn)
         p = _invoke_prelude(self._fn, type_info, prelude)
-        self._run = _InvokeRun(p, self._log, codec, watchers=self._watchers)
+        loop = await create_loop()
+        self._run = _InvokeRun(loop, p, self._log, codec, watchers=self._watchers)
         await self._run.resume()
 
     async def resume(self) -> None:
         """Resume a previously started invocation."""
         type_info = inspect_function(self._fn.fn)
         prelude = _invoke_prelude(self._fn, type_info, _resume_init)
+        loop = await create_loop()
         self._run = _InvokeRun(
-            prelude, self._log, self._fn.codec, watchers=self._watchers
+            loop, prelude, self._log, self._fn.codec, watchers=self._watchers
         )
         await self._run.resume()
 
@@ -317,14 +319,15 @@ class _InvokeRun:
 
     def __init__(
         self,
+        loop: EventLoop,
         task: Coroutine[Any, Any, object],
         log: LogStorage,
         codec: Codec,
         *,
         watchers: list[tuple[dict[str, str], StreamObserver]] | None = None,
     ) -> None:
-        self._loop = create_loop(asyncio.get_running_loop())
-        self._task = self._loop.create_task(task)
+        self._loop = loop
+        self._task = self._loop.schedule_task(task)
         self._log = log
         self._codec = codec
         self._running: bool = False

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, NamedTuple
 from typing_extensions import Any, Protocol, TypeVar, overload
 
 if TYPE_CHECKING:
+    import asyncio
     from collections.abc import Callable, Coroutine, Mapping, Sequence
     from contextvars import Context
 
@@ -110,4 +110,4 @@ def create_op(loop: EventLoop, params: FutureCreate) -> OpFuture: ...
 @overload
 def create_op(loop: EventLoop, params: FutureComplete) -> asyncio.Future[None]: ...
 def create_op(loop: EventLoop, params: Op) -> asyncio.Future[Any]:
-    return loop.create_op(params, external=asyncio.get_running_loop() is not loop)
+    return loop.create_op(params)
