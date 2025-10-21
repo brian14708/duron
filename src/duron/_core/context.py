@@ -90,9 +90,9 @@ class Context:
         if isinstance(fn, StatefulFn):
             async with self.stream(
                 cast("StatefulFn[_P, _T, Any]", fn), *args, **kwargs
-            ) as stream:
+            ) as (stream, result):
                 await stream.discard()
-                return await stream
+                return await result
 
         if isinstance(fn, EffectFn):
             callable_ = fn.fn
@@ -127,7 +127,7 @@ class Context:
 
     def stream(
         self, fn: StatefulFn[_P, _T, _S], /, *args: _P.args, **kwargs: _P.kwargs
-    ) -> AbstractAsyncContextManager[Stream[_S, _T]]:
+    ) -> AbstractAsyncContextManager[tuple[Stream[_S], Awaitable[_T]]]:
         """Stream stateful function partial results.
 
         Args:
@@ -155,7 +155,10 @@ class Context:
         *,
         name: str | None = None,
         labels: Mapping[str, str] | None = None,
-    ) -> tuple[Stream[_T, None], StreamWriter[_T]]:
+    ) -> tuple[
+        Stream[_T],
+        StreamWriter[_T],
+    ]:
         """Create a new stream within the context.
 
         Args:
@@ -189,7 +192,10 @@ class Context:
         *,
         name: str | None = None,
         labels: Mapping[str, str] | None = None,
-    ) -> tuple[Signal[_T], StreamWriter[_T]]:
+    ) -> tuple[
+        Signal[_T],
+        StreamWriter[_T],
+    ]:
         """Create a new signal within the context.
 
         Args:

@@ -221,34 +221,32 @@ async def test_external_stream() -> None:
         t = 0
         async for value in test:
             t += value
-            if value == -1:
-                return t
-        return -1
+        return t
 
     log = MemoryLogStorage()
     async with invoke(activity, log) as t:
-        test: StreamWriter[int] = t.open_stream("test", "w")
+        test = t.open_stream("test", "w")
         await t.start()
 
         async def do() -> None:
-            await test.send(0)
-            for i in range(10):
-                await test.send(i)
-            await test.send(-1)
+            async with await test as s:
+                await s.send(0)
+                for i in range(10):
+                    await s.send(i)
+                await s.send(-1)
 
         bg = asyncio.create_task(do())
-        assert await t.wait() == 44
-        await bg
+        assert (await asyncio.gather(t.wait(), bg))[0] == 44
 
 
 @pytest.mark.asyncio
 async def test_external_stream_write() -> None:
     @durable
     async def activity(_ctx: Context, writer: StreamWriter[int] = Provided) -> int:
-        for i in range(10):
-            await writer.send(i)
-        await writer.close()
-        return 42
+        async with writer as writer_:
+            for i in range(10):
+                await writer_.send(i)
+            return 42
 
     log = MemoryLogStorage()
 
@@ -258,7 +256,7 @@ async def test_external_stream_write() -> None:
         await run.start()
 
         async def bg() -> list[int]:
-            values: list[int] = [value async for value in output_stream]
+            values: list[int] = [value async for value in await output_stream]
             return values
 
         b = asyncio.create_task(bg())

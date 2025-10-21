@@ -25,6 +25,8 @@ from duron.contrib.storage import FileLogStorage
 from duron.tracing import Tracer, span
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from duron.typing import JSONValue, TypeHint
 
 client = AsyncOpenAI()
@@ -62,73 +64,72 @@ async def agent_fn(
             "content": "You are a helpful assistant!",
         },
     ]
-    async with input_ as inp:
-        i = 0
-        while True:
-            msgs: list[str] = [msgs async for _, msgs in inp.next_nowait(ctx)]
-            if not msgs:
-                _, m = await inp.next()
-                msgs = [m]
+    i = 0
+    while True:
+        msgs: list[str] = [msgs async for msgs in input_.next_nowait(ctx)]
+        if not msgs:
+            m = await input_.next()
+            msgs = [m]
 
-            history.append({
-                "role": "user",
-                "content": "\n".join(msgs),
-            })
-            await output.send(("user", "\n".join(msgs)))
-            with span(f"Round #{i}"):
-                i += 1
-                while True:
-                    try:
-                        async with signal:
-                            result = await completion(
-                                ctx,
-                                messages=history,
-                            )
-                            if result.choices[0].message.content:
-                                await output.send((
-                                    "assistant",
-                                    result.choices[0].message.content,
-                                ))
-                            history.append({
-                                "role": "assistant",
-                                "content": result.choices[0].message.content,
-                                "tool_calls": [
-                                    {
-                                        "id": toolcall.id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": toolcall.function.name,
-                                            "arguments": toolcall.function.arguments,
-                                        },
-                                    }
-                                    for toolcall in result.choices[0].message.tool_calls
-                                    or []
-                                    if toolcall.type == "function"
-                                ],
-                            })
-                            if not result.choices[0].message.tool_calls:
-                                break
-
-                            tasks: list[asyncio.Task[tuple[str, str]]] = []
-                            for tool_call in result.choices[0].message.tool_calls:
-                                await output.send(("call", tool_call.model_dump_json()))
-                                tasks.append(
-                                    asyncio.create_task(ctx.run(call_tool, tool_call))
-                                )
-                            for id_, tool_result in await asyncio.gather(*tasks):
-                                await output.send(("tool", tool_result))
-                                history.append({
-                                    "role": "tool",
-                                    "tool_call_id": id_,
-                                    "content": tool_result,
-                                })
-                    except SignalInterrupt:
-                        await output.send(("assistant", "[Interrupted]"))
+        history.append({
+            "role": "user",
+            "content": "\n".join(msgs),
+        })
+        await output.send(("user", "\n".join(msgs)))
+        with span(f"Round #{i}"):
+            i += 1
+            while True:
+                try:
+                    async with signal:
+                        result = await completion(
+                            ctx,
+                            messages=history,
+                        )
+                        if result.choices[0].message.content:
+                            await output.send((
+                                "assistant",
+                                result.choices[0].message.content,
+                            ))
                         history.append({
                             "role": "assistant",
-                            "content": "[Interrupted]",
+                            "content": result.choices[0].message.content,
+                            "tool_calls": [
+                                {
+                                    "id": toolcall.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": toolcall.function.name,
+                                        "arguments": toolcall.function.arguments,
+                                    },
+                                }
+                                for toolcall in result.choices[0].message.tool_calls
+                                or []
+                                if toolcall.type == "function"
+                            ],
                         })
-                        break
+                        if not result.choices[0].message.tool_calls:
+                            break
+
+                        tasks: list[asyncio.Task[tuple[str, str]]] = []
+                        for tool_call in result.choices[0].message.tool_calls:
+                            await output.send(("call", tool_call.model_dump_json()))
+                            tasks.append(
+                                asyncio.create_task(ctx.run(call_tool, tool_call))
+                            )
+                        for id_, tool_result in await asyncio.gather(*tasks):
+                            await output.send(("tool", tool_result))
+                            history.append({
+                                "role": "tool",
+                                "tool_call_id": id_,
+                                "content": tool_result,
+                            })
+                except SignalInterrupt:
+                    await output.send(("assistant", "[Interrupted]"))
+                    history.append({
+                        "role": "assistant",
+                        "content": "[Interrupted]",
+                    })
+                    break
 
 
 @duron.effect
@@ -162,13 +163,13 @@ async def main() -> None:
     async with duron.invoke(
         agent_fn, log_storage, tracer=Tracer(args.session_id)
     ) as job:
-        input_stream: StreamWriter[str] = job.open_stream("input_", "w")
-        signal_stream: StreamWriter[None] = job.open_stream("signal", "w")
-        stream: Stream[tuple[str, str]] = job.open_stream("output", "r")
+        input_stream: Awaitable[StreamWriter[str]] = job.open_stream("input_", "w")
+        signal_stream: Awaitable[StreamWriter[None]] = job.open_stream("signal", "w")
+        stream: Awaitable[Stream[tuple[str, str]]] = job.open_stream("output", "r")
 
         async def reader() -> None:
             console = Console()
-            async for role, result in stream:
+            async for role, result in await stream:
                 match role:
                     case "user":
                         console.print("[bold cyan]     USER[/bold cyan]", result)
@@ -182,20 +183,21 @@ async def main() -> None:
                         console.print("[bold magenta]     ???[/bold magenta]", result)
 
         async def writer() -> None:
+            signal_stream_ = await signal_stream
+            input_stream_ = await input_stream
             while True:
                 await asyncio.sleep(0)
                 m = await asyncio.to_thread(input, "> ")
                 if m.strip():
                     if m == "!":
-                        await signal_stream.send(None)
+                        await signal_stream_.send(None)
                     else:
-                        await input_stream.send(m)
+                        await input_stream_.send(m)
 
-        bg = [asyncio.create_task(reader()), asyncio.create_task(writer())]
         await job.start()
-        await job.wait()
-        for t in bg:
-            await t
+        await asyncio.gather(
+            job.wait(), asyncio.create_task(reader()), asyncio.create_task(writer())
+        )
 
 
 async def completion(

@@ -23,19 +23,20 @@ async def test_stream() -> None:
     async def activity(ctx: Context) -> None:
         stream, handle = await ctx.create_stream(int)
 
-        async def f() -> None:
-            for i in range(50):
-                x = ctx.random().randint(1, 10)
-                await asyncio.sleep(0.001 * x)
-                await handle.send(i)
+        async with handle as h:
 
-        _ = await asyncio.gather(
-            asyncio.create_task(f()),
-            asyncio.create_task(f()),
-            asyncio.create_task(f()),
-            asyncio.create_task(f()),
-        )
-        await handle.close()
+            async def f() -> None:
+                for i in range(50):
+                    x = ctx.random().randint(1, 10)
+                    await asyncio.sleep(0.001 * x)
+                    await h.send(i)
+
+            _ = await asyncio.gather(
+                asyncio.create_task(f()),
+                asyncio.create_task(f()),
+                asyncio.create_task(f()),
+                asyncio.create_task(f()),
+            )
         assert sum(await stream.collect()) == 4900
 
     log = MemoryLogStorage()
@@ -55,9 +56,9 @@ async def test_stream_host() -> None:
         stream, handle = await ctx.create_stream(int)
 
         async def task(stream: StreamWriter[int]) -> None:
-            for i in range(50):
-                await stream.send(i)
-            await stream.close()
+            async with stream as s:
+                for i in range(50):
+                    await s.send(i)
 
         await ctx.run(task, handle)
         assert sum(await stream.collect()) == 1225
@@ -120,9 +121,10 @@ async def test_stream_map() -> None:
                 s = yield chunk
                 await asyncio.sleep(0)
 
-        async with ctx.stream(f) as stream:
+        async with ctx.stream(f) as (stream, result):
             async for s in stream.map(lambda s: s.upper()):
                 assert s == s.upper()
+            _ = await result
             return
 
     log = MemoryLogStorage()
@@ -138,25 +140,23 @@ async def test_stream_peek() -> None:
         stream, write = await ctx.create_stream(int)
 
         async def f() -> None:
-            for i in range(30):
-                await asyncio.sleep(random.random() * 0.001)
-                await write.send(i)
-            await write.close()
+            async with write as w:
+                for i in range(30):
+                    await asyncio.sleep(random.random() * 0.001)
+                    await w.send(i)
 
         x = asyncio.create_task(ctx.run(f))
         sample: list[int] = []
-        async with stream as s:
-            while True:
-                data: list[int] = []
-                try:
-                    async for _, u in s.next_nowait(ctx):
-                        data.append(u)
-                    await asyncio.sleep(0.003)
-                except StreamClosed:
-                    break
-                finally:
-                    if data:
-                        sample.append(data[0])
+        while True:
+            data: list[int] = []
+            try:
+                data.extend([u async for u in stream.next_nowait(ctx)])
+                await asyncio.sleep(0.003)
+            except StreamClosed:
+                break
+            finally:
+                if data:
+                    sample.append(data[0])
         await x
         return sample
 
@@ -186,7 +186,7 @@ async def test_stream_cross_loop() -> None:
                 s = yield chunk
                 await asyncio.sleep(0)
 
-        async with ctx.stream(f) as stream:
+        async with ctx.stream(f) as (stream, _result):
             s = stream.map(lambda x: x * 2)
 
             async def g() -> list[str]:

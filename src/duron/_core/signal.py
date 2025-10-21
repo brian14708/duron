@@ -6,8 +6,8 @@ from collections import deque
 from typing import TYPE_CHECKING, Final, Generic, cast
 from typing_extensions import Any, TypeVar, final, override
 
-from duron._core.ops import Barrier, StreamClose, StreamCreate, StreamEmit, create_op
-from duron._loop import wrap_future
+from duron._core.ops import Barrier, StreamCreate, create_op
+from duron._core.stream import OpWriter
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from duron._loop import EventLoop
     from duron.typing._hint import TypeHint
 
-_InT = TypeVar("_InT", contravariant=True)  # noqa: PLC0105
+_T = TypeVar("_T")
 
 
 class SignalInterrupt(Exception):  # noqa: N818
@@ -36,38 +36,11 @@ class SignalInterrupt(Exception):  # noqa: N818
         return f"SignalInterrupt(value={self.value!r})"
 
 
-@final
-class SignalWriter(Generic[_InT]):
-    """Object for writing values to a signal to interrupt operations."""
-
-    __slots__ = ("_loop", "_stream_id")
-
-    def __init__(self, stream_id: str, loop: EventLoop) -> None:
-        self._stream_id = stream_id
-        self._loop = loop
-
-    async def send(self, value: _InT) -> None:
-        """Trigger the signal with a value, interrupting active operations.
-
-        Args:
-            value: The value to send with the interrupt.
-        """
-        await wrap_future(
-            create_op(self._loop, StreamEmit(stream_id=self._stream_id, value=value))
-        )
-
-    async def close(self, exc: Exception | None = None) -> None:
-        """Close the signal stream, preventing further triggers."""
-        await wrap_future(
-            create_op(self._loop, StreamClose(stream_id=self._stream_id, exception=exc))
-        )
-
-
 _SIGNAL_TRIGGER: Final = object()
 
 
 @final
-class Signal(Generic[_InT]):
+class Signal(Generic[_T]):
     """Signal context manager for interruptible operations.
 
     Signal provides a mechanism for interrupting in-progress operations. When used
@@ -87,7 +60,7 @@ class Signal(Generic[_InT]):
         self._loop = loop
         # task -> [offset, stack depth]
         self._tasks: dict[asyncio.Task[Any], tuple[int, int]] = {}
-        self._trigger: deque[tuple[int, _InT]] = deque()
+        self._trigger: deque[tuple[int, _T]] = deque()
 
     async def __aenter__(self) -> None:
         task = asyncio.current_task()
@@ -128,7 +101,7 @@ class Signal(Generic[_InT]):
                 self._flush()
                 raise SignalInterrupt(value=value)
 
-    def on_next(self, offset: int, value: _InT) -> None:
+    def on_next(self, offset: int, value: _T) -> None:
         self._trigger.append((offset, value))
         for t, (toffset, _depth) in self._tasks.items():
             if toffset < offset:
@@ -147,13 +120,17 @@ class Signal(Generic[_InT]):
 
 
 async def create_signal(
-    loop: EventLoop, dtype: TypeHint[_InT], annotations: OpAnnotations
-) -> tuple[Signal[_InT], StreamWriter[_InT]]:
-    s: Signal[_InT] = Signal(loop)
+    loop: EventLoop, dtype: TypeHint[_T], annotations: OpAnnotations
+) -> tuple[
+    Signal[_T],
+    StreamWriter[_T],
+]:
+    s: Signal[_T] = Signal(loop)
     sid = await create_op(
         loop,
         StreamCreate(
             dtype=dtype, observer=cast("Signal[object]", s), annotations=annotations
         ),
     )
-    return (s, SignalWriter(sid, loop))
+    w: OpWriter[_T] = OpWriter(sid, loop)
+    return (s, w)

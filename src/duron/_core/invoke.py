@@ -29,7 +29,7 @@ from duron._core.ops import (
     create_op,
 )
 from duron._core.signal import Signal
-from duron._core.stream import ObserverStream, Stream, StreamWriter
+from duron._core.stream import OpWriter, Stream, StreamWriter, create_buffer_stream
 from duron._core.stream_manager import StreamManager
 from duron._core.task_manager import TaskError, TaskManager
 from duron._loop import EventLoop, create_loop, random_id
@@ -41,12 +41,9 @@ from duron.typing import JSONValue, UnspecifiedType, inspect_function
 
 if TYPE_CHECKING:
     from asyncio.exceptions import CancelledError
-    from collections.abc import Callable, Coroutine
-    from contextvars import Token
-    from types import TracebackType
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 
     from duron._core.ops import Op, StreamObserver
-    from duron._core.signal import SignalWriter
     from duron._decorator.durable import DurableFn
     from duron._loop import OpFuture, WaitSet
     from duron.codec import Codec
@@ -64,16 +61,16 @@ if TYPE_CHECKING:
     from duron.typing import FunctionType
 
 
-_T_co = TypeVar("_T_co", covariant=True)
-_T = TypeVar("_T")
 _P = ParamSpec("_P")
+_OutT = TypeVar("_OutT", covariant=True)  # noqa: PLC0105
 
 _CURRENT_VERSION: Final = 0
 
 
-def invoke(
-    fn: DurableFn[_P, _T_co], log: LogStorage, /, *, tracer: Tracer | None = None
-) -> contextlib.AbstractAsyncContextManager[DurableRun[_P, _T_co]]:
+@contextlib.asynccontextmanager
+async def invoke(
+    fn: DurableFn[_P, _OutT], log: LogStorage, /, *, tracer: Tracer | None = None
+) -> AsyncGenerator[DurableRun[_P, _OutT], None]:
     """Create an invocation context for this durable function.
 
     Args:
@@ -83,18 +80,25 @@ def invoke(
 
     Returns:
         Async context manager for Invoke instance
-    """
-    return _InvokeGuard(DurableRun(fn, log), tracer)
+    """  # noqa: DOC402, DOC202
+    token = current_tracer.set(tracer)
+    run = DurableRun(fn, log)
+    try:
+        yield run
+    finally:
+        await run.close()
+        current_tracer.reset(token)
 
 
 @final
-class DurableRun(Generic[_P, _T_co]):
-    __slots__ = ("_fn", "_log", "_run", "_watchers")
+class DurableRun(Generic[_P, _OutT]):
+    __slots__ = ("_fn", "_log", "_run", "_run_event", "_watchers")
 
-    def __init__(self, fn: DurableFn[_P, _T_co], log: LogStorage) -> None:
+    def __init__(self, fn: DurableFn[_P, _OutT], log: LogStorage) -> None:
         self._fn = fn
         self._log = log
-        self._run: _InvokeRun | None = None
+        self._run: _DurableRun | None = None
+        self._run_event = asyncio.Event()
         self._watchers: list[tuple[dict[str, str], StreamObserver]] = []
 
     async def start(self, *args: _P.args, **kwargs: _P.kwargs) -> None:
@@ -112,20 +116,22 @@ class DurableRun(Generic[_P, _T_co]):
         type_info = inspect_function(self._fn.fn)
         p = _invoke_prelude(self._fn, type_info, prelude)
         loop = await create_loop()
-        self._run = _InvokeRun(loop, p, self._log, codec, watchers=self._watchers)
+        self._run = _DurableRun(loop, p, self._log, codec, watchers=self._watchers)
         await self._run.resume()
+        self._run_event.set()
 
     async def resume(self) -> None:
         """Resume a previously started invocation."""
         type_info = inspect_function(self._fn.fn)
         prelude = _invoke_prelude(self._fn, type_info, _resume_init)
         loop = await create_loop()
-        self._run = _InvokeRun(
+        self._run = _DurableRun(
             loop, prelude, self._log, self._fn.codec, watchers=self._watchers
         )
         await self._run.resume()
+        self._run_event.set()
 
-    async def wait(self) -> _T_co:
+    async def wait(self) -> _OutT:
         """Wait for the durable function invocation to complete \
                 and return its result.
 
@@ -138,7 +144,7 @@ class DurableRun(Generic[_P, _T_co]):
         if self._run is None:
             msg = "Job not started"
             raise RuntimeError(msg)
-        return cast("_T_co", await self._run.run())
+        return cast("_OutT", await self._run.run())
 
     async def close(self) -> None:
         if self._run:
@@ -175,12 +181,14 @@ class DurableRun(Generic[_P, _T_co]):
             raise ValueError(msg)
 
     @overload
-    def open_stream(self, name: str, mode: Literal["w"]) -> StreamWriter[Any]: ...
+    def open_stream(
+        self, name: str, mode: Literal["w"]
+    ) -> Awaitable[StreamWriter[Any]]: ...
     @overload
-    def open_stream(self, name: str, mode: Literal["r"]) -> Stream[Any, None]: ...
+    def open_stream(self, name: str, mode: Literal["r"]) -> Awaitable[Stream[Any]]: ...
     def open_stream(
         self, name: str, mode: Literal["w", "r"]
-    ) -> StreamWriter[Any] | Stream[Any, None]:
+    ) -> Awaitable[StreamWriter[Any] | Stream[Any]]:
         """Open a runtime provided stream for reading or writing.
 
         Note:
@@ -208,43 +216,24 @@ class DurableRun(Generic[_P, _T_co]):
             msg = f"Stream parameter '{name}' not found"
             raise ValueError(msg)
         if mode == "r":
-            observer: ObserverStream[_T_co, None] = ObserverStream()
-            self._watchers.append((
-                {"name": name},
-                cast("ObserverStream[object, None]", observer),
-            ))
-            return observer
-        return _StreamWriter(self, name)
+            stream, w = create_buffer_stream()
+            self._watchers.append(({"name": name}, w))
 
-    def get_run(self) -> _InvokeRun:
-        if self._run is None:
-            msg = "Job not started"
-            raise RuntimeError(msg)
-        return self._run
+            async def _open_reader() -> Stream[Any]:
+                while not self._run:
+                    await self._run_event.wait()
+                return stream
 
+            return _open_reader()
 
-@final
-class _InvokeGuard(Generic[_P, _T_co]):
-    __slots__ = ("_job", "_token", "_tracer")
+        return self._open_writer(name)
 
-    def __init__(self, job: DurableRun[_P, _T_co], tracer: Tracer | None) -> None:
-        self._job = job
-        self._tracer = tracer
-        self._token: Token[Tracer | None] | None = None
-
-    async def __aenter__(self) -> DurableRun[_P, _T_co]:
-        self._token = current_tracer.set(self._tracer)
-        return self._job
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        await self._job.close()
-        if self._token:
-            current_tracer.reset(self._token)
+    async def _open_writer(self, name: str) -> StreamWriter[Any]:
+        while not self._run:
+            await self._run_event.wait()
+        sid = await self._run.wait_stream({"name": name})
+        w: OpWriter[Any] = OpWriter(sid, self._run.loop())
+        return w
 
 
 class InitParams(TypedDict):
@@ -255,10 +244,10 @@ class InitParams(TypedDict):
 
 
 async def _invoke_prelude(
-    job_fn: DurableFn[..., _T_co],
+    job_fn: DurableFn[..., _OutT],
     type_info: FunctionType,
     init: Callable[[], Coroutine[Any, Any, InitParams]],
-) -> _T_co:
+) -> _OutT:
     loop = asyncio.get_running_loop()
     assert isinstance(loop, EventLoop)  # noqa: S101
 
@@ -298,27 +287,24 @@ async def _invoke_prelude(
         for k, v in sorted(init_params["kwargs"].items())
     }
 
-    extra_kwargs: dict[str, object] = {}
-    closer: list[StreamWriter[Any] | SignalWriter[Any]] = []
+    extra_kwargs: dict[str, Stream[Any] | StreamWriter[Any] | Signal[Any]] = {}
     for name, type_, dtype in job_fn.inject:
         if type_ is Stream:
-            extra_kwargs[name], stw = await ctx.create_stream(dtype, name=name)
-            closer.append(stw)
+            stream, _stw = await ctx.create_stream(dtype, name=name)
+            extra_kwargs[name] = stream
         elif type_ is Signal:
-            extra_kwargs[name], sgw = await ctx.create_signal(dtype, name=name)
-            closer.append(sgw)
+            signal, _sgw = await ctx.create_signal(dtype, name=name)
+            extra_kwargs[name] = signal
         elif type_ is StreamWriter:
-            _, extra_kwargs[name] = await ctx.create_stream(dtype, name=name)
-    try:
-        with span("InvokeRun"):
-            return await job_fn.fn(ctx, *args, **extra_kwargs, **kwargs)
-    finally:
-        for c in closer:
-            await c.close()
+            _, stw = await ctx.create_stream(dtype, name=name)
+            extra_kwargs[name] = stw
+
+    with span("InvokeRun"):
+        return await job_fn.fn(ctx, *args, **extra_kwargs, **kwargs)
 
 
 @final
-class _InvokeRun:
+class _DurableRun:
     __slots__ = (
         "_codec",
         "_lease",
@@ -359,6 +345,9 @@ class _InvokeRun:
             self._loop.call_soon(self._task.cancel, e)
 
         self._task_manager = TaskManager(cancel_task)
+
+    def loop(self) -> EventLoop:
+        return self._loop
 
     async def close(self) -> None:
         if self._task_run:
@@ -437,6 +426,7 @@ class _InvokeRun:
             await self._task_manager.close()
             await self._send_traces(flush=True)
 
+            await self.close()
             return self._task.result()
         except asyncio.CancelledError as e:
             if e.args and isinstance(e.args[0], TaskError):
@@ -718,46 +708,8 @@ class _InvokeRun:
             self._tracer.end_op_span(id_, entry)
         await self.enqueue_log(entry)
 
-    async def send_stream(self, matcher: dict[str, str], value: object) -> int:
-        cnt = 0
-        ts = self.now()
-        matching_streams = self._stream_manager.find_matching_streams(matcher)
-
-        for stream_id, entry_span in matching_streams:
-            entry: StreamEmitEntry = {
-                "ts": ts,
-                "id": random_id(),
-                "type": "stream.emit",
-                "stream_id": stream_id,
-                "value": self._codec.encode_json(value),
-            }
-            if entry_span:
-                entry_span.attach(entry, {"type": "event", "ts": ts, "kind": "stream"})
-            await self.enqueue_log(entry)
-            cnt += 1
-        return cnt
-
-    async def close_stream(
-        self, matcher: dict[str, str], exc: Exception | None = None
-    ) -> int:
-        cnt = 0
-        ts = self.now()
-        matching_streams = self._stream_manager.find_matching_streams(matcher)
-
-        for stream_id, entry_span in matching_streams:
-            entry: StreamCompleteEntry = {
-                "type": "stream.complete",
-                "ts": ts,
-                "id": random_id(),
-                "stream_id": stream_id,
-            }
-            if exc:
-                entry["error"] = _encode_error(exc)
-            if entry_span:
-                entry_span.end(entry)
-            await self.enqueue_log(entry)
-            cnt += 1
-        return cnt
+    async def wait_stream(self, matcher: dict[str, str]) -> str:
+        return await self._stream_manager.wait_one(matcher)
 
 
 async def _resume_init() -> InitParams:  # noqa: RUF029
@@ -775,24 +727,3 @@ def _decode_error(error_info: ErrorInfo) -> Exception | CancelledError:
     if error_info["code"] == -2:
         return asyncio.CancelledError()
     return Exception(f"[{error_info['code']}] {error_info['message']}")
-
-
-@final
-class _StreamWriter(Generic[_T]):
-    __slots__ = ("_invoke", "_name")
-
-    def __init__(self, invoke: DurableRun[..., Any], name: str) -> None:
-        self._invoke = invoke
-        self._name = name
-
-    async def send(self, value: _T) -> None:
-        while (  # noqa: ASYNC110
-            await self._invoke.get_run().send_stream({"name": self._name}, value) == 0
-        ):
-            await asyncio.sleep(0.1)
-
-    async def close(self, error: Exception | None = None) -> None:
-        while (  # noqa: ASYNC110
-            await self._invoke.get_run().close_stream({"name": self._name}, error) == 0
-        ):
-            await asyncio.sleep(0.1)

@@ -72,6 +72,9 @@ class _TaskCtx:
     seq: int = 0
 
 
+class LoopClosedError(RuntimeError): ...
+
+
 class EventLoop(asyncio.AbstractEventLoop):
     __slots__: tuple[str, ...] = (
         "_added",
@@ -255,6 +258,8 @@ class EventLoop(asyncio.AbstractEventLoop):
         return tuple(self._ops.values())
 
     def create_op(self, params: object) -> OpFuture:
+        if self._closed:
+            raise LoopClosedError
         if asyncio.get_running_loop() is self._host:
             id_ = random_id()
             self._event.set()

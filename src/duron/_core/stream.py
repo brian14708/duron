@@ -6,9 +6,17 @@ import contextvars
 from abc import ABC, abstractmethod
 from asyncio.exceptions import CancelledError
 from collections import deque
-from collections.abc import Awaitable
+from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Concatenate, Generic, cast
-from typing_extensions import Any, ParamSpec, Protocol, TypeVar, final, override
+from typing_extensions import (
+    Any,
+    ParamSpec,
+    Protocol,
+    Self,
+    TypeVar,
+    final,
+    override,
+)
 
 from duron._core.ops import (
     FnCall,
@@ -19,14 +27,13 @@ from duron._core.ops import (
     create_op,
 )
 from duron._loop import wrap_future
-from duron.typing import UnspecifiedType
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Callable, Generator, Sequence
-    from contextlib import AbstractAsyncContextManager
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
     from types import TracebackType
 
     from duron._core.context import Context
+    from duron._core.ops import StreamObserver
     from duron._loop import EventLoop
     from duron.typing import TypeHint
 
@@ -34,14 +41,44 @@ if TYPE_CHECKING:
 
 _T = TypeVar("_T")
 _U = TypeVar("_U")
-_Result = TypeVar("_Result", covariant=True, default=None)  # noqa: PLC0105
-_In = TypeVar("_In", contravariant=True)  # noqa: PLC0105
+_InT = TypeVar("_InT", contravariant=True)  # noqa: PLC0105
 
 
-class StreamWriter(Protocol, Generic[_In]):
+@final
+class StreamClosed(Exception):  # noqa: N818
+    """Exception raised when attempting to read from a closed stream.
+
+    This exception is raised when a stream consumer tries to get the next value
+    from a stream that has been closed. If the stream was closed with an error,
+    that error is available via the reason property.
+
+    Attributes:
+        offset: The operation offset at which the stream was closed.
+        reason: The exception that caused the stream to close, if any.
+    """
+
+    __slots__ = ("offset",)
+
+    def __init__(self, offset: int, reason: Exception | None) -> None:
+        super().__init__(f"Stream closed at offset {offset}")
+        self.offset = offset
+        self.__cause__ = reason
+
+    @property
+    def reason(self) -> Exception | None:
+        return cast("Exception | None", self.__cause__)
+
+
+class EmptyStream(Exception):  # noqa: N818
+    __slots__ = ()
+
+
+class StreamWriter(
+    AbstractAsyncContextManager["StreamWriter[_InT]"], Protocol, Generic[_InT]
+):
     """Protocol for writing values to a stream."""
 
-    async def send(self, value: _In, /) -> None:
+    async def send(self, value: _InT, /) -> None:
         """Send a value to the stream.
 
         Args:
@@ -59,85 +96,100 @@ class StreamWriter(Protocol, Generic[_In]):
 
 
 @final
-class _Writer(Generic[_In]):
-    __slots__ = ("_loop", "_stream_id")
+class OpWriter(Generic[_InT]):
+    __slots__ = ("_closed", "_loop", "_stream_id")
 
     def __init__(self, stream_id: str, loop: EventLoop) -> None:
         self._stream_id = stream_id
         self._loop = loop
+        self._closed = False
 
-    async def send(self, value: _In, /) -> None:
+    async def send(self, value: _InT, /) -> None:
         await wrap_future(
-            create_op(self._loop, StreamEmit(stream_id=self._stream_id, value=value))
+            create_op(self._loop, StreamEmit(stream_id=self._stream_id, value=value)),
         )
 
     async def close(self, exception: Exception | None = None, /) -> None:
         await wrap_future(
             create_op(
                 self._loop, StreamClose(stream_id=self._stream_id, exception=exception)
-            )
+            ),
         )
+        self._closed = True
 
-
-class Stream(ABC, Awaitable[_Result], Generic[_T, _Result]):
-    """Abstract base class for readable streams.
-
-    Usage as async iterator:
-        ```python
-        stream, writer = await ctx.create_stream(int)
-        async for value in stream:
-            print(value)
-        ```
-
-    Usage as context manager:
-        ```python
-        async with stream as ops:
-            offset, value = await ops.next()
-        ```
-    """
-
-    @abstractmethod
-    async def _start(self) -> None: ...
-    @abstractmethod
-    async def _next(self) -> tuple[int, _T]: ...
-    @abstractmethod
-    def _next_nowait(self, offset: int, /) -> tuple[int, _T]: ...
-    @abstractmethod
-    async def _shutdown(self) -> None: ...
-
-    def __init__(self) -> None:
-        self._started: bool = False
-
-    def __aiter__(self) -> AsyncGenerator[_T]:
-        assert not self._started  # noqa: S101
-        self._started = True
-        return self.__agen()
-
-    async def __agen(self) -> AsyncGenerator[_T]:
-        try:
-            await self._start()
-            while True:
-                _, val = await self._next()
-                yield val
-        except StreamClosed as e:
-            if e.reason:
-                raise e.reason from None
-        finally:
-            await self._shutdown()
-
-    async def __aenter__(self) -> StreamOp[_T, _Result]:
-        assert not self._started  # noqa: S101
-        self._started = True
-        await self._start()
-        return StreamOp(self)
+    async def __aenter__(self) -> StreamWriter[_InT]:
+        return self
 
     async def __aexit__(
         self,
         _exc_type: type[BaseException] | None,
-        _exc_value: BaseException | None,
+        exc_value: BaseException | None,
         _traceback: TracebackType | None,
     ) -> None:
-        await self._shutdown()
+        if self._closed:
+            return
+        if not exc_value:
+            await self.close()
+        elif isinstance(exc_value, Exception):
+            await self.close(exc_value)
+        else:
+            await self.close(
+                Exception(f"StreamWriter exited with exception: {exc_value}")
+            )
+
+
+class Stream(ABC, Generic[_T]):
+    """Abstract base class for readable streams."""
+
+    @abstractmethod
+    async def _next(self) -> tuple[int, _T]: ...
+    @abstractmethod
+    def _next_nowait(self, offset: int, /) -> tuple[int, _T]: ...
+
+    def __aiter__(self) -> Self:
+        return self
+
+    async def __anext__(self) -> _T:
+        try:
+            _, val = await self._next()
+        except StreamClosed as e:
+            if e.reason is not None:
+                raise e.reason from None
+            raise StopAsyncIteration from None
+        return val
+
+    async def next(self) -> _T:
+        """Wait for and return the next value from the stream.
+
+        Returns:
+            A tuple of (offset, value) where offset is the operation offset and
+            value is the emitted stream value.
+
+        Raises:
+            StreamClosed: When the stream has been closed.
+        """  # noqa: DOC502
+        _, val = await self._next()
+        return val
+
+    async def next_nowait(self, ctx: Context) -> AsyncGenerator[_T]:
+        """Yield available values from the stream without blocking.
+
+        Yields values that have already been emitted up to the current barrier
+        offset. Does not wait for new values.
+
+        Args:
+            ctx: The duron context for determining the current barrier offset.
+
+        Yields:
+            Tuples of (offset, value) for each available value.
+        """
+        offset = await ctx.barrier()
+        try:
+            while True:
+                _, val = self._next_nowait(offset)
+                yield val
+        except EmptyStream:
+            return
 
     # collect methods
 
@@ -157,7 +209,7 @@ class Stream(ABC, Awaitable[_Result], Generic[_T, _Result]):
 
     # stream methods
 
-    def map(self, fn: Callable[[_T], _U]) -> Stream[_U, _Result]:
+    def map(self, fn: Callable[[_T], _U]) -> Stream[_U]:
         """Transform stream values using a mapping function.
 
         Args:
@@ -168,66 +220,25 @@ class Stream(ABC, Awaitable[_Result], Generic[_T, _Result]):
         """
         return _Map(self, fn)
 
-    def broadcast(
-        self, n: int
-    ) -> AbstractAsyncContextManager[Sequence[Stream[_T, None]]]:
+    def broadcast(self, n: int) -> AbstractAsyncContextManager[Sequence[Stream[_T]]]:
         """Broadcast stream values to multiple consumers.
 
         Args:
             n: Number of broadcast streams to create.
 
         Returns:
-            An async context manager yielding a sequence of n streams, each
-            receiving all values from the source stream.
+            An async context manager yielding a sequence of n streams, each \
+                    receiving all values from the source stream.
         """
         return _Broadcast(self, n)
 
 
-@final
-class StreamOp(Generic[_T, _Result]):
-    """Operations on a stream obtained from using it as an async context manager.
-
-    StreamOp provides advanced methods for consuming stream values.
-    """
-
-    def __init__(self, stream: Stream[_T, _Result]) -> None:
-        self._stream = stream
-
-    async def next(self) -> tuple[int, _T]:
-        """Wait for and return the next value from the stream.
-
-        Returns:
-            A tuple of (offset, value) where offset is the operation offset and
-            value is the emitted stream value.
-
-        Raises:
-            StreamClosed: When the stream has been closed.
-        """  # noqa: DOC502
-        return await self._stream._next()  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
-
-    async def next_nowait(self, ctx: Context) -> AsyncGenerator[tuple[int, _T]]:
-        """Yield available values from the stream without blocking.
-
-        Yields values that have already been emitted up to the current barrier
-        offset. Does not wait for new values.
-
-        Args:
-            ctx: The duron context for determining the current barrier offset.
-
-        Yields:
-            Tuples of (offset, value) for each available value.
-        """
-        offset = await ctx.barrier()
-        try:
-            while True:
-                yield self._stream._next_nowait(offset)  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
-        except EmptyStream:
-            return
-
-
 async def create_stream(
     loop: EventLoop, dtype: TypeHint[_T], annotations: OpAnnotations
-) -> tuple[Stream[_T, None], StreamWriter[_T]]:
+) -> tuple[
+    Stream[_T],
+    StreamWriter[_T],
+]:
     """Create a new bidirectional stream for inter-operation communication.
 
     Creates a stream for sending values between operations with deterministic
@@ -240,68 +251,43 @@ async def create_stream(
         annotations: Operation annotations for tracing and debugging.
 
     Returns:
-        A tuple of (stream, writer) where stream is used to consume values and
-        writer is used to send values and close the stream.
+        A tuple of (stream, writer) where stream is used to consume values and \
+                writer is used to send values and close the stream.
     """
     assert asyncio.get_running_loop() is loop  # noqa: S101
-    s: ObserverStream[_T, None] = ObserverStream()
+    s, w = create_buffer_stream()
     sid = await create_op(
         loop,
         StreamCreate(
             dtype=dtype,
-            observer=cast("ObserverStream[object, None]", s),
+            observer=w,
             annotations=annotations,
         ),
     )
-    return (s, _Writer(sid, loop))
+    writer: OpWriter[_T] = OpWriter(sid, loop)
+    return (s, writer)
 
 
-@final
-class StreamClosed(Exception):  # noqa: N818
-    """Exception raised when attempting to read from a closed stream.
-
-    This exception is raised when a stream consumer tries to get the next value
-    from a stream that has been closed. If the stream was closed with an error,
-    that error is available via the reason property.
-
-    Attributes:
-        offset: The operation offset at which the stream was closed.
-        reason: The exception that caused the stream to close, if any.
-    """
-
-    __slots__ = ("offset",)
-
-    def __init__(self, *args: object, offset: int, reason: Exception | None) -> None:
-        super().__init__(*args)
-        self.offset = offset
-        self.__cause__ = reason
-
-    @property
-    def reason(self) -> Exception | None:
-        return cast("Exception | None", self.__cause__)
+def create_buffer_stream() -> tuple[Stream[Any], StreamObserver]:
+    s: _BufferStream[Any] = _BufferStream()
+    return (s, s)
 
 
-class EmptyStream(Exception):  # noqa: N818
-    __slots__ = ()
+class _BufferStream(Stream[_T], Generic[_T]):
+    __slots__ = ("_buffer", "_event", "_loop")
 
-
-class ObserverStream(Stream[_T, _Result], Generic[_T, _Result]):
     def __init__(self) -> None:
         super().__init__()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._event: asyncio.Event | None = None
         self._buffer: deque[tuple[int, _T | StreamClosed]] = deque()
-        self._waiter: Awaitable[_Result] | None = None
-
-    @override
-    async def _start(self) -> None:
-        self._loop = asyncio.get_running_loop()
-        self._event = asyncio.Event()
 
     @final
     @override
     async def _next(self) -> tuple[int, _T]:
-        assert self._event is not None  # noqa: S101
+        if not self._event:
+            self._loop = asyncio.get_running_loop()
+            self._event = asyncio.Event()
 
         while not self._buffer:
             self._event.clear()
@@ -322,44 +308,25 @@ class ObserverStream(Stream[_T, _Result], Generic[_T, _Result]):
             return t, item
         raise EmptyStream
 
-    @override
-    async def _shutdown(self) -> None:
-        pass
-
-    def _send(self, offset: int, value: _T) -> None:
-        self._buffer.append((offset, value))
+    def on_next(self, offset: int, value: object) -> None:
+        self._buffer.append((offset, cast("_T", value)))
         if self._loop and self._event:
             _ = self._loop.call_soon(self._event.set)
 
-    def _send_close(self, offset: int, exc: Exception | None) -> None:
+    def on_close(self, offset: int, exc: Exception | None) -> None:
         self._buffer.append((offset, StreamClosed(offset=offset, reason=exc)))
         if self._loop and self._event:
             _ = self._loop.call_soon(self._event.set)
 
-    def on_next(self, offset: int, value: _T) -> None:
-        self._send(offset, value)
-
-    def on_close(self, offset: int, exc: Exception | None) -> None:
-        self._send_close(offset, exc)
-
-    @override
-    def __await__(self) -> Generator[Any, Any, _Result]:
-        if self._waiter is None:
-            msg = "Stream is not started"
-            raise RuntimeError(msg)
-        return self._waiter.__await__()
-
 
 @final
-class _Map(Stream[_U, _Result], Generic[_T, _U, _Result]):
-    def __init__(self, stream: Stream[_T, _Result], fn: Callable[[_T], _U]) -> None:
+class _Map(Stream[_U], Generic[_T, _U]):
+    __slots__ = ("_fn", "_stream")
+
+    def __init__(self, stream: Stream[_T], fn: Callable[[_T], _U]) -> None:
         super().__init__()
         self._stream = stream
         self._fn = fn
-
-    @override
-    async def _start(self) -> None:
-        return await self._stream._start()  # noqa: SLF001
 
     @override
     async def _next(self) -> tuple[int, _U]:
@@ -371,38 +338,35 @@ class _Map(Stream[_U, _Result], Generic[_T, _U, _Result]):
         t, val = self._stream._next_nowait(offset)  # noqa: SLF001
         return t, self._fn(val)
 
-    @override
-    async def _shutdown(self) -> None:
-        return await self._stream._shutdown()  # noqa: SLF001
-
-    @override
-    def __await__(self) -> Generator[Any, Any, _Result]:
-        return self._stream.__await__()
-
 
 @final
 class _Broadcast(Generic[_T]):
-    def __init__(self, parent: Stream[_T, Any], n: int) -> None:
+    __slots__ = ("_n", "_parent", "_task")
+
+    def __init__(self, parent: Stream[_T], n: int) -> None:
         self._parent = parent
         self._task: asyncio.Task[None] | None = None
-        self._streams: list[ObserverStream[_T, None]] = [
-            ObserverStream() for _ in range(n)
-        ]
+        self._n = n
 
-    async def _pump(self) -> None:
-        async with self._parent as parent:
-            try:
-                while True:
-                    o, v = await parent.next()
-                    for s in self._streams:
-                        s._send(o, v)  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
-            except StreamClosed as e:
-                for s in self._streams:
-                    s._send_close(e.offset, e.reason)  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
+    async def _pump(self, writers: list[StreamObserver]) -> None:
+        try:
+            while True:
+                o, v = await self._parent._next()  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
+                for s in writers:
+                    s.on_next(o, v)
+        except StreamClosed as e:
+            for s in writers:
+                s.on_close(e.offset, e.reason)
 
-    async def __aenter__(self) -> Sequence[Stream[_T, None]]:
-        self._task = asyncio.create_task(self._pump())
-        return tuple(self._streams)
+    async def __aenter__(self) -> Sequence[Stream[_T]]:
+        writers: list[StreamObserver] = []
+        streams: list[Stream[_T]] = []
+        for _i in range(self._n):
+            s, w = create_buffer_stream()
+            streams.append(s)
+            writers.append(w)
+        self._task = asyncio.create_task(self._pump(writers))
+        return streams
 
     async def __aexit__(
         self,
@@ -416,7 +380,8 @@ class _Broadcast(Generic[_T]):
                 await self._task
 
 
-def run_stateful(
+@contextlib.asynccontextmanager
+async def run_stateful(
     loop: EventLoop,
     dtype: TypeHint[Any],
     initial: _T,
@@ -425,52 +390,60 @@ def run_stateful(
     /,
     *args: _P.args,
     **kwargs: _P.kwargs,
-) -> AbstractAsyncContextManager[Stream[_U, _T]]:
+) -> AsyncGenerator[tuple[Stream[_U], Awaitable[_T]], None]:
     assert asyncio.get_running_loop() is loop  # noqa: S101
-    s: _StatefulRun[_U, _T] = _StatefulRun(loop, initial, reducer, fn, *args, **kwargs)
-    return _StatefulGuard(loop, s, dtype)
 
-
-@final
-class _StatefulGuard(Generic[_U, _T]):
-    def __init__(
-        self, loop: EventLoop, stateful: _StatefulRun[_U, _T], dtype: TypeHint[Any]
-    ) -> None:
-        self._loop = loop
-        self._stream = stateful
-        self._task: asyncio.Future[object] | None = None
-        self._dtype = dtype
-
-    async def __aenter__(self) -> _StatefulRun[_U, _T]:
-        sid = await create_op(
-            self._loop,
+    name = cast("str", getattr(fn, "__name__", repr(fn)))
+    stream: _StatefulStream[_U, _T] = _StatefulStream(
+        initial, reducer, fn, *args, **kwargs
+    )
+    sink: StreamWriter[_U] = OpWriter(
+        await create_op(
+            loop,
             StreamCreate(
-                dtype=self._dtype,
-                observer=cast("_StatefulRun[object, _T]", self._stream),
-                annotations=OpAnnotations(name=self._stream.name()),
+                dtype=dtype,
+                observer=stream,
+                annotations=OpAnnotations(name=name),
             ),
-        )
-        sink: StreamWriter[_U] = _Writer(sid, self._loop)
-        self._task = self._stream.start_worker(sink)
-        return self._stream
-
-    async def __aexit__(
-        self,
-        _exc_type: type[BaseException] | None,
-        _exc_value: BaseException | None,
-        _traceback: TracebackType | None,
-    ) -> None:
-        if self._task:
-            _ = self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
+        ),
+        loop,
+    )
+    task = cast(
+        "asyncio.Task[_T]",
+        create_op(
+            loop,
+            FnCall(
+                callable=stream.worker,
+                args=(sink,),
+                kwargs={},
+                return_type=type(initial),
+                context=contextvars.copy_context(),
+                annotations=OpAnnotations(name=name),
+            ),
+        ),
+    )
+    try:
+        yield (stream, task)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 @final
-class _StatefulRun(ObserverStream[_U, _T], Generic[_U, _T]):
+class _StatefulStream(_BufferStream[_U], Generic[_U, _T]):
+    __slots__ = (
+        "_args",
+        "_closed",
+        "_current",
+        "_enabled",
+        "_fn",
+        "_kwargs",
+        "_reducer",
+    )
+
     def __init__(
         self,
-        loop: EventLoop,
         initial: _T,
         reducer: Callable[[_T, _U], _T],
         fn: Callable[Concatenate[_T, _P], AsyncGenerator[_U, _T]],
@@ -479,7 +452,6 @@ class _StatefulRun(ObserverStream[_U, _T], Generic[_U, _T]):
         **kwargs: _P.kwargs,
     ) -> None:
         super().__init__()
-        self._event_loop = loop
         self._reducer = reducer
         self._closed: bool | Exception = False
         self._current: _T = initial
@@ -487,27 +459,8 @@ class _StatefulRun(ObserverStream[_U, _T], Generic[_U, _T]):
         self._args = args
         self._kwargs = kwargs
         self._enabled = True
-        self._task: asyncio.Future[_T] | None = None
 
-    def name(self) -> str:
-        return cast("str", getattr(self._fn, "__name__", repr(self._fn)))
-
-    def start_worker(self, sink: StreamWriter[_U]) -> asyncio.Future[object]:
-        op = create_op(
-            self._event_loop,
-            FnCall(
-                callable=self._worker,
-                args=(sink,),
-                kwargs={},
-                return_type=UnspecifiedType,
-                context=contextvars.copy_context(),
-                annotations=OpAnnotations(name=self.name()),
-            ),
-        )
-        self._task = cast("asyncio.Future[_T]", op)
-        return op
-
-    async def _worker(self, sink: StreamWriter[_U]) -> _T:
+    async def worker(self, sink: StreamWriter[_U]) -> _T:
         gen = None
         state = self._current
         if self._closed is True:
@@ -526,27 +479,19 @@ class _StatefulRun(ObserverStream[_U, _T], Generic[_U, _T]):
             finally:
                 await gen.aclose()
         except StopAsyncIteration:
-            assert self._loop  # noqa: S101
             await sink.close()
             return state
         except Exception as e:
             await sink.close(e)
             raise
         except CancelledError:
-            self._send_close(-1, RuntimeError("worker cancelled"))
+            self.on_close(-1, RuntimeError("worker cancelled"))
             raise
 
     @override
-    def __await__(self) -> Generator[Any, Any, _T]:
-        if not self._task:
-            msg = "Stream is not started"
-            raise RuntimeError(msg)
-        return self._task.__await__()
-
-    @override
-    def on_next(self, offset: int, value: _U) -> None:
+    def on_next(self, offset: int, value: object) -> None:
         if self._enabled:
-            self._current = self._reducer(self._current, value)
+            self._current = self._reducer(self._current, cast("_U", value))
         super().on_next(offset, value)
 
     @override

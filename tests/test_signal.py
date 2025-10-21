@@ -15,32 +15,33 @@ from duron.typing._hint import Provided
 async def test_signal() -> None:
     @durable()
     async def activity(ctx: Context) -> list[int]:
-        signal, handle = await ctx.create_signal(int)
+        signal, h = await ctx.create_signal(int)
 
-        await handle.send(1)
+        async with h as handle:
+            await handle.send(1)
 
-        async def trigger() -> None:
-            await asyncio.sleep(0.1)
-            await handle.send(2)
-            await asyncio.sleep(0.1)
-            await handle.send(3)
+            async def trigger() -> None:
+                await asyncio.sleep(0.1)
+                await handle.send(2)
+                await asyncio.sleep(0.1)
+                await handle.send(3)
 
-        t = asyncio.create_task(trigger())
+            t = asyncio.create_task(trigger())
 
-        val: list[int] = []
-        try:
+            val: list[int] = []
+            try:
+                async with signal:
+                    try:
+                        async with signal:
+                            await asyncio.sleep(9999)
+                    except SignalInterrupt as e:
+                        val.append(cast("int", e.value))
+                    await asyncio.sleep(9999)
+            except SignalInterrupt as e:
+                val.append(cast("int", e.value))
             async with signal:
-                try:
-                    async with signal:
-                        await asyncio.sleep(9999)
-                except SignalInterrupt as e:
-                    val.append(cast("int", e.value))
-                await asyncio.sleep(9999)
-        except SignalInterrupt as e:
-            val.append(cast("int", e.value))
-        async with signal:
-            await asyncio.sleep(0)
-        await t
+                await asyncio.sleep(0)
+            await t
         return val
 
     log = MemoryLogStorage()
@@ -81,10 +82,11 @@ async def test_signal_timing() -> None:
 
         async def push() -> None:
             i = 0
+            s = await signal
             while True:
                 i += 1
                 await asyncio.sleep(0.001)
-                await signal.send(i)
+                await s.send(i)
 
         pusher = asyncio.create_task(push())
         a = await t.wait()

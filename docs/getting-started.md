@@ -245,8 +245,9 @@ async def main():
 
         await job.start()
 
-        async for message in stream:
-            print(f"Received: {message}")
+        async with stream as s:
+            async for message in s:
+                print(f"Received: {message}")
 
         await job.wait()
 ```
