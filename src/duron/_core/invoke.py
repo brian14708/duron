@@ -257,47 +257,45 @@ async def _invoke_prelude(
     loop = asyncio.get_running_loop()
     assert isinstance(loop, EventLoop)  # noqa: S101
 
-    with Context(loop) as ctx:
-        init_params = await ctx.run(init)
-        if init_params["version"] != _CURRENT_VERSION:
-            msg = "version mismatch"
-            raise RuntimeError(msg)
-        loop.set_key(init_params["nonce"].encode())
+    ctx = Context(loop)
+    init_params = await ctx.run(init)
+    if init_params["version"] != _CURRENT_VERSION:
+        msg = "version mismatch"
+        raise RuntimeError(msg)
+    loop.set_key(init_params["nonce"].encode())
 
-        codec = job_fn.codec
-        args = tuple(
-            codec.decode_json(
-                arg,
-                type_info.parameter_types.get(
-                    type_info.parameters[i + 1], UnspecifiedType
-                )
-                if i + 1 < len(type_info.parameters)
-                else UnspecifiedType,
-            )
-            for i, arg in enumerate(init_params["args"])
+    codec = job_fn.codec
+    args = tuple(
+        codec.decode_json(
+            arg,
+            type_info.parameter_types.get(type_info.parameters[i + 1], UnspecifiedType)
+            if i + 1 < len(type_info.parameters)
+            else UnspecifiedType,
         )
-        kwargs = {
-            k: codec.decode_json(v, type_info.parameter_types.get(k, UnspecifiedType))
-            for k, v in sorted(init_params["kwargs"].items())
-        }
+        for i, arg in enumerate(init_params["args"])
+    )
+    kwargs = {
+        k: codec.decode_json(v, type_info.parameter_types.get(k, UnspecifiedType))
+        for k, v in sorted(init_params["kwargs"].items())
+    }
 
-        extra_kwargs: dict[str, object] = {}
-        closer: list[StreamWriter[Any] | SignalWriter[Any]] = []
-        for name, type_, dtype in job_fn.inject:
-            if type_ is Stream:
-                extra_kwargs[name], stw = await ctx.create_stream(dtype, name=name)
-                closer.append(stw)
-            elif type_ is Signal:
-                extra_kwargs[name], sgw = await ctx.create_signal(dtype, name=name)
-                closer.append(sgw)
-            elif type_ is StreamWriter:
-                _, extra_kwargs[name] = await ctx.create_stream(dtype, name=name)
-        try:
-            with span("InvokeRun"):
-                return await job_fn.fn(ctx, *args, **extra_kwargs, **kwargs)
-        finally:
-            for c in closer:
-                await c.close()
+    extra_kwargs: dict[str, object] = {}
+    closer: list[StreamWriter[Any] | SignalWriter[Any]] = []
+    for name, type_, dtype in job_fn.inject:
+        if type_ is Stream:
+            extra_kwargs[name], stw = await ctx.create_stream(dtype, name=name)
+            closer.append(stw)
+        elif type_ is Signal:
+            extra_kwargs[name], sgw = await ctx.create_signal(dtype, name=name)
+            closer.append(sgw)
+        elif type_ is StreamWriter:
+            _, extra_kwargs[name] = await ctx.create_stream(dtype, name=name)
+    try:
+        with span("InvokeRun"):
+            return await job_fn.fn(ctx, *args, **extra_kwargs, **kwargs)
+    finally:
+        for c in closer:
+            await c.close()
 
 
 @final

@@ -4,7 +4,6 @@ import asyncio
 import contextvars
 import functools
 import inspect
-from contextvars import ContextVar
 from random import Random
 from typing import TYPE_CHECKING, cast
 from typing_extensions import (
@@ -26,24 +25,20 @@ from duron._core.ops import (
 from duron._core.signal import create_signal
 from duron._core.stream import create_stream, run_stateful
 from duron._decorator.effect import EffectFn, StatefulFn
+from duron._loop import EventLoop
 from duron.typing import inspect_function
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine, Mapping
     from contextlib import AbstractAsyncContextManager
-    from contextvars import Token
-    from types import TracebackType
 
     from duron._core.signal import Signal, SignalWriter
     from duron._core.stream import Stream, StreamWriter
-    from duron._loop import EventLoop
     from duron.typing import TypeHint
 
     _T = TypeVar("_T")
     _S = TypeVar("_S")
     _P = ParamSpec("_P")
-
-_context: ContextVar[Context | None] = ContextVar("duron.context", default=None)
 
 
 @final
@@ -52,22 +47,6 @@ class Context:
 
     def __init__(self, loop: EventLoop) -> None:
         self._loop: EventLoop = loop
-        self._token: Token[Context | None] | None = None
-
-    def __enter__(self) -> Context:
-        assert self._token is None, "Context is already active"  # noqa: S101
-        token = _context.set(self)
-        self._token = token
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
-    ) -> None:
-        if self._token:
-            _context.reset(self._token)
 
     @staticmethod
     def current() -> Context:
@@ -79,11 +58,11 @@ class Context:
         Raises:
             RuntimeError: If no duron context is currently active.
         """
-        ctx = _context.get()
-        if ctx is None:
-            msg = "No duron context is active"
-            raise RuntimeError(msg)
-        return ctx
+        loop = asyncio.get_running_loop()
+        if not isinstance(loop, EventLoop):
+            msg = "Context requires a duron EventLoop"
+            raise RuntimeError(msg)  # noqa: TRY004
+        return Context(loop)
 
     @overload
     async def run(
