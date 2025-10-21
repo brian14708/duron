@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine, Mapping
     from contextlib import AbstractAsyncContextManager
 
-    from duron._core.signal import Signal, SignalWriter
+    from duron._core.signal import Signal
     from duron._core.stream import Stream, StreamWriter
     from duron._loop import EventLoop
     from duron.typing import TypeHint
@@ -189,7 +189,7 @@ class Context:
         *,
         name: str | None = None,
         labels: Mapping[str, str] | None = None,
-    ) -> tuple[Signal[_T], SignalWriter[_T]]:
+    ) -> tuple[Signal[_T], StreamWriter[_T]]:
         """Create a new signal within the context.
 
         Args:
