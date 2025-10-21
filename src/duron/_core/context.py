@@ -25,7 +25,6 @@ from duron._core.ops import (
 from duron._core.signal import create_signal
 from duron._core.stream import create_stream, run_stateful
 from duron._decorator.effect import EffectFn, StatefulFn
-from duron._loop import EventLoop
 from duron.typing import inspect_function
 
 if TYPE_CHECKING:
@@ -34,6 +33,7 @@ if TYPE_CHECKING:
 
     from duron._core.signal import Signal, SignalWriter
     from duron._core.stream import Stream, StreamWriter
+    from duron._loop import EventLoop
     from duron.typing import TypeHint
 
     _T = TypeVar("_T")
@@ -43,26 +43,11 @@ if TYPE_CHECKING:
 
 @final
 class Context:
-    __slots__ = ("_loop", "_token")
+    __slots__ = ("_loop", "_seed")
 
-    def __init__(self, loop: EventLoop) -> None:
+    def __init__(self, loop: EventLoop, seed: str) -> None:
         self._loop: EventLoop = loop
-
-    @staticmethod
-    def current() -> Context:
-        """Get the currently active Context.
-
-        Returns:
-            The active Context instance.
-
-        Raises:
-            RuntimeError: If no duron context is currently active.
-        """
-        loop = asyncio.get_running_loop()
-        if not isinstance(loop, EventLoop):
-            msg = "Context requires a duron EventLoop"
-            raise RuntimeError(msg)  # noqa: TRY004
-        return Context(loop)
+        self._seed: str = seed
 
     @overload
     async def run(
@@ -331,7 +316,7 @@ class Context:
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context random can only be used in the context loop"
             raise RuntimeError(msg)
-        return Random(self._loop.generate_op_id())  # noqa: S311
+        return Random(self._loop.generate_op_id() + self._seed)  # noqa: S311
 
     @overload
     async def complete_future(self, future_id: str, *, result: object) -> None: ...

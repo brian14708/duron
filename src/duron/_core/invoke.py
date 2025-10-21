@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import time
 from typing import TYPE_CHECKING, Final, Generic, Literal, cast
 from typing_extensions import (
@@ -21,9 +22,11 @@ from duron._core.ops import (
     FnCall,
     FutureComplete,
     FutureCreate,
+    OpAnnotations,
     StreamClose,
     StreamCreate,
     StreamEmit,
+    create_op,
 )
 from duron._core.signal import Signal
 from duron._core.stream import ObserverStream, Stream, StreamWriter
@@ -98,7 +101,7 @@ class DurableRun(Generic[_P, _T_co]):
         """Start a new invocation of the durable function."""
         codec = self._fn.codec
 
-        def prelude() -> InitParams:
+        async def prelude() -> InitParams:  # noqa: RUF029
             return {
                 "version": _CURRENT_VERSION,
                 "args": [codec.encode_json(arg) for arg in args],
@@ -254,17 +257,31 @@ class InitParams(TypedDict):
 async def _invoke_prelude(
     job_fn: DurableFn[..., _T_co],
     type_info: FunctionType,
-    init: Callable[[], InitParams],
+    init: Callable[[], Coroutine[Any, Any, InitParams]],
 ) -> _T_co:
     loop = asyncio.get_running_loop()
     assert isinstance(loop, EventLoop)  # noqa: S101
 
-    ctx = Context(loop)
-    init_params = await ctx.run(init)
+    init_params = cast(
+        "InitParams",
+        await create_op(
+            loop,
+            FnCall(
+                callable=init,
+                args=(),
+                kwargs={},
+                return_type=InitParams,
+                context=contextvars.copy_context(),
+                annotations=OpAnnotations(
+                    name="prelude",
+                ),
+            ),
+        ),
+    )
     if init_params["version"] != _CURRENT_VERSION:
         msg = "version mismatch"
         raise RuntimeError(msg)
-    loop.set_key(init_params["nonce"].encode())
+    ctx = Context(loop, init_params["nonce"])
 
     codec = job_fn.codec
     args = tuple(
@@ -743,7 +760,7 @@ class _InvokeRun:
         return cnt
 
 
-def _resume_init() -> InitParams:
+async def _resume_init() -> InitParams:  # noqa: RUF029
     msg = "not started"
     raise RuntimeError(msg)
 

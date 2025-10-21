@@ -94,22 +94,19 @@ class EventLoop(asyncio.AbstractEventLoop):
         ) = None
         self._ops: dict[str, OpFuture] = {}
         self._root_task_seq: int = 0
-        self._key: bytes = b""
         self._now_us: int = 0
         self._closed: bool = False
         self._event: asyncio.Event = asyncio.Event()  # loop = _host
         self._timers: list[asyncio.TimerHandle] = []
         self._added: list[OpFuture] = []
 
-    def set_key(self, key: bytes) -> None:
-        # Derive a fixed-length key from the provided key
-        self._key = blake2b(key, digest_size=16, key=self._key).digest()
-
-    def generate_op_id(self) -> str:
+    @staticmethod
+    def generate_op_id() -> str:
         ctx = _task_ctx.get()
         ctx.seq += 1
         return derive_id(
-            ctx.parent_id, context=(ctx.seq - 1).to_bytes(4, "big"), key=self._key
+            ctx.parent_id,
+            context=(ctx.seq - 1).to_bytes(4, "big"),
         )
 
     @override
@@ -192,7 +189,8 @@ class EventLoop(asyncio.AbstractEventLoop):
         assert asyncio.get_running_loop() is self._host  # noqa: S101
         self._root_task_seq += 1
         id_ = derive_id(
-            "", context=(self._root_task_seq - 1).to_bytes(4, "big"), key=self._key
+            "",
+            context=(self._root_task_seq - 1).to_bytes(4, "big"),
         )
 
         token = _task_ctx.set(_TaskCtx(parent_id=id_))
@@ -283,7 +281,9 @@ class EventLoop(asyncio.AbstractEventLoop):
         if op := self._ops.pop(id_, None):
             if op.done():
                 return
-            tid = derive_id(op.id, key=self._key)
+            tid = derive_id(
+                op.id,
+            )
             token = _task_ctx.set(_TaskCtx(parent_id=tid))
             if exception is None:
                 _ = self.call_soon(op.set_result, result)
