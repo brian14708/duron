@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
-from duron import Context, StreamClosed, durable, effect
+from duron import Context, StreamClosed, durable, effect, invoke
 from duron.contrib.storage import MemoryLogStorage
 
 if TYPE_CHECKING:
@@ -39,11 +39,11 @@ async def test_stream() -> None:
         assert sum(await stream.collect()) == 4900
 
     log = MemoryLogStorage()
-    async with activity.invoke(log) as t:
+    async with invoke(activity, log) as t:
         await t.start()
         await t.wait()
 
-    async with activity.invoke(log) as t:
+    async with invoke(activity, log) as t:
         await t.resume()
         await t.wait()
 
@@ -63,7 +63,7 @@ async def test_stream_host() -> None:
         assert sum(await stream.collect()) == 1225
 
     log = MemoryLogStorage()
-    async with activity.invoke(log) as t:
+    async with invoke(activity, log) as t:
         await t.start()
         await t.wait()
 
@@ -93,7 +93,7 @@ async def test_run() -> None:
 
     log = MemoryLogStorage()
     while True:
-        async with activity.invoke(log) as t:
+        async with invoke(activity, log) as t:
             await t.start()
             try:
                 _ = await asyncio.wait_for(t.wait(), 0.1)
@@ -126,7 +126,7 @@ async def test_stream_map() -> None:
             return
 
     log = MemoryLogStorage()
-    async with activity.invoke(log) as t:
+    async with invoke(activity, log) as t:
         await t.start()
         await t.wait()
 
@@ -161,11 +161,11 @@ async def test_stream_peek() -> None:
         return sample
 
     log = MemoryLogStorage()
-    async with activity.invoke(log) as t:
+    async with invoke(activity, log) as t:
         await t.start()
         a = await t.wait()
     for _ in range(4):
-        async with activity.invoke(log) as t:
+        async with invoke(activity, log) as t:
             await t.resume()
             b = await t.wait()
         assert a == b
@@ -196,11 +196,11 @@ async def test_stream_cross_loop() -> None:
             return await ctx.run(g)
 
     log = MemoryLogStorage()
-    async with activity.invoke(log) as t:
+    async with invoke(activity, log) as t:
         await t.start()
         a = await t.wait()
     for _ in range(4):
-        async with activity.invoke(log) as t:
+        async with invoke(activity, log) as t:
             await t.resume()
             b = await t.wait()
         assert a == b

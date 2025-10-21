@@ -54,7 +54,7 @@ async def greeting_flow(ctx: duron.Context, name: str) -> str:
 
 
 async def main():
-    async with greeting_flow.invoke(FileLogStorage(Path("log.jsonl"))) as job:
+    async with duron.invoke(greeting_flow, FileLogStorage(Path("log.jsonl"))) as job:
         await job.start("Alice")
         result = await job.wait()
     print(result)

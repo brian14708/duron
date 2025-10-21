@@ -29,14 +29,13 @@ from duron._decorator.effect import EffectFn, StatefulFn
 from duron.typing import inspect_function
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Mapping
+    from collections.abc import Awaitable, Callable, Coroutine, Mapping
     from contextlib import AbstractAsyncContextManager
     from contextvars import Token
     from types import TracebackType
 
     from duron._core.signal import Signal, SignalWriter
     from duron._core.stream import Stream, StreamWriter
-    from duron._decorator.durable import DurableFn
     from duron._loop import EventLoop
     from duron.typing import TypeHint
 
@@ -49,11 +48,10 @@ _context: ContextVar[Context | None] = ContextVar("duron.context", default=None)
 
 @final
 class Context:
-    __slots__ = ("_fn", "_loop", "_token")
+    __slots__ = ("_loop", "_token")
 
-    def __init__(self, task: DurableFn[..., object], loop: EventLoop) -> None:
+    def __init__(self, loop: EventLoop) -> None:
         self._loop: EventLoop = loop
-        self._fn = task
         self._token: Token[Context | None] | None = None
 
     def __enter__(self) -> Context:
@@ -262,7 +260,7 @@ class Context:
         *,
         name: str | None = None,
         labels: Mapping[str, str] | None = None,
-    ) -> tuple[str, asyncio.Future[_T]]:
+    ) -> tuple[str, Awaitable[_T]]:
         """Create a new external future object within the context.
 
         Args:

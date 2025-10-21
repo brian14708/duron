@@ -68,6 +68,22 @@ _P = ParamSpec("_P")
 _CURRENT_VERSION: Final = 0
 
 
+def invoke(
+    fn: DurableFn[_P, _T_co], log: LogStorage, /, *, tracer: Tracer | None = None
+) -> contextlib.AbstractAsyncContextManager[DurableRun[_P, _T_co]]:
+    """Create an invocation context for this durable function.
+
+    Args:
+        fn: Durable function to invoke
+        log: Log storage for persisting operation history
+        tracer: Optional tracer for observability
+
+    Returns:
+        Async context manager for Invoke instance
+    """
+    return _InvokeGuard(DurableRun(fn, log), tracer)
+
+
 @final
 class DurableRun(Generic[_P, _T_co]):
     __slots__ = ("_fn", "_log", "_run", "_watchers")
@@ -77,12 +93,6 @@ class DurableRun(Generic[_P, _T_co]):
         self._log = log
         self._run: _InvokeRun | None = None
         self._watchers: list[tuple[dict[str, str], StreamObserver]] = []
-
-    @staticmethod
-    def invoke(
-        fn: DurableFn[_P, _T_co], log: LogStorage, tracer: Tracer | None
-    ) -> contextlib.AbstractAsyncContextManager[DurableRun[_P, _T_co]]:
-        return _InvokeGuard(DurableRun(fn, log), tracer)
 
     async def start(self, *args: _P.args, **kwargs: _P.kwargs) -> None:
         """Start a new invocation of the durable function."""
@@ -247,7 +257,7 @@ async def _invoke_prelude(
     loop = asyncio.get_running_loop()
     assert isinstance(loop, EventLoop)  # noqa: S101
 
-    with Context(job_fn, loop) as ctx:
+    with Context(loop) as ctx:
         init_params = await ctx.run(init)
         if init_params["version"] != _CURRENT_VERSION:
             msg = "version mismatch"

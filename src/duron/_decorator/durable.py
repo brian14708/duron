@@ -20,19 +20,15 @@ from typing_extensions import (
 )
 
 from duron._core.config import config
-from duron._core.invoke import DurableRun
 from duron._core.signal import Signal
 from duron._core.stream import Stream, StreamWriter
 from duron.typing._inspect import inspect_function
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Iterable
-    from contextlib import AbstractAsyncContextManager
 
     from duron._core.context import Context
     from duron.codec import Codec
-    from duron.log import LogStorage
-    from duron.tracing._tracer import Tracer
     from duron.typing import TypeHint
 
 
@@ -57,20 +53,6 @@ class DurableFn(Generic[_P, _T_co]):
         self, ctx: Context, *args: _P.args, **kwargs: _P.kwargs
     ) -> Coroutine[Any, Any, _T_co]:
         return self.fn(ctx, *args, **kwargs)
-
-    def invoke(
-        self, log: LogStorage, /, *, tracer: Tracer | None = None
-    ) -> AbstractAsyncContextManager[DurableRun[_P, _T_co]]:
-        """Create an invocation context for this durable function.
-
-        Args:
-            log: Log storage for persisting operation history
-            tracer: Optional tracer for observability
-
-        Returns:
-            Async context manager for Invoke instance
-        """
-        return DurableRun[_P, _T_co].invoke(self, log, tracer)
 
 
 @overload
@@ -116,7 +98,7 @@ def durable(
         ```
 
     Returns:
-        [DurableFn][duron.DurableFn] that can be invoked with log storage
+        DurableFn that can be passed to [duron.invoke][duron.invoke]
     """
 
     def decorate(

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from duron import Context, durable
+from duron import Context, durable, invoke
 from duron.contrib.storage import MemoryLogStorage
 from duron.log._helper import is_entry
 from duron.tracing import Tracer, span
@@ -31,7 +31,7 @@ async def test_contextvars() -> None:
         _ = await ctx.run(u, "value1")
 
     log = MemoryLogStorage()
-    async with activity.invoke(log) as t:
+    async with invoke(activity, log) as t:
         await t.start()
         await t.wait()
 
@@ -45,7 +45,7 @@ async def test_trace() -> None:
             s.set_status("OK")
 
     log = MemoryLogStorage()
-    async with activity.invoke(log, tracer=Tracer("abc")) as t:
+    async with invoke(activity, log, tracer=Tracer("abc")) as t:
         await t.start()
         await t.wait()
 

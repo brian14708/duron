@@ -5,7 +5,7 @@ from typing import cast
 
 import pytest
 
-from duron import Context, SignalInterrupt, durable
+from duron import Context, SignalInterrupt, durable, invoke
 from duron.contrib.storage import MemoryLogStorage
 
 
@@ -42,10 +42,10 @@ async def test_signal() -> None:
         return val
 
     log = MemoryLogStorage()
-    async with activity.invoke(log) as t:
+    async with invoke(activity, log) as t:
         await t.start()
         assert await t.wait() == [2, 3]
 
-    async with activity.invoke(log) as t:
+    async with invoke(activity, log) as t:
         await t.resume()
         assert await t.wait() == [2, 3]

@@ -6,7 +6,7 @@ from typing_extensions import Any
 import pydantic
 import pytest
 
-from duron import Context, durable
+from duron import Context, durable, invoke
 from duron.contrib.storage import MemoryLogStorage
 
 if TYPE_CHECKING:
@@ -43,7 +43,7 @@ async def test_pydantic_serialize() -> None:
         return PydanticPoint(x=pt.x + 5, y=pt.y + 10)
 
     log = MemoryLogStorage()
-    async with activity.invoke(log) as t:
+    async with invoke(activity, log) as t:
         await t.start()
         a = await t.wait()
         assert type(a) is PydanticPoint

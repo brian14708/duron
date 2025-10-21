@@ -159,7 +159,9 @@ async def main() -> None:
     args = parser.parse_args()
 
     log_storage = FileLogStorage(Path("data") / f"{args.session_id}.jsonl")
-    async with agent_fn.invoke(log_storage, tracer=Tracer(args.session_id)) as job:
+    async with duron.invoke(
+        agent_fn, log_storage, tracer=Tracer(args.session_id)
+    ) as job:
         input_stream: StreamWriter[str] = job.open_stream("input_", "w")
         signal_stream: StreamWriter[None] = job.open_stream("signal", "w")
         stream: Stream[tuple[str, str]] = job.open_stream("output", "r")

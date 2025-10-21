@@ -109,7 +109,7 @@ async def main():
     storage = FileLogStorage(Path("log.jsonl"))
 
     # Invoke the workflow
-    async with greeting_flow.invoke(storage) as job:
+    async with duron.invoke(greeting_flow, storage) as job:
         await job.start("Alice")
         result = await job.wait()
 
@@ -240,7 +240,7 @@ async def producer(
         await asyncio.sleep(1)
 
 async def main():
-    async with producer.invoke(storage) as job:
+    async with duron.invoke(producer, storage) as job:
         stream: Stream[str] = job.open_stream("output", "r")
 
         await job.start()
@@ -271,7 +271,7 @@ async def interruptible_task(
         return "Interrupted by user"
 
 async def main():
-    async with interruptible_task.invoke(storage) as job:
+    async with duron.invoke(interruptible_task, storage) as job:
         signal_writer = job.open_stream("signal", "w")
 
         await job.start()
@@ -290,10 +290,11 @@ Enable tracing to understand workflow execution:
 ```python
 from duron.tracing import Tracer, setup_tracing
 
-setup_tracing()  # Configure logging
-
 async def main():
-    async with greeting_flow.invoke(
+    setup_tracing()  # Configure logging
+
+    async with duron.invoke(
+        greeting_flow,
         storage,
         tracer=Tracer("session-123")
     ) as job:
