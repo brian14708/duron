@@ -38,9 +38,7 @@ class PydanticCodec(Codec):
         return cast(
             "JSONValue",
             TypeAdapter(type(result)).dump_python(
-                result,
-                mode="json",
-                exclude_none=True,
+                result, mode="json", exclude_none=True
             ),
         )
 
@@ -57,10 +55,7 @@ async def agent_fn(
     output: StreamWriter[tuple[str, str]] = Provided,
 ) -> None:
     history: list[ChatCompletionMessageParam] = [
-        {
-            "role": "system",
-            "content": "You are a helpful assistant!",
-        },
+        {"role": "system", "content": "You are a helpful assistant!"}
     ]
     i = 0
     while True:
@@ -69,20 +64,14 @@ async def agent_fn(
             m = await input_.next()
             msgs = [m]
 
-        history.append({
-            "role": "user",
-            "content": "\n".join(msgs),
-        })
+        history.append({"role": "user", "content": "\n".join(msgs)})
         await output.send(("user", "\n".join(msgs)))
         with span(f"Round #{i}"):
             i += 1
             while True:
                 try:
                     async with signal:
-                        result = await completion(
-                            ctx,
-                            messages=history,
-                        )
+                        result = await completion(ctx, messages=history)
                         if result.choices[0].message.content:
                             await output.send((
                                 "assistant",
@@ -123,10 +112,7 @@ async def agent_fn(
                             })
                 except SignalInterrupt:
                     await output.send(("assistant", "[Interrupted]"))
-                    history.append({
-                        "role": "assistant",
-                        "content": "[Interrupted]",
-                    })
+                    history.append({"role": "assistant", "content": "[Interrupted]"})
                     break
 
 
@@ -150,21 +136,18 @@ async def call_tool(params: ChatCompletionMessageToolCallUnion) -> tuple[str, st
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Duron Agent Example")
     _ = parser.add_argument(
-        "--session-id",
-        type=str,
-        required=True,
-        help="Session ID for log storage",
+        "--session-id", type=str, required=True, help="Session ID for log storage"
     )
     args = parser.parse_args()
 
     log_storage = FileLogStorage(Path("data") / f"{args.session_id}.jsonl")
-    async with duron.invoke(
-        agent_fn, log_storage, tracer=Tracer(args.session_id)
-    ) as job:
-        await job.start()
-        input_stream: StreamWriter[str] = await job.open_stream("input_", "w")
-        signal_stream: StreamWriter[None] = await job.open_stream("signal", "w")
-        stream: Stream[tuple[str, str]] = await job.open_stream("output", "r")
+    async with duron.Session(log_storage, tracer=Tracer(args.session_id)) as session:
+        task = session.start(
+            agent_fn,
+        )
+        input_stream: StreamWriter[str] = await task.open_stream("input_", "w")
+        signal_stream: StreamWriter[None] = await task.open_stream("signal", "w")
+        stream: Stream[tuple[str, str]] = await task.open_stream("output", "r")
 
         async def reader() -> None:
             console = Console()
@@ -194,18 +177,15 @@ async def main() -> None:
                         await input_stream_.send(m)
 
         await asyncio.gather(
-            job.wait(), asyncio.create_task(reader()), asyncio.create_task(writer())
+            task.result(), asyncio.create_task(reader()), asyncio.create_task(writer())
         )
 
 
 async def completion(
-    ctx: duron.Context,
-    messages: list[ChatCompletionMessageParam],
+    ctx: duron.Context, messages: list[ChatCompletionMessageParam]
 ) -> ChatCompletion:
     @duron.effect
-    async def _completion(
-        messages: list[ChatCompletionMessageParam],
-    ) -> ChatCompletion:
+    async def _completion(messages: list[ChatCompletionMessageParam]) -> ChatCompletion:
         state = ChatCompletionStreamState()
         async for chunk in await client.chat.completions.create(
             messages=messages,
@@ -228,10 +208,7 @@ async def completion(
                 _ = state.handle_chunk(chunk)
         return state.get_final_completion()
 
-    return await ctx.run(
-        _completion,
-        messages,
-    )
+    return await ctx.run(_completion, messages)
 
 
 # tools

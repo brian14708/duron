@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
-from duron import Context, StreamClosed, durable, effect, invoke
+from duron import Context, Session, StreamClosed, durable, effect
 from duron.contrib.storage import MemoryLogStorage
 
 if TYPE_CHECKING:
@@ -40,13 +40,11 @@ async def test_stream() -> None:
         assert sum(await stream.collect()) == 4900
 
     log = MemoryLogStorage()
-    async with invoke(activity, log) as t:
-        await t.start()
-        await t.wait()
+    async with Session(log) as t:
+        await t.start(activity).result()
 
-    async with invoke(activity, log) as t:
-        await t.resume()
-        await t.wait()
+    async with Session(log) as t:
+        await t.resume(activity).result()
 
 
 @pytest.mark.asyncio
@@ -64,9 +62,8 @@ async def test_stream_host() -> None:
         assert sum(await stream.collect()) == 1225
 
     log = MemoryLogStorage()
-    async with invoke(activity, log) as t:
-        await t.start()
-        await t.wait()
+    async with Session(log) as t:
+        await t.start(activity).result()
 
 
 @pytest.mark.asyncio
@@ -94,10 +91,10 @@ async def test_run() -> None:
 
     log = MemoryLogStorage()
     while True:
-        async with invoke(activity, log) as t:
-            await t.start()
+        async with Session(log) as t:
+            run = t.start(activity)
             try:
-                _ = await asyncio.wait_for(t.wait(), 0.1)
+                _ = await asyncio.wait_for(run.result(), 0.1)
                 break
             except asyncio.TimeoutError as _e:
                 sleep_idx += 20
@@ -128,9 +125,8 @@ async def test_stream_map() -> None:
             return
 
     log = MemoryLogStorage()
-    async with invoke(activity, log) as t:
-        await t.start()
-        await t.wait()
+    async with Session(log) as t:
+        await t.start(activity).result()
 
 
 @pytest.mark.asyncio
@@ -161,13 +157,11 @@ async def test_stream_peek() -> None:
         return sample
 
     log = MemoryLogStorage()
-    async with invoke(activity, log) as t:
-        await t.start()
-        a = await t.wait()
+    async with Session(log) as t:
+        a = await t.start(activity).result()
     for _ in range(4):
-        async with invoke(activity, log) as t:
-            await t.resume()
-            b = await t.wait()
+        async with Session(log) as t:
+            b = await t.resume(activity).result()
         assert a == b
 
 
@@ -196,11 +190,9 @@ async def test_stream_cross_loop() -> None:
             return await ctx.run(g)
 
     log = MemoryLogStorage()
-    async with invoke(activity, log) as t:
-        await t.start()
-        a = await t.wait()
+    async with Session(log) as t:
+        a = await t.start(activity).result()
     for _ in range(4):
-        async with invoke(activity, log) as t:
-            await t.resume()
-            b = await t.wait()
+        async with Session(log) as t:
+            b = await t.resume(activity).result()
         assert a == b

@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from duron.tracing._span import Span
     from duron.typing import JSONValue
 
-current_tracer: ContextVar[Tracer | None] = ContextVar("duron.tracer", default=None)
+current_tracer: ContextVar[Tracer] = ContextVar("duron.tracer")
 _current_span: ContextVar[_TracerSpan | None] = ContextVar(
     "duron.tracer.span", default=None
 )
@@ -168,7 +168,7 @@ class Tracer:
 
     @staticmethod
     def current() -> Tracer | None:
-        return current_tracer.get()
+        return current_tracer.get(None)
 
 
 class OpSpan(NamedTuple):
@@ -275,7 +275,7 @@ class _TracerSpan:
 class _LoggingHandler(logging.Handler):
     @override
     def emit(self, record: logging.LogRecord) -> None:
-        if tracer := current_tracer.get():
+        if tracer := current_tracer.get(None):
             span = _current_span.get()
             event: Event = {
                 "type": "event",
@@ -336,7 +336,7 @@ def span(
     Returns:
         A context manager that enters the span on entry and exits on exit.
     """
-    if tracer := current_tracer.get():
+    if tracer := current_tracer.get(None):
         return tracer.new_span(name, metadata)
     return NULL_SPAN
 

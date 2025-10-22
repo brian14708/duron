@@ -31,41 +31,44 @@ _P = ParamSpec("_P")
 
 
 @final
-class StatefulFn(Generic[_P, _S, _T]):
-    def __init__(
-        self,
-        fn: Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]],
-        initial: Callable[[], _S],
-        reducer: Callable[[_S, _T], _S],
-        action_type: TypeHint[_T],
-        return_type: TypeHint[_S],
-    ) -> None:
-        self.fn = fn
-        self.initial = initial
-        self.reducer = reducer
-        self.action_type = action_type
-        self.return_type = return_type
-        functools.update_wrapper(self, fn)
-
-    def __call__(
-        self, state: _S, *args: _P.args, **kwargs: _P.kwargs
-    ) -> AsyncGenerator[_T, _S]:
-        return self.fn(state, *args, **kwargs)
-
-
-@final
 class EffectFn(Generic[_P, _T_co]):
     def __init__(
-        self, fn: Callable[_P, Coroutine[Any, Any, _T_co]], return_type: TypeHint[Any]
+        self,
+        fn: Callable[_P, Coroutine[Any, Any, _T_co]],
     ) -> None:
         self.fn = fn
-        self.return_type = return_type
+        self.type_hint = inspect_function(fn)
         functools.update_wrapper(self, fn)
 
     def __call__(
         self, *args: _P.args, **kwargs: _P.kwargs
     ) -> Coroutine[Any, Any, _T_co]:
         return self.fn(*args, **kwargs)
+
+
+@final
+class StatefulFn(Generic[_P, _S, _T]):
+    def __init__(
+        self,
+        fn: Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]],
+        initial: Callable[[], _S],
+        reducer: Callable[[_S, _T], _S],
+    ) -> None:
+        self.fn = fn
+        self.type_hint = inspect_function(fn)
+        self.initial = initial
+        self.reducer = reducer
+
+        action_type: TypeHint[_T] = UnspecifiedType
+        if get_origin(ret := self.type_hint.return_type) is AsyncGenerator:
+            action_type, _ = get_args(ret)
+        self.action_type = action_type
+        functools.update_wrapper(self, fn)
+
+    def __call__(
+        self, state: _S, *args: _P.args, **kwargs: _P.kwargs
+    ) -> AsyncGenerator[_T, _S]:
+        return self.fn(state, *args, **kwargs)
 
 
 @overload
@@ -131,7 +134,7 @@ def effect(
         ValueError: If stateful is True but initial or reducer is not provided.
     """
     if fn is not None:
-        return EffectFn(fn=fn, return_type=inspect_function(fn).return_type)
+        return EffectFn(fn)
 
     if stateful:
         if not initial or not reducer:
@@ -141,22 +144,8 @@ def effect(
         def decorate_stateful(
             fn: Callable[Concatenate[_S, _P], AsyncGenerator[_T, _S]],
         ) -> StatefulFn[_P, _S, _T]:
-            return_type: TypeHint[_S] = UnspecifiedType
-            action_type: TypeHint[_T] = UnspecifiedType
-            ret = inspect_function(fn).return_type
-            if get_origin(ret) is AsyncGenerator:
-                action_type, return_type = get_args(ret)
-            return StatefulFn(
-                fn=fn,
-                initial=initial,
-                reducer=reducer,
-                action_type=action_type,
-                return_type=return_type,
-            )
+            return StatefulFn(fn, initial, reducer)
 
         return decorate_stateful
 
-    def decorate(fn: Callable[_P, Coroutine[Any, Any, _T_co]]) -> EffectFn[_P, _T_co]:
-        return EffectFn(fn=fn, return_type=inspect_function(fn).return_type)
-
-    return decorate
+    return EffectFn

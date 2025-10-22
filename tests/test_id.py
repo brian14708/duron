@@ -1,9 +1,6 @@
 import pytest
 
-from duron._loop import (
-    derive_id,
-    random_id,
-)
+from duron.loop import derive_id, random_id
 
 
 def test_generates_unique_ids() -> None:

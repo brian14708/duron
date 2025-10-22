@@ -6,13 +6,7 @@ import functools
 import inspect
 from random import Random
 from typing import TYPE_CHECKING, cast
-from typing_extensions import (
-    Any,
-    ParamSpec,
-    TypeVar,
-    final,
-    overload,
-)
+from typing_extensions import Any, ParamSpec, TypeVar, final, overload
 
 from duron._core.ops import (
     Barrier,
@@ -33,7 +27,7 @@ if TYPE_CHECKING:
 
     from duron._core.signal import Signal
     from duron._core.stream import Stream, StreamWriter
-    from duron._loop import EventLoop
+    from duron.loop import EventLoop
     from duron.typing import TypeHint
 
     _T = TypeVar("_T")
@@ -96,27 +90,27 @@ class Context:
 
         callable_: Callable[[], Coroutine[Any, Any, object]]
         if isinstance(fn, EffectFn):
-            return_type = fn.return_type
+            hint = fn.type_hint
             callable_ = functools.partial(fn.fn, *args, **kwargs)
         elif inspect.iscoroutinefunction(fn):
-            return_type = inspect_function(fn).return_type
+            hint = inspect_function(fn)
             callable_ = functools.partial(fn, *args, **kwargs)
         else:
-            return_type = inspect_function(fn).return_type
 
             async def wrapper() -> object:  # noqa: RUF029
                 return fn(*args, **kwargs)
 
+            hint = inspect_function(fn)
             callable_ = wrapper
 
         op: asyncio.Future[_T] = create_op(
             self._loop,
             FnCall(
                 callable=callable_,
-                return_type=return_type,
+                return_type=hint.return_type,
                 context=contextvars.copy_context(),
                 annotations=OpAnnotations(
-                    name=cast("str", getattr(callable_, "__name__", repr(callable_)))
+                    name=hint.name,
                 ),
             ),
         )
@@ -152,10 +146,7 @@ class Context:
         *,
         name: str | None = None,
         labels: Mapping[str, str] | None = None,
-    ) -> tuple[
-        Stream[_T],
-        StreamWriter[_T],
-    ]:
+    ) -> tuple[Stream[_T], StreamWriter[_T]]:
         """Create a new stream within the context.
 
         Args:
@@ -189,10 +180,7 @@ class Context:
         *,
         name: str | None = None,
         labels: Mapping[str, str] | None = None,
-    ) -> tuple[
-        Signal[_T],
-        StreamWriter[_T],
-    ]:
+    ) -> tuple[Signal[_T], StreamWriter[_T]]:
         """Create a new signal within the context.
 
         Args:

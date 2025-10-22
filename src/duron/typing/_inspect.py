@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import inspect
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from typing_extensions import NamedTuple
 
 from duron.typing._hint import UnspecifiedType
@@ -13,6 +13,10 @@ if TYPE_CHECKING:
 
 
 class FunctionType(NamedTuple):
+    name: str
+    """
+    The name of the function.
+    """
     return_type: TypeHint[Any]
     """
     The return type of the function.
@@ -53,6 +57,7 @@ def inspect_function(fn: Callable[..., object]) -> FunctionType:
         )
 
     return FunctionType(
+        name=cast("str", getattr(fn, "__name__", repr(fn))),
         return_type=return_type,
         parameters=parameter_names,
         parameter_types=parameter_types,

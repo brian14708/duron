@@ -107,10 +107,7 @@ class EventLoop(asyncio.AbstractEventLoop):
     def generate_op_id() -> str:
         ctx = _task_ctx.get()
         ctx.seq += 1
-        return derive_id(
-            ctx.parent_id,
-            context=(ctx.seq - 1).to_bytes(4, "big"),
-        )
+        return derive_id(ctx.parent_id, context=(ctx.seq - 1).to_bytes(4, "big"))
 
     @override
     def call_soon(
@@ -185,16 +182,10 @@ class EventLoop(asyncio.AbstractEventLoop):
         _task_ctx.reset(token)
         return task
 
-    def schedule_task(
-        self,
-        coro: _TaskCompatibleCoro[_T],
-    ) -> asyncio.Task[_T]:
+    def schedule_task(self, coro: _TaskCompatibleCoro[_T]) -> asyncio.Task[_T]:
         assert asyncio.get_running_loop() is self._host  # noqa: S101
         self._root_task_seq += 1
-        id_ = derive_id(
-            "",
-            context=(self._root_task_seq - 1).to_bytes(4, "big"),
-        )
+        id_ = derive_id("", context=(self._root_task_seq - 1).to_bytes(4, "big"))
 
         token = _task_ctx.set(_TaskCtx(parent_id=id_))
         task = asyncio.Task(coro, loop=self)
@@ -286,9 +277,7 @@ class EventLoop(asyncio.AbstractEventLoop):
         if op := self._ops.pop(id_, None):
             if op.done():
                 return
-            tid = derive_id(
-                op.id,
-            )
+            tid = derive_id(op.id)
             token = _task_ctx.set(_TaskCtx(parent_id=tid))
             if exception is None:
                 _ = self.call_soon(op.set_result, result)

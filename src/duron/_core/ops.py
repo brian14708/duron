@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Mapping
     from contextvars import Context
 
-    from duron._loop import EventLoop, OpFuture
+    from duron.loop import EventLoop, OpFuture
     from duron.typing import TypeHint
 
     _T = TypeVar("_T")

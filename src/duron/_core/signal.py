@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
     from duron._core.ops import OpAnnotations
     from duron._core.stream import StreamWriter
-    from duron._loop import EventLoop
+    from duron.loop import EventLoop
     from duron.typing._hint import TypeHint
 
 _T = TypeVar("_T")
@@ -121,10 +121,7 @@ class Signal(Generic[_T]):
 
 async def create_signal(
     loop: EventLoop, dtype: TypeHint[_T], annotations: OpAnnotations
-) -> tuple[
-    Signal[_T],
-    StreamWriter[_T],
-]:
+) -> tuple[Signal[_T], StreamWriter[_T]]:
     s: Signal[_T] = Signal(loop)
     sid = await create_op(
         loop,

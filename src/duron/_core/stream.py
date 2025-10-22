@@ -8,15 +8,7 @@ from asyncio.exceptions import CancelledError
 from collections import deque
 from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Concatenate, Generic, cast
-from typing_extensions import (
-    Any,
-    ParamSpec,
-    Protocol,
-    Self,
-    TypeVar,
-    final,
-    override,
-)
+from typing_extensions import Any, ParamSpec, Protocol, Self, TypeVar, final, override
 
 from duron._core.ops import (
     FnCall,
@@ -26,7 +18,7 @@ from duron._core.ops import (
     StreamEmit,
     create_op,
 )
-from duron._loop import wrap_future
+from duron.loop import wrap_future
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
@@ -34,7 +26,7 @@ if TYPE_CHECKING:
 
     from duron._core.context import Context
     from duron._core.ops import StreamObserver
-    from duron._loop import EventLoop
+    from duron.loop import EventLoop
     from duron.typing import TypeHint
 
     _P = ParamSpec("_P")
@@ -106,14 +98,14 @@ class OpWriter(Generic[_InT]):
 
     async def send(self, value: _InT, /) -> None:
         await wrap_future(
-            create_op(self._loop, StreamEmit(stream_id=self._stream_id, value=value)),
+            create_op(self._loop, StreamEmit(stream_id=self._stream_id, value=value))
         )
 
     async def close(self, exception: Exception | None = None, /) -> None:
         await wrap_future(
             create_op(
                 self._loop, StreamClose(stream_id=self._stream_id, exception=exception)
-            ),
+            )
         )
         self._closed = True
 
@@ -235,10 +227,7 @@ class Stream(ABC, Generic[_T]):
 
 async def create_stream(
     loop: EventLoop, dtype: TypeHint[_T], annotations: OpAnnotations
-) -> tuple[
-    Stream[_T],
-    StreamWriter[_T],
-]:
+) -> tuple[Stream[_T], StreamWriter[_T]]:
     """Create a new bidirectional stream for inter-operation communication.
 
     Creates a stream for sending values between operations with deterministic
@@ -257,12 +246,7 @@ async def create_stream(
     assert asyncio.get_running_loop() is loop  # noqa: S101
     s, w = create_buffer_stream()
     sid = await create_op(
-        loop,
-        StreamCreate(
-            dtype=dtype,
-            observer=w,
-            annotations=annotations,
-        ),
+        loop, StreamCreate(dtype=dtype, observer=w, annotations=annotations)
     )
     writer: OpWriter[_T] = OpWriter(sid, loop)
     return (s, writer)
@@ -401,9 +385,7 @@ async def run_stateful(
         await create_op(
             loop,
             StreamCreate(
-                dtype=dtype,
-                observer=stream,
-                annotations=OpAnnotations(name=name),
+                dtype=dtype, observer=stream, annotations=OpAnnotations(name=name)
             ),
         ),
         loop,

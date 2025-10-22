@@ -50,11 +50,8 @@ async def greeting_flow(ctx: duron.Context, name: str) -> str:
 
 async def run_workflow(name: str, log_file: Path) -> str:
     log = FileLogStorage(log_file)
-    async with (
-        duron.invoke(greeting_flow, log, tracer=Tracer("1" * 32)) as job,
-    ):
-        await job.start(name)
-        return await job.wait()
+    async with duron.Session(log, tracer=Tracer("1" * 32)) as job:
+        return await job.start(greeting_flow, name).result()
 
 
 def main() -> None:

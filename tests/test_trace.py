@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from duron import Context, durable, invoke
+from duron import Context, Session, durable
 from duron.contrib.storage import MemoryLogStorage
 from duron.log._helper import is_entry
 from duron.tracing import Tracer, span
@@ -31,9 +31,8 @@ async def test_contextvars() -> None:
         _ = await ctx.run(u, "value1")
 
     log = MemoryLogStorage()
-    async with invoke(activity, log) as t:
-        await t.start()
-        await t.wait()
+    async with Session(log) as t:
+        await t.start(activity).result()
 
 
 @pytest.mark.asyncio
@@ -45,9 +44,8 @@ async def test_trace() -> None:
             s.set_status("OK")
 
     log = MemoryLogStorage()
-    async with invoke(activity, log, tracer=Tracer("abc")) as t:
-        await t.start()
-        await t.wait()
+    async with Session(log, tracer=Tracer("abc")) as t:
+        await t.start(activity).result()
 
     events: list[dict[str, JSONValue]] = []
     for entry in await log.entries():

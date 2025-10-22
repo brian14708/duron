@@ -8,7 +8,7 @@ from typing_extensions import override
 
 import pytest
 
-from duron import Context, durable, invoke
+from duron import Context, Session, durable
 from duron.contrib.storage import MemoryLogStorage
 
 if TYPE_CHECKING:
@@ -41,16 +41,12 @@ async def test_error_storage() -> None:
 
     @durable()
     async def activity(ctx: Context, i: str) -> str:
-        x = await asyncio.gather(
-            ctx.run(u),
-            ctx.run(u),
-        )
+        x = await asyncio.gather(ctx.run(u), ctx.run(u))
         _ = await ctx.run(lambda: asyncio.sleep(0.1))
         return i + ":".join(x)
 
     for i in range(1, 5):
         log = FlakyLogStorage(None, i)
-        async with invoke(activity, log) as t:
-            await t.start("test")
+        async with Session(log) as t:
             with pytest.raises(RuntimeError, match="Simulated storage failure"):
-                _ = await t.wait()
+                await t.start(activity, "test").result()

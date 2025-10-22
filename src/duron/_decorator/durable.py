@@ -9,15 +9,8 @@ as orchestration functions. Durable functions:
 
 from __future__ import annotations
 
-import functools
 from typing import TYPE_CHECKING, Concatenate, Generic, cast, get_args, get_origin
-from typing_extensions import (
-    Any,
-    ParamSpec,
-    TypeVar,
-    final,
-    overload,
-)
+from typing_extensions import Any, ParamSpec, TypeVar, final, overload
 
 from duron._core.config import config
 from duron._core.signal import Signal
@@ -47,12 +40,7 @@ class DurableFn(Generic[_P, _T_co]):
         self.codec = codec
         self.fn = fn
         self.inject = sorted(inject)
-        functools.update_wrapper(self, fn)
-
-    def __call__(
-        self, ctx: Context, *args: _P.args, **kwargs: _P.kwargs
-    ) -> Coroutine[Any, Any, _T_co]:
-        return self.fn(ctx, *args, **kwargs)
+        self.type_hints = inspect_function(fn)
 
 
 @overload

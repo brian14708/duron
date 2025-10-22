@@ -6,7 +6,7 @@ from typing_extensions import overload
 
 import pytest
 
-from duron._loop import create_loop
+from duron.loop import create_loop
 
 
 @pytest.mark.asyncio
@@ -15,8 +15,7 @@ async def test_timer() -> None:
         await asyncio.sleep(0.1)
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(
-                asyncio.wait_for(asyncio.sleep(10000), timeout=0.2),
-                timeout=10000,
+                asyncio.wait_for(asyncio.sleep(10000), timeout=0.2), timeout=10000
             )
         return 0
 

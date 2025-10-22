@@ -1,7 +1,7 @@
 from duron._core.config import set_config as set_config
 from duron._core.context import Context as Context
-from duron._core.invoke import DurableRun as DurableRun
-from duron._core.invoke import invoke as invoke
+from duron._core.session import Session as Session
+from duron._core.session import Task as Task
 from duron._core.signal import Signal as Signal
 from duron._core.signal import SignalInterrupt as SignalInterrupt
 from duron._core.stream import Stream as Stream

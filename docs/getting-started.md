@@ -108,10 +108,8 @@ async def main():
     # Create a file-based log storage
     storage = FileLogStorage(Path("log.jsonl"))
 
-    # Invoke the workflow
-    async with duron.invoke(greeting_flow, storage) as job:
-        await job.start("Alice")
-        result = await job.wait()
+    async with duron.Session(storage) as session:
+        result = await session.start(greeting_flow, "Alice").result()
 
     print(result)
 
@@ -240,16 +238,15 @@ async def producer(
         await asyncio.sleep(1)
 
 async def main():
-    async with duron.invoke(producer, storage) as job:
-        stream: Stream[str] = job.open_stream("output", "r")
-
-        await job.start()
+    async with duron.Session(storage) as session:
+        task = session.start(producer)
+        stream: Stream[str] = task.open_stream("output", "r")
 
         async with stream as s:
             async for message in s:
                 print(f"Received: {message}")
 
-        await job.wait()
+        await task.result()
 ```
 
 ### Signals
@@ -272,15 +269,14 @@ async def interruptible_task(
         return "Interrupted by user"
 
 async def main():
-    async with duron.invoke(interruptible_task, storage) as job:
-        signal_writer = job.open_stream("signal", "w")
-
-        await job.start()
+    async with duron.invoke(storage) as session:
+        task = session.start(interruptible_task)
+        signal_writer = task.open_stream("signal", "w")
 
         # Later... send interrupt signal
         await signal_writer.send(None)
 
-        result = await job.wait()
+        result = await task.result()
         print(result)  # "Interrupted by user"
 ```
 
@@ -294,13 +290,11 @@ from duron.tracing import Tracer, setup_tracing
 async def main():
     setup_tracing()  # Configure logging
 
-    async with duron.invoke(
-        greeting_flow,
+    async with duron.Session(
         storage,
         tracer=Tracer("session-123")
-    ) as job:
-        await job.start("Alice")
-        result = await job.wait()
+    ) as session:
+        result = await session.start(greeting_flow, "Alice").result()
 ```
 
 Traces are logged to your storage backend for analysis. Upload the jsonl to [Trace UI](https://brian14708.github.io/duron/trace-ui/) for visualization.

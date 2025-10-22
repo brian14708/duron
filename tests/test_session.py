@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from duron import Context, Provided, Stream, StreamWriter, durable, invoke
+from duron import Context, Provided, Session, Stream, StreamWriter, durable
 from duron.contrib.codecs import PickleCodec
 from duron.contrib.storage import MemoryLogStorage
 
@@ -22,27 +22,24 @@ async def test_invoke() -> None:
 
     @durable()
     async def activity(ctx: Context, i: str) -> str:
-        x = await asyncio.gather(
-            ctx.run(u),
-            ctx.run(u),
-        )
+        x = await asyncio.gather(ctx.run(u), ctx.run(u))
         _ = await ctx.run(asyncio.sleep, 0.1)
         return i + ":".join(x)
 
     log = MemoryLogStorage()
-    async with invoke(activity, log) as t:
-        await t.start("test")
-        a = await t.wait()
+    async with Session(log) as t:
+        run = t.start(activity, "test")
+        a = await run.result()
 
-    async with invoke(activity, log) as t:
-        await t.start("test")
-        b = await t.wait()
+    async with Session(log) as t:
+        run = t.start(activity, "test")
+        b = await run.result()
     assert a == b
 
     log2 = MemoryLogStorage((await log.entries())[:-2])
-    async with invoke(activity, log2) as t:
-        await t.start("test")
-        c = await t.wait()
+    async with Session(log2) as t:
+        run = t.start(activity, "test")
+        c = await run.result()
     assert a == c
 
 
@@ -59,14 +56,14 @@ async def test_invoke_error() -> None:
         _ = await ctx.run(error)
 
     log = MemoryLogStorage()
-    async with invoke(activity, log) as t:
-        await t.start()
+    async with Session(log) as t:
+        run = t.start(activity)
         with pytest.raises(Exception, match="test error"):
-            await t.wait()
-    async with invoke(activity, log) as t:
-        await t.start()
+            await run.result()
+    async with Session(log) as t:
+        run = t.start(activity)
         with pytest.raises(Exception, match="test error"):
-            await t.wait()
+            await run.result()
 
 
 @pytest.mark.asyncio
@@ -79,15 +76,14 @@ async def test_resume() -> None:
         return s
 
     log = MemoryLogStorage()
-    async with invoke(activity, log) as t:
-        await t.start("hello")
+    async with Session(log) as t:
+        run = t.start(activity, "hello")
         with pytest.raises(asyncio.TimeoutError):
-            _ = await asyncio.wait_for(t.wait(), 0.1)
+            _ = await asyncio.wait_for(run.result(), 0.1)
 
-    async with invoke(activity, log) as t:
+    async with Session(log) as t:
         sleep = 0
-        await t.resume()
-        x = await t.wait()
+        x = await t.resume(activity).result()
     assert x == "hello"
 
 
@@ -101,22 +97,19 @@ async def test_cancel() -> None:
         return s
 
     log = MemoryLogStorage()
-    async with invoke(activity, log) as t:
-        await t.start("hello")
+    async with Session(log) as t:
+        run = t.start(activity, "hello")
         with pytest.raises(asyncio.TimeoutError):
-            _ = await t.wait()
-    async with invoke(activity, log) as t:
-        await t.resume()
+            _ = await run.result()
+    async with Session(log) as t:
         with pytest.raises(asyncio.TimeoutError):
-            _ = await t.wait()
+            _ = await t.resume(activity).result()
 
 
 @pytest.mark.asyncio
 async def test_timing() -> None:
     @durable()
-    async def activity(
-        ctx: Context,
-    ) -> int:
+    async def activity(ctx: Context) -> int:
         cnt = 0
 
         rnd = ctx.random()
@@ -134,12 +127,11 @@ async def test_timing() -> None:
         return cnt
 
     log = MemoryLogStorage()
-    async with invoke(activity, log) as t:
-        await t.start()
-        a = await t.wait()
-    async with invoke(activity, log) as t:
-        await t.resume()
-        assert a == await t.wait()
+    async with Session(log) as t:
+        a = await t.start(activity).result()
+    async with Session(log) as t:
+        b = await t.resume(activity).result()
+    assert a == b
 
 
 @dataclass
@@ -159,9 +151,8 @@ async def test_serialize() -> None:
         return CustomPoint(x=pt.x + 5, y=pt.y + 10)
 
     log = MemoryLogStorage()
-    async with invoke(activity, log) as t:
-        await t.start()
-        a = await t.wait()
+    async with Session(log) as t:
+        a = await t.start(activity).result()
         assert type(a) is CustomPoint
         assert a.x == 6
         assert a.y == 12
@@ -176,13 +167,11 @@ async def test_random() -> None:
         return ctx.random().randint(1, 100)
 
     log = MemoryLogStorage()
-    async with invoke(activity, log) as t:
-        await t.start()
-        a = await t.wait()
+    async with Session(log) as t:
+        a = await t.start(activity).result()
 
-    async with invoke(activity, log) as t:
-        await t.start()
-        b = await t.wait()
+    async with Session(log) as t:
+        b = await t.start(activity).result()
 
     assert a == b
 
@@ -198,19 +187,19 @@ async def test_external_promise() -> None:
         return await b
 
     log = MemoryLogStorage()
-    async with invoke(activity, log) as t:
-        await t.start()
+    async with Session(log) as t:
+        run = t.start(activity)
 
         async def do() -> None:
             while True:
                 if v.get("data") is None:
                     await asyncio.sleep(0.01)
                     continue
-                await t.complete_future(v["data"], result=9)
+                await run.complete_future(v["data"], result=9)
                 break
 
         bg = asyncio.create_task(do())
-        assert await t.wait() == 9
+        assert await run.result() == 9
         await bg
 
 
@@ -224,9 +213,9 @@ async def test_external_stream() -> None:
         return t
 
     log = MemoryLogStorage()
-    async with invoke(activity, log) as t:
-        await t.start()
-        test = await t.open_stream("test", "w")
+    async with Session(log) as t:
+        run = t.start(activity)
+        test = await run.open_stream("test", "w")
 
         async def do() -> None:
             async with test as s:
@@ -236,7 +225,7 @@ async def test_external_stream() -> None:
                 await s.send(-1)
 
         bg = asyncio.create_task(do())
-        assert (await asyncio.gather(t.wait(), bg))[0] == 44
+        assert (await asyncio.gather(run.result(), bg))[0] == 44
 
 
 @pytest.mark.asyncio
@@ -250,8 +239,8 @@ async def test_external_stream_write() -> None:
 
     log = MemoryLogStorage()
 
-    async with invoke(activity, log) as run:
-        await run.start()
+    async with Session(log) as sess:
+        run = sess.start(activity)
         output_stream = await run.open_stream("writer", "r")
 
         async def bg() -> list[int]:
@@ -259,7 +248,7 @@ async def test_external_stream_write() -> None:
             return values
 
         b = asyncio.create_task(bg())
-        result = await run.wait()
+        result = await run.result()
         assert result == 42
         assert await b == list(range(10))
 
@@ -273,22 +262,19 @@ async def test_invoke_wait_multiple() -> None:
 
     @durable()
     async def activity(ctx: Context, i: str) -> str:
-        x = await asyncio.gather(
-            ctx.run(u),
-            ctx.run(u),
-        )
+        x = await asyncio.gather(ctx.run(u), ctx.run(u))
         _ = await ctx.run(asyncio.sleep, 0.1)
         return i + ":".join(x)
 
     log = MemoryLogStorage()
-    async with invoke(activity, log) as t:
-        await t.start("test")
+    async with Session(log) as t:
+        _ = t.start(activity, "test")
         await asyncio.sleep(0)
-    async with invoke(activity, log) as t:
-        await t.start("test")
+    async with Session(log) as t:
+        run = t.start(activity, "test")
         while True:
             try:
-                _ = await asyncio.wait_for(t.wait(), 0.001)
+                _ = await asyncio.wait_for(run.result(), 0.001)
                 break
             except asyncio.TimeoutError:
                 continue
@@ -305,6 +291,5 @@ async def activity(ctx: Context) -> int:
 @pytest.mark.asyncio
 async def test_performance() -> None:
     log = MemoryLogStorage()
-    async with invoke(activity, log) as run:
-        await run.start()
-        _ = await run.wait()
+    async with Session(log) as run:
+        _ = await run.start(activity).result()

@@ -6,7 +6,7 @@ from typing import cast
 
 import pytest
 
-from duron import Context, Signal, SignalInterrupt, durable, invoke
+from duron import Context, Session, Signal, SignalInterrupt, durable
 from duron.contrib.storage import MemoryLogStorage
 from duron.typing._hint import Provided
 
@@ -45,13 +45,11 @@ async def test_signal() -> None:
         return val
 
     log = MemoryLogStorage()
-    async with invoke(activity, log) as t:
-        await t.start()
-        assert await t.wait() == [2, 3]
+    async with Session(log) as t:
+        assert await t.start(activity).result() == [2, 3]
 
-    async with invoke(activity, log) as t:
-        await t.resume()
-        assert await t.wait() == [2, 3]
+    async with Session(log) as t:
+        assert await t.resume(activity).result() == [2, 3]
 
 
 @pytest.mark.asyncio
@@ -76,9 +74,9 @@ async def test_signal_timing() -> None:
         ])
 
     log = MemoryLogStorage()
-    async with invoke(activity, log) as t:
-        await t.start()
-        signal = await t.open_stream("s", "w")
+    async with Session(log) as t:
+        run = t.start(activity)
+        signal = await run.open_stream("s", "w")
 
         async def push() -> None:
             i = 0
@@ -88,11 +86,10 @@ async def test_signal_timing() -> None:
                 await signal.send(i)
 
         pusher = asyncio.create_task(push())
-        a = await t.wait()
+        a = await run.result()
         pusher.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await pusher
 
-    async with invoke(activity, log) as t:
-        await t.resume()
-        assert await t.wait() == a
+    async with Session(log) as t:
+        assert await t.resume(activity).result() == a

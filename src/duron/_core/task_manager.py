@@ -30,7 +30,7 @@ class TaskManager:
         "_tasks",
     )
 
-    def __init__(self, on_error: Callable[[TaskError], None]) -> None:
+    def __init__(self, on_error: Callable[[TaskError], Any]) -> None:
         self._pending_task: dict[
             str,
             tuple[
@@ -43,7 +43,7 @@ class TaskManager:
         self._done_tasks: asyncio.Queue[asyncio.Future[None] | None] = asyncio.Queue()
         self._futures: dict[str, TypeHint[Any]] = {}
         self._cleanup_task: asyncio.Task[None] = asyncio.create_task(self._cleanup())
-        self._on_error: Callable[[TaskError], None] = on_error
+        self._on_error: Callable[[TaskError], Any] = on_error
 
     async def _cleanup(self) -> None:
         while True:
