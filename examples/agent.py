@@ -25,8 +25,6 @@ from duron.contrib.storage import FileLogStorage
 from duron.tracing import Tracer, span
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
-
     from duron.typing import JSONValue, TypeHint
 
 client = AsyncOpenAI()
@@ -163,13 +161,14 @@ async def main() -> None:
     async with duron.invoke(
         agent_fn, log_storage, tracer=Tracer(args.session_id)
     ) as job:
-        input_stream: Awaitable[StreamWriter[str]] = job.open_stream("input_", "w")
-        signal_stream: Awaitable[StreamWriter[None]] = job.open_stream("signal", "w")
-        stream: Awaitable[Stream[tuple[str, str]]] = job.open_stream("output", "r")
+        await job.start()
+        input_stream: StreamWriter[str] = await job.open_stream("input_", "w")
+        signal_stream: StreamWriter[None] = await job.open_stream("signal", "w")
+        stream: Stream[tuple[str, str]] = await job.open_stream("output", "r")
 
         async def reader() -> None:
             console = Console()
-            async for role, result in await stream:
+            async for role, result in stream:
                 match role:
                     case "user":
                         console.print("[bold cyan]     USER[/bold cyan]", result)
@@ -183,8 +182,8 @@ async def main() -> None:
                         console.print("[bold magenta]     ???[/bold magenta]", result)
 
         async def writer() -> None:
-            signal_stream_ = await signal_stream
-            input_stream_ = await input_stream
+            signal_stream_ = signal_stream
+            input_stream_ = input_stream
             while True:
                 await asyncio.sleep(0)
                 m = await asyncio.to_thread(input, "> ")
@@ -194,7 +193,6 @@ async def main() -> None:
                     else:
                         await input_stream_.send(m)
 
-        await job.start()
         await asyncio.gather(
             job.wait(), asyncio.create_task(reader()), asyncio.create_task(writer())
         )

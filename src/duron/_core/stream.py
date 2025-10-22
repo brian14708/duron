@@ -413,9 +413,7 @@ async def run_stateful(
         create_op(
             loop,
             FnCall(
-                callable=stream.worker,
-                args=(sink,),
-                kwargs={},
+                callable=lambda: stream.worker(sink),
                 return_type=type(initial),
                 context=contextvars.copy_context(),
                 annotations=OpAnnotations(name=name),

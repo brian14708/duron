@@ -77,16 +77,15 @@ async def test_signal_timing() -> None:
 
     log = MemoryLogStorage()
     async with invoke(activity, log) as t:
-        signal = t.open_stream("s", "w")
         await t.start()
+        signal = await t.open_stream("s", "w")
 
         async def push() -> None:
             i = 0
-            s = await signal
             while True:
                 i += 1
                 await asyncio.sleep(0.001)
-                await s.send(i)
+                await signal.send(i)
 
         pusher = asyncio.create_task(push())
         a = await t.wait()

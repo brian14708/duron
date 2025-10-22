@@ -94,28 +94,25 @@ class Context:
                 await stream.discard()
                 return await result
 
+        callable_: Callable[[], Coroutine[Any, Any, object]]
         if isinstance(fn, EffectFn):
-            callable_ = fn.fn
             return_type = fn.return_type
+            callable_ = functools.partial(fn.fn, *args, **kwargs)
         elif inspect.iscoroutinefunction(fn):
-            callable_ = fn
             return_type = inspect_function(fn).return_type
+            callable_ = functools.partial(fn, *args, **kwargs)
         else:
+            return_type = inspect_function(fn).return_type
 
-            async def wrapper(  # noqa: RUF029
-                *args: _P.args, **kwargs: _P.kwargs
-            ) -> object:
+            async def wrapper() -> object:  # noqa: RUF029
                 return fn(*args, **kwargs)
 
-            callable_ = functools.update_wrapper(wrapper, fn)
-            return_type = inspect_function(fn).return_type
+            callable_ = wrapper
 
-        op = create_op(
+        op: asyncio.Future[_T] = create_op(
             self._loop,
             FnCall(
                 callable=callable_,
-                args=args,
-                kwargs=kwargs,
                 return_type=return_type,
                 context=contextvars.copy_context(),
                 annotations=OpAnnotations(
@@ -123,7 +120,7 @@ class Context:
                 ),
             ),
         )
-        return cast("_T", await op)
+        return await op
 
     def stream(
         self, fn: StatefulFn[_P, _T, _S], /, *args: _P.args, **kwargs: _P.kwargs

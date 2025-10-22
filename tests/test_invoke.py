@@ -225,11 +225,11 @@ async def test_external_stream() -> None:
 
     log = MemoryLogStorage()
     async with invoke(activity, log) as t:
-        test = t.open_stream("test", "w")
         await t.start()
+        test = await t.open_stream("test", "w")
 
         async def do() -> None:
-            async with await test as s:
+            async with test as s:
                 await s.send(0)
                 for i in range(10):
                     await s.send(i)
@@ -251,12 +251,11 @@ async def test_external_stream_write() -> None:
     log = MemoryLogStorage()
 
     async with invoke(activity, log) as run:
-        output_stream = run.open_stream("writer", "r")
-
         await run.start()
+        output_stream = await run.open_stream("writer", "r")
 
         async def bg() -> list[int]:
-            values: list[int] = [value async for value in await output_stream]
+            values: list[int] = [value async for value in output_stream]
             return values
 
         b = asyncio.create_task(bg())

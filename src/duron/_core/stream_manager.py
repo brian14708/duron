@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from asyncio import CancelledError
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 from typing_extensions import Any, final
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
     from duron._core.ops import StreamObserver
     from duron.codec import Codec
@@ -15,8 +14,7 @@ if TYPE_CHECKING:
     from duron.typing import JSONValue, TypeHint
 
 
-@dataclass(slots=True)
-class _StreamInfo:
+class _StreamInfo(NamedTuple):
     observers: Sequence[StreamObserver]
     dtype: TypeHint[Any]
     labels: Mapping[str, str] | None
@@ -28,10 +26,10 @@ class StreamManager:
     __slots__ = ("_event", "_streams", "_watchers")
 
     def __init__(
-        self, watchers: list[tuple[dict[str, str], StreamObserver]] | None = None
+        self, watchers: Iterable[tuple[StreamObserver, Sequence[tuple[str, str]]]]
     ) -> None:
         self._streams: dict[str, _StreamInfo] = {}
-        self._watchers = watchers or []
+        self._watchers = tuple(watchers)
         self._event = asyncio.Event()
 
     def create_stream(
@@ -44,8 +42,8 @@ class StreamManager:
     ) -> None:
         observers = [
             watcher
-            for matcher, watcher in self._watchers
-            if labels and _match_labels(labels, matcher)
+            for watcher, matcher in self._watchers
+            if labels and all(labels.get(k) == v for k, v in matcher)
         ]
         if observer:
             observers.append(observer)
@@ -82,14 +80,14 @@ class StreamManager:
             return (s.op_span,)
         return None
 
-    def match_streams(self, matcher: Mapping[str, str]) -> Sequence[str]:
+    def match_streams(self, matcher: Iterable[tuple[str, str]]) -> Sequence[str]:
         return tuple(
             stream_id
             for stream_id, info in self._streams.items()
-            if info.labels and _match_labels(info.labels, matcher)
+            if info.labels and all(info.labels.get(k) == v for k, v in matcher)
         )
 
-    async def wait_one(self, matcher: dict[str, str]) -> str:
+    async def wait_one(self, matcher: Iterable[tuple[str, str]]) -> str:
         while True:
             if match := self.match_streams(matcher):
                 if len(match) != 1:
@@ -98,7 +96,3 @@ class StreamManager:
                 return match[0]
             self._event.clear()
             await self._event.wait()
-
-
-def _match_labels(labels: Mapping[str, str], matcher: Mapping[str, str]) -> bool:
-    return all(labels.get(k) == v for k, v in matcher.items())

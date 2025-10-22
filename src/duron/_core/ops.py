@@ -5,7 +5,7 @@ from typing_extensions import Any, Protocol, TypeVar, overload
 
 if TYPE_CHECKING:
     import asyncio
-    from collections.abc import Callable, Coroutine, Mapping, Sequence
+    from collections.abc import Callable, Coroutine, Mapping
     from contextvars import Context
 
     from duron._loop import EventLoop, OpFuture
@@ -41,9 +41,7 @@ def _merge_dict(
 
 
 class FnCall(NamedTuple):
-    callable: Callable[..., Coroutine[Any, Any, object]]
-    args: Sequence[object]
-    kwargs: Mapping[str, object]
+    callable: Callable[[], Coroutine[Any, Any, object]]
     return_type: TypeHint[Any]
     context: Context
     annotations: OpAnnotations
@@ -96,7 +94,7 @@ Op = (
 
 
 @overload
-def create_op(loop: EventLoop, params: FnCall) -> asyncio.Future[object]: ...
+def create_op(loop: EventLoop, params: FnCall) -> asyncio.Future[Any]: ...
 @overload
 def create_op(loop: EventLoop, params: StreamCreate) -> asyncio.Future[str]: ...
 @overload

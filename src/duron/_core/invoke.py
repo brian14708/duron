@@ -16,6 +16,7 @@ from typing_extensions import (
     overload,
 )
 
+from duron._core.codec import decode_error, encode_error
 from duron._core.context import Context
 from duron._core.ops import (
     Barrier,
@@ -40,8 +41,7 @@ from duron.tracing._tracer import Tracer, current_tracer, span
 from duron.typing import JSONValue, UnspecifiedType, inspect_function
 
 if TYPE_CHECKING:
-    from asyncio.exceptions import CancelledError
-    from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
+    from collections.abc import AsyncGenerator, Callable, Coroutine, Iterable
 
     from duron._core.ops import Op, StreamObserver
     from duron._decorator.durable import DurableFn
@@ -50,7 +50,6 @@ if TYPE_CHECKING:
     from duron.log._entry import (
         BarrierEntry,
         Entry,
-        ErrorInfo,
         PromiseCompleteEntry,
         PromiseCreateEntry,
         StreamCompleteEntry,
@@ -61,16 +60,16 @@ if TYPE_CHECKING:
     from duron.typing import FunctionType
 
 
+_T = TypeVar("_T")
 _P = ParamSpec("_P")
-_OutT = TypeVar("_OutT", covariant=True)  # noqa: PLC0105
 
 _CURRENT_VERSION: Final = 0
 
 
 @contextlib.asynccontextmanager
 async def invoke(
-    fn: DurableFn[_P, _OutT], log: LogStorage, /, *, tracer: Tracer | None = None
-) -> AsyncGenerator[DurableRun[_P, _OutT], None]:
+    fn: DurableFn[_P, _T], log: LogStorage, /, *, tracer: Tracer | None = None
+) -> AsyncGenerator[DurableRun[_P, _T], None]:
     """Create an invocation context for this durable function.
 
     Args:
@@ -91,15 +90,21 @@ async def invoke(
 
 
 @final
-class DurableRun(Generic[_P, _OutT]):
-    __slots__ = ("_fn", "_log", "_run", "_run_event", "_watchers")
+class DurableRun(Generic[_P, _T]):
+    __slots__ = ("_fn", "_log", "_run", "_streams", "_watchers")
 
-    def __init__(self, fn: DurableFn[_P, _OutT], log: LogStorage) -> None:
+    def __init__(self, fn: DurableFn[_P, _T], log: LogStorage) -> None:
         self._fn = fn
         self._log = log
         self._run: _DurableRun | None = None
-        self._run_event = asyncio.Event()
-        self._watchers: list[tuple[dict[str, str], StreamObserver]] = []
+        self._watchers: dict[str, StreamObserver] = {}
+        self._streams: dict[str, Stream[Any]] = {}
+
+        for name, typ, _dtype in self._fn.inject:
+            if typ is StreamWriter:
+                stream, w = create_buffer_stream()
+                self._streams[name] = stream
+                self._watchers[name] = w
 
     async def start(self, *args: _P.args, **kwargs: _P.kwargs) -> None:
         """Start a new invocation of the durable function."""
@@ -118,20 +123,18 @@ class DurableRun(Generic[_P, _OutT]):
         loop = await create_loop()
         self._run = _DurableRun(loop, p, self._log, codec, watchers=self._watchers)
         await self._run.resume()
-        self._run_event.set()
 
     async def resume(self) -> None:
         """Resume a previously started invocation."""
         type_info = inspect_function(self._fn.fn)
-        prelude = _invoke_prelude(self._fn, type_info, _resume_init)
+        p = _invoke_prelude(self._fn, type_info, _resume_init)
         loop = await create_loop()
         self._run = _DurableRun(
-            loop, prelude, self._log, self._fn.codec, watchers=self._watchers
+            loop, p, self._log, self._fn.codec, watchers=self._watchers
         )
         await self._run.resume()
-        self._run_event.set()
 
-    async def wait(self) -> _OutT:
+    async def wait(self) -> _T:
         """Wait for the durable function invocation to complete \
                 and return its result.
 
@@ -144,7 +147,7 @@ class DurableRun(Generic[_P, _OutT]):
         if self._run is None:
             msg = "Job not started"
             raise RuntimeError(msg)
-        return cast("_OutT", await self._run.run())
+        return cast("_T", await self._run.run())
 
     async def close(self) -> None:
         if self._run:
@@ -166,7 +169,6 @@ class DurableRun(Generic[_P, _OutT]):
                 or exception.
 
         Raises:
-            ValueError: If neither result nor exception is provided.
             RuntimeError: If the job has not been started.
         """
         if self._run is None:
@@ -174,25 +176,20 @@ class DurableRun(Generic[_P, _OutT]):
             raise RuntimeError(msg)
         if exception is not None:
             await self._run.complete_external_future(id_, exception=exception)
-        elif result is not None:
-            await self._run.complete_external_future(id_, result=result)
         else:
-            msg = "Either result or error must be provided"
-            raise ValueError(msg)
+            await self._run.complete_external_future(id_, result=result)
 
     @overload
-    def open_stream(
-        self, name: str, mode: Literal["w"]
-    ) -> Awaitable[StreamWriter[Any]]: ...
+    async def open_stream(self, name: str, mode: Literal["w"]) -> StreamWriter[Any]: ...
     @overload
-    def open_stream(self, name: str, mode: Literal["r"]) -> Awaitable[Stream[Any]]: ...
-    def open_stream(
+    async def open_stream(self, name: str, mode: Literal["r"]) -> Stream[Any]: ...
+    async def open_stream(
         self, name: str, mode: Literal["w", "r"]
-    ) -> Awaitable[StreamWriter[Any] | Stream[Any]]:
+    ) -> StreamWriter[Any] | Stream[Any]:
         """Open a runtime provided stream for reading or writing.
 
         Note:
-            - Must be called before starting or resuming the job.
+            - Must be called after starting or resuming the job.
 
         Args:
             name: The name of the stream parameter to open.
@@ -206,8 +203,8 @@ class DurableRun(Generic[_P, _OutT]):
             A [StreamWriter][duron.StreamWriter] for writing, \
                     or a [Stream][duron.Stream] for reading.
         """
-        if self._run is not None:
-            msg = "open_stream() must be called before start() or resume()"
+        if self._run is None:
+            msg = "open_stream() must be called after start() or resume()"
             raise RuntimeError(msg)
         for n, _, _ in self._fn.inject:
             if name == n:
@@ -216,22 +213,9 @@ class DurableRun(Generic[_P, _OutT]):
             msg = f"Stream parameter '{name}' not found"
             raise ValueError(msg)
         if mode == "r":
-            stream, w = create_buffer_stream()
-            self._watchers.append(({"name": name}, w))
+            return self._streams.pop(name)
 
-            async def _open_reader() -> Stream[Any]:
-                while not self._run:
-                    await self._run_event.wait()
-                return stream
-
-            return _open_reader()
-
-        return self._open_writer(name)
-
-    async def _open_writer(self, name: str) -> StreamWriter[Any]:
-        while not self._run:
-            await self._run_event.wait()
-        sid = await self._run.wait_stream({"name": name})
+        sid = await self._run.wait_stream((("name", name),))
         w: OpWriter[Any] = OpWriter(sid, self._run.loop())
         return w
 
@@ -244,26 +228,21 @@ class InitParams(TypedDict):
 
 
 async def _invoke_prelude(
-    job_fn: DurableFn[..., _OutT],
+    job_fn: DurableFn[..., _T],
     type_info: FunctionType,
     init: Callable[[], Coroutine[Any, Any, InitParams]],
-) -> _OutT:
+) -> _T:
     loop = asyncio.get_running_loop()
     assert isinstance(loop, EventLoop)  # noqa: S101
 
-    init_params = cast(
-        "InitParams",
-        await create_op(
-            loop,
-            FnCall(
-                callable=init,
-                args=(),
-                kwargs={},
-                return_type=InitParams,
-                context=contextvars.copy_context(),
-                annotations=OpAnnotations(
-                    name="prelude",
-                ),
+    init_params: InitParams = await create_op(
+        loop,
+        FnCall(
+            callable=init,
+            return_type=InitParams,
+            context=contextvars.copy_context(),
+            annotations=OpAnnotations(
+                name="@duron.prelude",
             ),
         ),
     )
@@ -290,14 +269,11 @@ async def _invoke_prelude(
     extra_kwargs: dict[str, Stream[Any] | StreamWriter[Any] | Signal[Any]] = {}
     for name, type_, dtype in job_fn.inject:
         if type_ is Stream:
-            stream, _stw = await ctx.create_stream(dtype, name=name)
-            extra_kwargs[name] = stream
+            extra_kwargs[name], _stw = await ctx.create_stream(dtype, name=name)
         elif type_ is Signal:
-            signal, _sgw = await ctx.create_signal(dtype, name=name)
-            extra_kwargs[name] = signal
+            extra_kwargs[name], _sgw = await ctx.create_signal(dtype, name=name)
         elif type_ is StreamWriter:
-            _, stw = await ctx.create_stream(dtype, name=name)
-            extra_kwargs[name] = stw
+            _, extra_kwargs[name] = await ctx.create_stream(dtype, name=name)
 
     with span("InvokeRun"):
         return await job_fn.fn(ctx, *args, **extra_kwargs, **kwargs)
@@ -327,7 +303,7 @@ class _DurableRun:
         log: LogStorage,
         codec: Codec,
         *,
-        watchers: list[tuple[dict[str, str], StreamObserver]] | None = None,
+        watchers: dict[str, StreamObserver],
     ) -> None:
         self._loop = loop
         self._task = self._loop.schedule_task(task)
@@ -337,7 +313,9 @@ class _DurableRun:
         self._lease: bytes | None = None
         self._pending_msg: list[Entry] = []
         self._now = 0
-        self._stream_manager = StreamManager(watchers)
+        self._stream_manager = StreamManager(
+            (watcher, (("name", name),)) for name, watcher in watchers.items()
+        )
         self._tracer: Tracer | None = Tracer.current()
         self._task_run: asyncio.Task[object] | None = None
 
@@ -465,7 +443,7 @@ class _DurableRun:
             id_ = e["promise_id"]
             (return_type,) = self._task_manager.complete_task(id_)
             if "error" in e:
-                self._loop.post_completion(id_, exception=_decode_error(e["error"]))
+                self._loop.post_completion(id_, exception=decode_error(e["error"]))
             elif "result" in e:
                 try:
                     result = self._codec.decode_json(e["result"], return_type)
@@ -498,7 +476,7 @@ class _DurableRun:
             succ = self._stream_manager.close_stream(
                 e["stream_id"],
                 offset,
-                _decode_error(e["error"]) if "error" in e else None,
+                decode_error(e["error"]) if "error" in e else None,
             )
             if succ:
                 self._loop.post_completion(id_, result=None)
@@ -553,11 +531,11 @@ class _DurableRun:
                         else NULL_SPAN
                     ) as span:
                         try:
-                            result = await op.callable(*op.args, **op.kwargs)
+                            result = await op.callable()
                             entry["result"] = self._codec.encode_json(result)
                             span.set_status("OK")
                         except (Exception, asyncio.CancelledError) as e:  # noqa: BLE001
-                            entry["error"] = _encode_error(e)
+                            entry["error"] = encode_error(e)
                             span.set_status("ERROR", str(e))
 
                     if op_span:
@@ -626,7 +604,7 @@ class _DurableRun:
                             "id": id_,
                             "stream_id": op.stream_id,
                             "type": "stream.complete",
-                            "error": _encode_error(op.exception),
+                            "error": encode_error(op.exception),
                         }
                         if op_span:
                             op_span.end(stream_close_entry_err)
@@ -669,7 +647,7 @@ class _DurableRun:
                     "promise_id": op.future_id,
                 }
                 if op.exception is not None:
-                    promise_complete_entry["error"] = _encode_error(op.exception)
+                    promise_complete_entry["error"] = encode_error(op.exception)
                 else:
                     promise_complete_entry["result"] = self._codec.encode_json(op.value)
 
@@ -698,7 +676,7 @@ class _DurableRun:
             "promise_id": id_,
         }
         if exception is not None:
-            entry["error"] = _encode_error(exception)
+            entry["error"] = encode_error(exception)
         elif result is not None:
             entry["result"] = self._codec.encode_json(result)
         else:
@@ -708,22 +686,10 @@ class _DurableRun:
             self._tracer.end_op_span(id_, entry)
         await self.enqueue_log(entry)
 
-    async def wait_stream(self, matcher: dict[str, str]) -> str:
+    async def wait_stream(self, matcher: Iterable[tuple[str, str]]) -> str:
         return await self._stream_manager.wait_one(matcher)
 
 
 async def _resume_init() -> InitParams:  # noqa: RUF029
     msg = "not started"
     raise RuntimeError(msg)
-
-
-def _encode_error(error: Exception | CancelledError) -> ErrorInfo:
-    if type(error) is asyncio.CancelledError:
-        return {"code": -2, "message": repr(error)}
-    return {"code": -1, "message": repr(error)}
-
-
-def _decode_error(error_info: ErrorInfo) -> Exception | CancelledError:
-    if error_info["code"] == -2:
-        return asyncio.CancelledError()
-    return Exception(f"[{error_info['code']}] {error_info['message']}")
