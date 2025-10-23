@@ -59,7 +59,7 @@ async def agent_fn(
     ]
     i = 0
     while True:
-        msgs: list[str] = [msgs async for msgs in input_.next_nowait(ctx)]
+        msgs: list[str] = [msgs async for msgs in input_.next_nowait()]
         if not msgs:
             m = await input_.next()
             msgs = [m]

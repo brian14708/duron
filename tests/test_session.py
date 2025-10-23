@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import random
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import pytest
@@ -161,10 +162,9 @@ async def test_serialize() -> None:
 @pytest.mark.asyncio
 async def test_random() -> None:
     @durable()
-    async def activity(ctx: Context) -> int:
-        assert ctx.time_ns() == ctx.time_ns()
+    async def activity(ctx: Context) -> list[int]:
         await asyncio.sleep(0)
-        return ctx.random().randint(1, 100)
+        return [await ctx.time_ns(), ctx.random().randint(1, 100)]
 
     log = MemoryLogStorage()
     async with Session(log) as t:
@@ -280,10 +280,32 @@ async def test_invoke_wait_multiple() -> None:
                 continue
 
 
+@pytest.mark.asyncio
+async def test_time() -> None:
+    @durable()
+    async def activity(ctx: Context) -> Sequence[int]:
+        async def do() -> int:
+            t = ctx.random().random()
+            await asyncio.sleep(t * 0.1)
+            return await ctx.time_ns()
+
+        await asyncio.sleep(0)
+        return await asyncio.gather(*[do() for _ in range(10)])
+
+    log = MemoryLogStorage()
+    async with Session(log) as t:
+        a = await t.start(activity).result()
+
+    async with Session(log) as t:
+        b = await t.start(activity).result()
+
+    assert a == b
+
+
 @durable
 async def activity(ctx: Context) -> int:
     for _i in range(100):
-        _ = await ctx.barrier()
+        _ = await ctx.time_ns()
     return 42
 
 

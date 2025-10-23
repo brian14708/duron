@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Concatenate, Generic, cast
 from typing_extensions import Any, ParamSpec, Protocol, Self, TypeVar, final, override
 
 from duron._core.ops import (
+    Barrier,
     FnCall,
     OpMetadata,
     StreamClose,
@@ -18,15 +19,13 @@ from duron._core.ops import (
     StreamEmit,
     create_op,
 )
-from duron.loop import wrap_future
+from duron.loop import EventLoop, wrap_future
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
     from types import TracebackType
 
-    from duron._core.context import Context
     from duron._core.ops import StreamObserver
-    from duron.loop import EventLoop
     from duron.typing import TypeHint
 
     _P = ParamSpec("_P")
@@ -163,19 +162,22 @@ class Stream(ABC, Generic[_T]):
         _, val = await self._next()
         return val
 
-    async def next_nowait(self, ctx: Context) -> AsyncGenerator[_T]:
+    async def next_nowait(self) -> AsyncGenerator[_T]:
         """Yield available values from the stream without blocking.
 
         Yields values that have already been emitted up to the current barrier
         offset. Does not wait for new values.
 
-        Args:
-            ctx: The duron context for determining the current barrier offset.
+        Raises:
+            RuntimeError: If called outside of the context's event loop.
 
         Yields:
             Tuples of (offset, value) for each available value.
         """
-        offset = await ctx.barrier()
+        if not isinstance(loop := asyncio.get_running_loop(), EventLoop):
+            msg = "Context time can only be used in the context loop"
+            raise RuntimeError(msg)  # noqa: TRY004
+        offset, _ = await create_op(loop, Barrier())
         try:
             while True:
                 _, val = self._next_nowait(offset)

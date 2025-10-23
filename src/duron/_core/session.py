@@ -555,7 +555,7 @@ class Task(Generic[_T_co]):
                     id_, exception=ValueError("Stream not found")
                 )
         elif e["type"] == "barrier":
-            self._loop.post_completion(e["id"], result=offset)
+            self._loop.post_completion(e["id"], result=(offset, e["ts"]))
         else:
             assert_type(e["type"], Literal["promise.create", "trace"])
 

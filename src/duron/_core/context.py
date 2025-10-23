@@ -222,21 +222,7 @@ class Context:
         )
         return (fut.id, cast("asyncio.Future[_T]", fut))
 
-    async def barrier(self) -> int:
-        """Create a barrier operation that records the current execution offset.
-
-        Raises:
-            RuntimeError: If called outside of the context's event loop.
-
-        Returns:
-            The log offset at the point of the barrier.
-        """
-        if asyncio.get_running_loop() is not self._loop:
-            msg = "Context time can only be used in the context loop"
-            raise RuntimeError(msg)
-        return await create_op(self._loop, Barrier())
-
-    def time(self) -> float:
+    async def time(self) -> float:
         """Get the current deterministic time in seconds.
 
         This provides a deterministic timestamp that is consistent during replay.
@@ -251,9 +237,10 @@ class Context:
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
-        return self._loop.time()
+        _log_offset, time_us = await create_op(self._loop, Barrier())
+        return time_us / 1e6
 
-    def time_ns(self) -> int:
+    async def time_ns(self) -> int:
         """Get the current deterministic time in nanoseconds.
 
         This provides a deterministic timestamp that is consistent during replay.
@@ -268,7 +255,8 @@ class Context:
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
-        return self._loop.time_us() * 1_000
+        _log_offset, time_us = await create_op(self._loop, Barrier())
+        return time_us * 1_000
 
     def random(self) -> Random:
         """Get a deterministic random number generator.
