@@ -3,8 +3,7 @@ site_url: "https://brian14708.github.io/duron"
 repo_url: "https://github.com/brian14708/duron"
 repo_name: "brian14708/duron"
 nav:
-  - Home:
-      - index.md
+  - index.md
   - getting-started.md
   - Reference: &references
       - reference/duron.md
@@ -66,3 +65,6 @@ markdown_extensions:
         - name: mermaid
           class: mermaid
           format: !!python/name:mermaid2.fence_mermaid
+  - pymdownx.snippets:
+      base_path: [!relative $config_dir]
+      check_paths: true
