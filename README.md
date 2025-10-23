@@ -1,31 +1,29 @@
-# 🌀 Duron
+# Duron
 
 [![PyPI - Version](https://img.shields.io/pypi/v/duron)](https://pypi.org/project/duron)
+[![CI](https://github.com/brian14708/duron/actions/workflows/ci.yaml/badge.svg)](https://github.com/brian14708/duron/actions/workflows/ci.yaml)
 
 Duron is a Python library that makes async work _replayable_. You can pause, resume, or rerun async functions without redoing completed steps. Wrap your side effects once, keep orchestration deterministic, and Duron logs every result so repeated runs stay safe.
 
 ## Why Duron?
 
-- 🔁 **Restart-safe** — Rerun a job and Duron replays prior results automatically. No duplicate work.
-- 🧵 **Async-first** — Write `async def` functions and orchestrate them with familiar `await` syntax.
-- 🔍 **Typed & traceable** — Decorators capture type hints so inputs and outputs serialize cleanly.
-- 🗄️ **Storage-agnostic** — Start with file-based logging or plug in your own backend to match your stack.
-- 🚀 **Drop-in ready** — Works in CLI tools, web backends, or long-lived agents—no special runtime or extra dependencies required.
+- 🪶 **Zero extra deps** — Lightweight library that layers on top of asyncio; add Duron without bloating your stack.
+- 🧩 **Pluggable architecture** — Bring your own storage or infra components and swap them without changing orchestration code.
+- 🔄 **Streams & signals** — Model long-running conversations, live data feeds, and feedback loops with built-in primitives.
+- 🐍 **Python-native & typed** — Type hints make replay serialization predictable, and everything feels like idiomatic Python.
+- 🔭 **Built-in tracing** — Detailed logs help you inspect replays and surface observability data wherever you need it.
 
 ## Install
 
 Duron requires **Python 3.10+**.
 
 ```bash
-pip install duron
+uv pip install duron
 ```
 
 ## Quickstart
 
-Duron defines two kinds of functions:
-
-- `@duron.durable` — deterministic orchestration. It replays from logs, ensuring that control flow only advances when every prior step is known.
-- `@duron.effect` — side effects. Wrap anything that touches the outside world (APIs, databases, file I/O). Duron records its return value so it runs once per unique input.
+Duron wraps async orchestration (`@duron.durable`) and effectful steps (`@duron.effect`) so complex workflows stay deterministic—even when they touch the outside world.
 
 ```python
 import asyncio
@@ -69,4 +67,6 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-To see Duron handle _live input_ and _external events_, check out [`examples/agent.py`](./examples/agent.py).
+## Next steps
+
+Read the [getting started guide](https://brian14708.github.io/duron/getting-started/).
