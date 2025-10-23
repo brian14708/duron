@@ -12,7 +12,7 @@ from typing_extensions import Any, ParamSpec, Protocol, Self, TypeVar, final, ov
 
 from duron._core.ops import (
     FnCall,
-    OpAnnotations,
+    OpMetadata,
     StreamClose,
     StreamCreate,
     StreamEmit,
@@ -226,27 +226,12 @@ class Stream(ABC, Generic[_T]):
 
 
 async def create_stream(
-    loop: EventLoop, dtype: TypeHint[_T], annotations: OpAnnotations
+    loop: EventLoop, dtype: TypeHint[_T], name: str | None, metadata: OpMetadata
 ) -> tuple[Stream[_T], StreamWriter[_T]]:
-    """Create a new bidirectional stream for inter-operation communication.
-
-    Creates a stream for sending values between operations with deterministic
-    replay. The stream can be consumed via async iteration or context manager,
-    while the writer is used to send values from other operations.
-
-    Args:
-        loop: The event loop to create the stream on.
-        dtype: Type hint for values sent through the stream.
-        annotations: Operation annotations for tracing and debugging.
-
-    Returns:
-        A tuple of (stream, writer) where stream is used to consume values and \
-                writer is used to send values and close the stream.
-    """
     assert asyncio.get_running_loop() is loop
     s, w = create_buffer_stream()
     sid = await create_op(
-        loop, StreamCreate(dtype=dtype, observer=w, annotations=annotations)
+        loop, StreamCreate(dtype=dtype, observer=w, name=name, metadata=metadata)
     )
     writer: OpWriter[_T] = OpWriter(sid, loop)
     return (s, writer)
@@ -385,7 +370,10 @@ async def run_stateful(
         await create_op(
             loop,
             StreamCreate(
-                dtype=dtype, observer=stream, annotations=OpAnnotations(name=name)
+                dtype=dtype,
+                name=None,
+                observer=stream,
+                metadata=OpMetadata(name=name),
             ),
         ),
         loop,
@@ -398,7 +386,7 @@ async def run_stateful(
                 callable=lambda: stream.worker(sink),
                 return_type=type(initial),
                 context=contextvars.copy_context(),
-                annotations=OpAnnotations(name=name),
+                metadata=OpMetadata(name=name),
             ),
         ),
     )

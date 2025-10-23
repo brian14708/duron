@@ -12,7 +12,7 @@ from duron._core.stream import OpWriter
 if TYPE_CHECKING:
     from types import TracebackType
 
-    from duron._core.ops import OpAnnotations
+    from duron._core.ops import OpMetadata
     from duron._core.stream import StreamWriter
     from duron.loop import EventLoop
     from duron.typing._hint import TypeHint
@@ -120,13 +120,16 @@ class Signal(Generic[_T]):
 
 
 async def create_signal(
-    loop: EventLoop, dtype: TypeHint[_T], annotations: OpAnnotations
+    loop: EventLoop, dtype: TypeHint[_T], name: str | None, metadata: OpMetadata
 ) -> tuple[Signal[_T], StreamWriter[_T]]:
     s: Signal[_T] = Signal(loop)
     sid = await create_op(
         loop,
         StreamCreate(
-            dtype=dtype, observer=cast("Signal[object]", s), annotations=annotations
+            dtype=dtype,
+            name=name,
+            observer=cast("Signal[object]", s),
+            metadata=metadata,
         ),
     )
     w: OpWriter[_T] = OpWriter(sid, loop)

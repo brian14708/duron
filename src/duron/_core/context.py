@@ -13,7 +13,7 @@ from duron._core.ops import (
     FnCall,
     FutureComplete,
     FutureCreate,
-    OpAnnotations,
+    OpMetadata,
     create_op,
 )
 from duron._core.signal import create_signal
@@ -22,7 +22,7 @@ from duron._decorator.effect import EffectFn, StatefulFn
 from duron.typing import inspect_function
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Coroutine, Mapping
+    from collections.abc import Awaitable, Callable, Coroutine
     from contextlib import AbstractAsyncContextManager
 
     from duron._core.signal import Signal
@@ -109,7 +109,7 @@ class Context:
                 callable=callable_,
                 return_type=hint.return_type,
                 context=contextvars.copy_context(),
-                annotations=OpAnnotations(
+                metadata=OpMetadata(
                     name=hint.name,
                 ),
             ),
@@ -145,14 +145,12 @@ class Context:
         /,
         *,
         name: str | None = None,
-        labels: Mapping[str, str] | None = None,
     ) -> tuple[Stream[_T], StreamWriter[_T]]:
         """Create a new stream within the context.
 
         Args:
             dtype: The data type of the stream.
             name: Optional name for the stream.
-            labels: Optional labels for the stream.
 
         Raises:
             RuntimeError: If called outside of the context's event loop.
@@ -164,14 +162,9 @@ class Context:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
 
-        annotations = OpAnnotations()
-        if labels:
-            annotations = OpAnnotations.extend(annotations, labels=labels)
-        if name:
-            annotations = OpAnnotations.extend(
-                annotations, name=name, labels={"name": name}
-            )
-        return await create_stream(self._loop, dtype, annotations=annotations)
+        return await create_stream(
+            self._loop, dtype, name, metadata=OpMetadata(name=name)
+        )
 
     async def create_signal(
         self,
@@ -179,14 +172,12 @@ class Context:
         /,
         *,
         name: str | None = None,
-        labels: Mapping[str, str] | None = None,
     ) -> tuple[Signal[_T], StreamWriter[_T]]:
         """Create a new signal within the context.
 
         Args:
             dtype: The data type of the stream.
             name: Optional name for the stream.
-            labels: Optional labels for the stream.
 
         Raises:
             RuntimeError: If called outside of the context's event loop.
@@ -198,15 +189,9 @@ class Context:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
 
-        annotations = OpAnnotations()
-        if labels:
-            annotations = OpAnnotations.extend(annotations, labels=labels)
-        if name:
-            annotations = OpAnnotations.extend(
-                annotations, name=name, labels={"name": name}
-            )
-
-        return await create_signal(self._loop, dtype, annotations=annotations)
+        return await create_signal(
+            self._loop, dtype, name, metadata=OpMetadata(name=name)
+        )
 
     async def create_future(
         self,
@@ -214,14 +199,12 @@ class Context:
         /,
         *,
         name: str | None = None,
-        labels: Mapping[str, str] | None = None,
     ) -> tuple[str, Awaitable[_T]]:
         """Create a new external future object within the context.
 
         Args:
             dtype: The data type of the stream.
             name: Optional name for the stream.
-            labels: Optional labels for the stream.
 
         Raises:
             RuntimeError: If called outside of the context's event loop.
@@ -233,13 +216,9 @@ class Context:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
 
-        annotations = OpAnnotations()
-        if labels:
-            annotations = annotations.extend(labels=labels)
-        if name:
-            annotations = annotations.extend(name=name, labels={"name": name})
         fut = create_op(
-            self._loop, FutureCreate(return_type=dtype, annotations=annotations)
+            self._loop,
+            FutureCreate(return_type=dtype, metadata=OpMetadata(name=name)),
         )
         return (fut.id, cast("asyncio.Future[_T]", fut))
 

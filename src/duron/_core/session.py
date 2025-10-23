@@ -22,7 +22,7 @@ from duron._core.ops import (
     FnCall,
     FutureComplete,
     FutureCreate,
-    OpAnnotations,
+    OpMetadata,
     StreamClose,
     StreamCreate,
     StreamEmit,
@@ -33,7 +33,7 @@ from duron._core.stream import OpWriter, Stream, StreamWriter, create_buffer_str
 from duron._core.stream_manager import StreamManager
 from duron._core.task_manager import TaskError, TaskManager
 from duron._core.utils import decode_error, encode_error
-from duron.log._helper import is_entry, set_annotations
+from duron.log._helper import is_entry
 from duron.loop import EventLoop, create_loop, random_id
 from duron.tracing._span import NULL_SPAN
 from duron.tracing._tracer import current_tracer, span
@@ -245,7 +245,7 @@ class Task(Generic[_T_co]):
         self._main = main
         self._codec = fn.codec
         self._stream_manager = StreamManager(
-            (observer, (("name", name),)) for name, observer in observers.items()
+            (name, observer) for name, observer in observers.items()
         )
         self._streams = streams
         self._task_manager = TaskManager(
@@ -363,10 +363,9 @@ class Task(Generic[_T_co]):
                     "source": "task",
                 }
 
-                set_annotations(promise_create_entry, labels=op.annotations.labels)
                 if tracer := self._tracer:
                     op_span = tracer.new_op_span(
-                        op.annotations.get_name(), promise_create_entry
+                        op.metadata.get_name(), promise_create_entry
                     )
                 else:
                     op_span = None
@@ -394,19 +393,23 @@ class Task(Generic[_T_co]):
                     "id": stream_id,
                     "type": "stream.create",
                     "source": "task",
+                    "name": op.name,
                 }
                 if tracer := self._tracer:
                     op_span = tracer.new_op_span(
-                        "stream:" + op.annotations.get_name(), stream_create_entry
+                        "stream:" + op.metadata.get_name(), stream_create_entry
                     )
                 else:
                     op_span = None
 
                 self._stream_manager.create_stream(
-                    stream_id, op.observer, op.dtype, op.annotations.labels, op_span
+                    stream_id,
+                    op.observer,
+                    op.dtype,
+                    op.name,
+                    op_span,
                 )
 
-                set_annotations(stream_create_entry, labels=op.annotations.labels)
                 await self._enqueue_log(stream_create_entry)
 
             case StreamEmit():
@@ -471,11 +474,8 @@ class Task(Generic[_T_co]):
                     "type": "promise.create",
                     "source": "task",
                 }
-                set_annotations(promise_create_entry, labels=op.annotations.labels)
                 if tracer := self._tracer:
-                    _ = tracer.new_op_span(
-                        op.annotations.get_name(), promise_create_entry
-                    )
+                    _ = tracer.new_op_span(op.metadata.get_name(), promise_create_entry)
                 self._task_manager.add_future(id_, op.return_type)
                 await self._enqueue_log(promise_create_entry)
             case FutureComplete():
@@ -491,8 +491,6 @@ class Task(Generic[_T_co]):
                 else:
                     promise_complete_entry["result"] = self._codec.encode_json(op.value)
 
-                if fut.external:
-                    set_annotations(promise_complete_entry, labels={"source": "effect"})
                 if tracer := self._tracer:
                     tracer.end_op_span(op.future_id, promise_complete_entry)
                 await self._enqueue_log(promise_complete_entry)
@@ -575,7 +573,7 @@ class Task(Generic[_T_co]):
                 "source": "effect",
             }
             with (
-                op_span.new_span(op.annotations.get_name()) if op_span else NULL_SPAN
+                op_span.new_span(op.metadata.get_name()) if op_span else NULL_SPAN
             ) as span:
                 try:
                     result = await op.callable()
@@ -621,7 +619,7 @@ class Task(Generic[_T_co]):
         if mode == "r":
             return self._streams.pop(name)
 
-        sid = await self._stream_manager.wait_one((("name", name),))
+        sid = await self._stream_manager.wait_stream(name)
         w: OpWriter[Any] = OpWriter(sid, self._loop)
         return w
 
@@ -680,7 +678,7 @@ async def _prelude_fn(
             callable=init,
             return_type=InitParams,
             context=contextvars.copy_context(),
-            annotations=OpAnnotations(name="duron.prelude"),
+            metadata=OpMetadata(name="duron.prelude"),
         ),
     )
     if init_params["version"] != _CURRENT_VERSION:

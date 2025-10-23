@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from typing_extensions import Any, final
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Iterable, Sequence
 
     from duron._core.ops import StreamObserver
     from duron.codec import Codec
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 class _StreamInfo(NamedTuple):
     observers: Sequence[StreamObserver]
     dtype: TypeHint[Any]
-    labels: Mapping[str, str] | None
+    name: str | None
     op_span: OpSpan | None
 
 
@@ -25,30 +25,27 @@ class _StreamInfo(NamedTuple):
 class StreamManager:
     __slots__ = ("_event", "_streams", "_watchers")
 
-    def __init__(
-        self, watchers: Iterable[tuple[StreamObserver, Sequence[tuple[str, str]]]]
-    ) -> None:
+    def __init__(self, watchers: Iterable[tuple[str, StreamObserver]]) -> None:
         self._streams: dict[str, _StreamInfo] = {}
-        self._watchers = tuple(watchers)
+        self._watchers: dict[str, list[StreamObserver]] = {}
         self._event = asyncio.Event()
+
+        for name, watcher in watchers:
+            self._watchers.setdefault(name, []).append(watcher)
 
     def create_stream(
         self,
         stream_id: str,
         observer: StreamObserver | None,
         dtype: TypeHint[Any],
-        labels: Mapping[str, str] | None,
+        name: str | None,
         op_span: OpSpan | None,
     ) -> None:
-        observers = [
-            watcher
-            for watcher, matcher in self._watchers
-            if labels and all(labels.get(k) == v for k, v in matcher)
-        ]
+        observers = self._watchers.pop(name) if name in self._watchers else []
         if observer:
             observers.append(observer)
 
-        self._streams[stream_id] = _StreamInfo(observers, dtype, labels, op_span)
+        self._streams[stream_id] = _StreamInfo(observers, dtype, name, op_span)
         self._event.set()
 
     def send_to_stream(
@@ -80,16 +77,14 @@ class StreamManager:
             return (s.op_span,)
         return None
 
-    def match_streams(self, matcher: Iterable[tuple[str, str]]) -> Sequence[str]:
-        return tuple(
-            stream_id
-            for stream_id, info in self._streams.items()
-            if info.labels and all(info.labels.get(k) == v for k, v in matcher)
-        )
-
-    async def wait_one(self, matcher: Iterable[tuple[str, str]]) -> str:
+    async def wait_stream(self, name: str) -> str:
         while True:
-            if match := self.match_streams(matcher):
+            match = tuple(
+                stream_id
+                for stream_id, info in self._streams.items()
+                if info.name == name
+            )
+            if match:
                 if len(match) != 1:
                     msg = "multiple streams matched"
                     raise RuntimeError(msg)

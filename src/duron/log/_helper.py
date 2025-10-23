@@ -9,25 +9,13 @@ if TYPE_CHECKING:
     from duron.typing._hint import JSONValue
 
 
-def set_annotations(
-    entry: Entry,
-    *,
-    metadata: Mapping[str, JSONValue] | None = None,
-    labels: Mapping[str, str] | None = None,
-) -> None:
+def set_metadata(entry: Entry, metadata: Mapping[str, JSONValue]) -> None:
     if metadata:
         m = entry.get("metadata")
         if m is None:
             entry["metadata"] = {**metadata}
         else:
             m.update(metadata)
-
-    if labels:
-        lb = entry.get("labels")
-        if lb is None:
-            entry["labels"] = {**labels}
-        else:
-            lb.update(labels)
 
 
 def is_entry(entry: Entry | BaseEntry) -> TypeGuard[Entry]:

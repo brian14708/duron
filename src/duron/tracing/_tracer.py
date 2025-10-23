@@ -11,7 +11,7 @@ from hashlib import blake2b
 from typing import TYPE_CHECKING, Literal, cast
 from typing_extensions import NamedTuple, Self, override
 
-from duron.log._helper import set_annotations
+from duron.log._helper import set_metadata
 from duron.tracing._span import NULL_SPAN
 
 if TYPE_CHECKING:
@@ -152,9 +152,9 @@ class Tracer:
             "span_id": id_,
             "ts": time.time_ns() // 1000,
         }
-        set_annotations(
+        set_metadata(
             entry,
-            metadata={
+            {
                 "trace.id": self.trace_id,
                 "trace.event": cast("dict[str, JSONValue]", event),
             },
@@ -188,9 +188,9 @@ class OpSpan(NamedTuple):
             "ts": time.time_ns() // 1000,
             "status": "ERROR" if "error" in entry else "OK",
         }
-        set_annotations(
+        set_metadata(
             entry,
-            metadata={
+            {
                 "trace.id": self.tracer.trace_id,
                 "trace.event": cast("dict[str, JSONValue]", event),
             },
@@ -198,9 +198,9 @@ class OpSpan(NamedTuple):
 
     def attach(self, entry: Entry, event: Event) -> None:
         event["span_id"] = self.id
-        set_annotations(
+        set_metadata(
             entry,
-            metadata={
+            {
                 "trace.id": self.tracer.trace_id,
                 "trace.event": cast("dict[str, JSONValue]", event),
             },

@@ -17,11 +17,6 @@ class BaseEntry(TypedDict):
     Timestamp for this log entry, in microseconds since the Unix epoch.
     """
 
-    labels: NotRequired[dict[str, str]]
-    """
-    Arbitrary string labels associated with this log entry.
-    """
-
     metadata: NotRequired[dict[str, JSONValue]]
     """
     Non-essential metadata associated with this log entry.
@@ -51,6 +46,7 @@ class PromiseCompleteEntry(BaseEntry):
 
 class StreamCreateEntry(BaseEntry):
     type: Literal["stream.create"]
+    name: str | None
 
 
 class StreamEmitEntry(BaseEntry):

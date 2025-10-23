@@ -1,50 +1,29 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, NamedTuple
-from typing_extensions import Any, Protocol, TypeVar, overload
+from typing_extensions import Any, Protocol, overload
 
 if TYPE_CHECKING:
     import asyncio
-    from collections.abc import Callable, Coroutine, Mapping
+    from collections.abc import Callable, Coroutine
     from contextvars import Context
 
     from duron.loop import EventLoop, OpFuture
     from duron.typing import TypeHint
 
-    _T = TypeVar("_T")
 
-
-class OpAnnotations(NamedTuple):
-    labels: Mapping[str, str] | None = None
+class OpMetadata(NamedTuple):
     name: str | None = None
 
     def get_name(self) -> str:
         return self.name or "<unnamed>"
-
-    def extend(
-        self, *, name: str | None = None, labels: Mapping[str, str] | None = None
-    ) -> OpAnnotations:
-        return OpAnnotations(
-            labels=_merge_dict(self.labels, labels),
-            name=name if name is not None else self.name,
-        )
-
-
-def _merge_dict(
-    base: Mapping[str, _T] | None, extra: Mapping[str, _T] | None
-) -> dict[str, _T] | None:
-    if base is None:
-        return {**extra} if extra else None
-    if extra is None:
-        return {**base} if base else None
-    return {**base, **extra}
 
 
 class FnCall(NamedTuple):
     callable: Callable[[], Coroutine[Any, Any, object]]
     return_type: TypeHint[Any]
     context: Context
-    annotations: OpAnnotations
+    metadata: OpMetadata
 
 
 class StreamObserver(Protocol):
@@ -54,8 +33,9 @@ class StreamObserver(Protocol):
 
 class StreamCreate(NamedTuple):
     observer: StreamObserver | None
+    name: str | None
     dtype: TypeHint[Any]
-    annotations: OpAnnotations
+    metadata: OpMetadata
 
 
 class StreamEmit(NamedTuple):
@@ -73,7 +53,7 @@ class Barrier(NamedTuple): ...
 
 class FutureCreate(NamedTuple):
     return_type: TypeHint[Any]
-    annotations: OpAnnotations
+    metadata: OpMetadata
 
 
 class FutureComplete(NamedTuple):
