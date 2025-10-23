@@ -2,19 +2,8 @@ from __future__ import annotations
 
 import functools
 from collections.abc import AsyncGenerator
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Concatenate,
-    Generic,
-    Literal,
-    ParamSpec,
-    TypeVar,
-    get_args,
-    get_origin,
-    overload,
-)
-from typing_extensions import final
+from typing import TYPE_CHECKING, Concatenate, Generic, Literal, get_args, get_origin
+from typing_extensions import Any, ParamSpec, TypeVar, final, overload
 
 from duron.typing import UnspecifiedType, inspect_function
 
@@ -32,10 +21,7 @@ _P = ParamSpec("_P")
 
 @final
 class EffectFn(Generic[_P, _T_co]):
-    def __init__(
-        self,
-        fn: Callable[_P, Coroutine[Any, Any, _T_co]],
-    ) -> None:
+    def __init__(self, fn: Callable[_P, Coroutine[Any, Any, _T_co]]) -> None:
         self.fn = fn
         self.type_hint = inspect_function(fn)
         functools.update_wrapper(self, fn)

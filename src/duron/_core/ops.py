@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple
-from typing_extensions import Any, Protocol, overload
+from typing import TYPE_CHECKING
+from typing_extensions import Any, NamedTuple, Protocol, overload
 
 if TYPE_CHECKING:
     import asyncio

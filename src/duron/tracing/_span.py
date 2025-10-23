@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final, Literal, Protocol
-from typing_extensions import Self, final
+from typing import TYPE_CHECKING, Final, Literal
+from typing_extensions import Protocol, Self, final
 
 if TYPE_CHECKING:
     from types import TracebackType

@@ -64,12 +64,16 @@ class WaitSet:
         if self.timer is None or (
             max_timeout_us > 0 and (self.timer - now_us) > max_timeout_us
         ):
-            t = max_timeout_us / 1e6
+            t = max_timeout_us * 1e-6
         else:
-            t = (self.timer - now_us) / 1e6
+            t = (self.timer - now_us) * 1e-6
         if t > 0:
-            with contextlib.suppress(asyncio.TimeoutError):
-                _ = await asyncio.wait_for(self.event.wait(), timeout=t)
+            task = asyncio.create_task(self.event.wait())
+            done, _ = await asyncio.wait((task,), timeout=t)
+            if task not in done:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
 
 @dataclass(slots=True)
@@ -166,7 +170,7 @@ class EventLoop(asyncio.AbstractEventLoop):
 
     @override
     def time(self) -> float:
-        return self._now_us / 1e6
+        return self._now_us * 1e-6
 
     def time_us(self) -> int:
         return self._now_us

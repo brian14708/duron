@@ -142,9 +142,7 @@ async def main() -> None:
 
     log_storage = FileLogStorage(Path("data") / f"{args.session_id}.jsonl")
     async with duron.Session(log_storage, tracer=Tracer(args.session_id)) as session:
-        task = session.start(
-            agent_fn,
-        )
+        task = session.start(agent_fn)
         input_stream: StreamWriter[str] = await task.open_stream("input_", "w")
         signal_stream: StreamWriter[None] = await task.open_stream("signal", "w")
         stream: Stream[tuple[str, str]] = await task.open_stream("output", "r")

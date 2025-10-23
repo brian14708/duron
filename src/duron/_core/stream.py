@@ -193,8 +193,7 @@ class Stream(ABC, Generic[_T]):
         Returns:
             A list containing all values emitted by the stream.
         """
-        result: list[_T] = [e async for e in self]
-        return result
+        return [e async for e in self]
 
     async def discard(self) -> None:
         """Consume all values from the stream without collecting them."""
@@ -372,10 +371,7 @@ async def run_stateful(
         await create_op(
             loop,
             StreamCreate(
-                dtype=dtype,
-                name=None,
-                observer=stream,
-                metadata=OpMetadata(name=name),
+                dtype=dtype, name=None, observer=stream, metadata=OpMetadata(name=name)
             ),
         ),
         loop,

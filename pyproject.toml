@@ -83,6 +83,7 @@ future-annotations = true
 
 [tool.ruff.lint.isort]
 extra-standard-library = ["typing_extensions"]
+split-on-trailing-comma=false
 
 [tool.ruff.lint.flake8-type-checking]
 runtime-evaluated-base-classes = ["typing_extensions.TypedDict"]
@@ -99,6 +100,7 @@ ban-relative-imports = "all"
 [tool.ruff.format]
 preview = true
 docstring-code-format = true
+skip-magic-trailing-comma = true
 
 [tool.mypy]
 files = ["src", "tests"]

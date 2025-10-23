@@ -86,7 +86,7 @@ def durable(
         ```
 
     Returns:
-        DurableFn that can be passed to [duron.invoke][duron.invoke]
+        DurableFn that can be passed to [Session.start][duron.Session.start]
     """
 
     def decorate(

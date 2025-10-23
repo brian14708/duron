@@ -109,9 +109,7 @@ class Context:
                 callable=callable_,
                 return_type=hint.return_type,
                 context=contextvars.copy_context(),
-                metadata=OpMetadata(
-                    name=hint.name,
-                ),
+                metadata=OpMetadata(name=hint.name),
             ),
         )
         return await op
@@ -140,11 +138,7 @@ class Context:
         )
 
     async def create_stream(
-        self,
-        dtype: TypeHint[_T],
-        /,
-        *,
-        name: str | None = None,
+        self, dtype: TypeHint[_T], /, *, name: str | None = None
     ) -> tuple[Stream[_T], StreamWriter[_T]]:
         """Create a new stream within the context.
 
@@ -167,11 +161,7 @@ class Context:
         )
 
     async def create_signal(
-        self,
-        dtype: TypeHint[_T],
-        /,
-        *,
-        name: str | None = None,
+        self, dtype: TypeHint[_T], /, *, name: str | None = None
     ) -> tuple[Signal[_T], StreamWriter[_T]]:
         """Create a new signal within the context.
 
@@ -194,11 +184,7 @@ class Context:
         )
 
     async def create_future(
-        self,
-        dtype: type[_T],
-        /,
-        *,
-        name: str | None = None,
+        self, dtype: type[_T], /, *, name: str | None = None
     ) -> tuple[str, Awaitable[_T]]:
         """Create a new external future object within the context.
 
@@ -217,8 +203,7 @@ class Context:
             raise RuntimeError(msg)
 
         fut = create_op(
-            self._loop,
-            FutureCreate(return_type=dtype, metadata=OpMetadata(name=name)),
+            self._loop, FutureCreate(return_type=dtype, metadata=OpMetadata(name=name))
         )
         return (fut.id, cast("asyncio.Future[_T]", fut))
 
@@ -238,7 +223,7 @@ class Context:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
         _log_offset, time_us = await create_op(self._loop, Barrier())
-        return time_us / 1e6
+        return time_us * 1e-6
 
     async def time_ns(self) -> int:
         """Get the current deterministic time in nanoseconds.

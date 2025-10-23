@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from asyncio import CancelledError
-from typing import TYPE_CHECKING, NamedTuple
-from typing_extensions import Any, final
+from typing import TYPE_CHECKING
+from typing_extensions import Any, NamedTuple, final
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence

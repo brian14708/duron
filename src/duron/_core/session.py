@@ -5,7 +5,7 @@ import contextlib
 import contextvars
 import functools
 import time
-from typing import TYPE_CHECKING, Final, Generic, Literal, cast, overload
+from typing import TYPE_CHECKING, Final, Generic, Literal, cast
 from typing_extensions import (
     Any,
     ParamSpec,
@@ -14,6 +14,7 @@ from typing_extensions import (
     TypeVar,
     assert_never,
     assert_type,
+    overload,
 )
 
 from duron._core.context import Context
@@ -61,8 +62,8 @@ if TYPE_CHECKING:
     from duron.tracing._tracer import OpSpan
 
 
-_T_co = TypeVar("_T_co", covariant=True)
 _P = ParamSpec("_P")
+_T_co = TypeVar("_T_co", covariant=True)
 
 _CURRENT_VERSION: Final = 0
 
@@ -403,11 +404,7 @@ class Task(Generic[_T_co]):
                     op_span = None
 
                 self._stream_manager.create_stream(
-                    stream_id,
-                    op.observer,
-                    op.dtype,
-                    op.name,
-                    op_span,
+                    stream_id, op.observer, op.dtype, op.name, op_span
                 )
 
                 await self._enqueue_log(stream_create_entry)

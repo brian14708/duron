@@ -269,7 +269,7 @@ async def interruptible_task(
         return "Interrupted by user"
 
 async def main():
-    async with duron.invoke(storage) as session:
+    async with duron.Session(storage) as session:
         task = session.start(interruptible_task)
         signal_writer = task.open_stream("signal", "w")
 

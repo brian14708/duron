@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import inspect
-from typing import TYPE_CHECKING, Any, cast
-from typing_extensions import NamedTuple
+from typing import TYPE_CHECKING, cast
+from typing_extensions import Any, NamedTuple
 
 from duron.typing._hint import UnspecifiedType
 
