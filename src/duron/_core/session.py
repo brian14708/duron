@@ -262,7 +262,8 @@ class Task(Generic[_T_co]):
             if is_entry(entry):
                 await self._handle_message(o, entry)
                 _ = await self._step()
-            recvd_msgs.add(entry["id"])
+            if entry["source"] == "task":
+                recvd_msgs.add(entry["id"])
             while self._pending_msg:
                 id_ = self._pending_msg[-1]["id"]
                 if id_ not in recvd_msgs:
@@ -270,18 +271,17 @@ class Task(Generic[_T_co]):
                 self._pending_msg.pop()
                 recvd_msgs.remove(id_)
 
-        try:
-            if self._main.done():
-                return self._main.result()
+        assert len(recvd_msgs) == 0  # noqa: S101
+        if self._main.done():
+            return self._main.result()
 
+        try:
             self._is_live = True
             if self._tracer:
                 self._tracer.start()
             for msg in self._pending_msg:
-                if msg["id"] not in recvd_msgs:
-                    await self._enqueue_log(msg)
+                await self._enqueue_log(msg)
             self._pending_msg.clear()
-            recvd_msgs.clear()
             self._task_manager.start()
 
             self._now_us = max(self._now_us + 1, time.time_ns() // 1_000)
@@ -317,6 +317,7 @@ class Task(Generic[_T_co]):
                 "type": "trace",
                 "events": data[i : i + 128],
                 "metadata": {"trace.id": tid},
+                "source": "trace",
             }
             await self._enqueue_log(trace_entry)
 
@@ -354,10 +355,12 @@ class Task(Generic[_T_co]):
         op = cast("Op", fut.params)
         match op:
             case FnCall():
+                assert not fut.external, "FnCall futures should not be external"  # noqa: S101
                 promise_create_entry: PromiseCreateEntry = {
                     "ts": self._now_us,
                     "id": id_,
                     "type": "promise.create",
+                    "source": "task",
                 }
 
                 set_annotations(promise_create_entry, labels=op.annotations.labels)
@@ -383,12 +386,14 @@ class Task(Generic[_T_co]):
                 fut.add_done_callback(done)
 
             case StreamCreate():
+                assert not fut.external, "StreamCreate futures should not be external"  # noqa: S101
                 stream_id = id_
 
                 stream_create_entry: StreamCreateEntry = {
                     "ts": self._now_us,
                     "id": stream_id,
                     "type": "stream.create",
+                    "source": "task",
                 }
                 if tracer := self._tracer:
                     op_span = tracer.new_op_span(
@@ -411,6 +416,7 @@ class Task(Generic[_T_co]):
                     "stream_id": op.stream_id,
                     "type": "stream.emit",
                     "value": self._codec.encode_json(op.value),
+                    "source": "effect" if fut.external else "task",
                 }
                 stream_info = self._stream_manager.get_info(op.stream_id)
                 if stream_info:
@@ -426,38 +432,44 @@ class Task(Generic[_T_co]):
                 if stream_info:
                     (op_span,) = stream_info
                     if op.exception:
-                        stream_close_entry_err: StreamCompleteEntry = {
-                            "ts": self._now_us,
-                            "id": id_,
-                            "stream_id": op.stream_id,
-                            "type": "stream.complete",
-                            "error": encode_error(op.exception),
-                        }
-                        if op_span:
-                            op_span.end(stream_close_entry_err)
-                        await self._enqueue_log(stream_close_entry_err)
-                    else:
                         stream_close_entry: StreamCompleteEntry = {
                             "ts": self._now_us,
                             "id": id_,
                             "stream_id": op.stream_id,
                             "type": "stream.complete",
+                            "error": encode_error(op.exception),
+                            "source": "effect" if fut.external else "task",
                         }
                         if op_span:
                             op_span.end(stream_close_entry)
                         await self._enqueue_log(stream_close_entry)
+                    else:
+                        stream_close_entry = {
+                            "ts": self._now_us,
+                            "id": id_,
+                            "stream_id": op.stream_id,
+                            "type": "stream.complete",
+                            "source": "effect" if fut.external else "task",
+                        }
+                        if op_span:
+                            op_span.end(stream_close_entry)
+                    await self._enqueue_log(stream_close_entry)
             case Barrier():
+                assert not fut.external, "Barrier futures should not be external"  # noqa: S101
                 barrier_entry: BarrierEntry = {
                     "ts": self._now_us,
                     "id": id_,
                     "type": "barrier",
+                    "source": "task",
                 }
                 await self._enqueue_log(barrier_entry)
             case FutureCreate():
+                assert not fut.external, "FutureCreate futures should not be external"  # noqa: S101
                 promise_create_entry = {
                     "ts": self._now_us,
                     "id": id_,
                     "type": "promise.create",
+                    "source": "task",
                 }
                 set_annotations(promise_create_entry, labels=op.annotations.labels)
                 if tracer := self._tracer:
@@ -472,12 +484,15 @@ class Task(Generic[_T_co]):
                     "id": id_,
                     "type": "promise.complete",
                     "promise_id": op.future_id,
+                    "source": "effect" if fut.external else "task",
                 }
                 if op.exception is not None:
                     promise_complete_entry["error"] = encode_error(op.exception)
                 else:
                     promise_complete_entry["result"] = self._codec.encode_json(op.value)
 
+                if fut.external:
+                    set_annotations(promise_complete_entry, labels={"source": "effect"})
                 if tracer := self._tracer:
                     tracer.end_op_span(op.future_id, promise_complete_entry)
                 await self._enqueue_log(promise_complete_entry)
@@ -557,6 +572,7 @@ class Task(Generic[_T_co]):
                 "id": random_id(),
                 "type": "promise.complete",
                 "promise_id": id_,
+                "source": "effect",
             }
             with (
                 op_span.new_span(op.annotations.get_name()) if op_span else NULL_SPAN
@@ -641,6 +657,7 @@ class Task(Generic[_T_co]):
             "id": random_id(),
             "type": "promise.complete",
             "promise_id": future_id,
+            "source": "effect",
         }
         if exception is not None:
             entry["error"] = encode_error(exception)

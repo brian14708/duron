@@ -37,11 +37,17 @@ class OpFuture(asyncio.Future[object]):
     __slots__: tuple[str, ...] = ("id", "params")
 
     def __init__(
-        self, id_: str, params: object, loop: asyncio.AbstractEventLoop
+        self,
+        id_: str,
+        params: object,
+        loop: asyncio.AbstractEventLoop,
+        *,
+        external: bool,
     ) -> None:
         super().__init__(loop=loop)
         self.id = id_
         self.params = params
+        self.external = external
 
 
 @dataclass(slots=True)
@@ -253,10 +259,12 @@ class EventLoop(asyncio.AbstractEventLoop):
             raise LoopClosedError
         if asyncio.get_running_loop() is self._host:
             id_ = random_id()
+            external = True
             self._event.set()
         else:
             id_ = self.generate_op_id()
-        op_fut = OpFuture(id_, params, self)
+            external = False
+        op_fut = OpFuture(id_, params, self, external=external)
         self._ops[id_] = op_fut
         self._added.append(op_fut)
         return op_fut

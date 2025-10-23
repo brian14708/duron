@@ -27,6 +27,11 @@ class BaseEntry(TypedDict):
     Non-essential metadata associated with this log entry.
     """
 
+    source: Literal["task", "effect", "trace"]
+    """
+    The operation that generated this log entry.
+    """
+
 
 class ErrorInfo(TypedDict):
     code: int
