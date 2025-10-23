@@ -182,14 +182,14 @@ class EventLoop(asyncio.AbstractEventLoop):
     def create_task(
         self, coro: _TaskCompatibleCoro[_T], **kwargs: Any
     ) -> asyncio.Task[_T]:
-        assert asyncio.get_running_loop() is self  # noqa: S101
+        assert asyncio.get_running_loop() is self
         token = _task_ctx.set(_TaskCtx(parent_id=self.generate_op_id()))
         task = asyncio.Task(coro, **kwargs, loop=self)
         _task_ctx.reset(token)
         return task
 
     def schedule_task(self, coro: _TaskCompatibleCoro[_T]) -> asyncio.Task[_T]:
-        assert asyncio.get_running_loop() is self._host  # noqa: S101
+        assert asyncio.get_running_loop() is self._host
         self._root_task_seq += 1
         id_ = derive_id("", context=(self._root_task_seq - 1).to_bytes(4, "big"))
 
@@ -232,7 +232,7 @@ class EventLoop(asyncio.AbstractEventLoop):
         return deadline
 
     def poll_completion(self, task: Future[_T]) -> WaitSet | None:
-        assert asyncio.get_running_loop() is self._host  # noqa: S101
+        assert asyncio.get_running_loop() is self._host
         now = self.time_us()
         self._event.clear()
 
@@ -299,7 +299,7 @@ class EventLoop(asyncio.AbstractEventLoop):
 
     @override
     def close(self) -> None:
-        assert asyncio.get_running_loop() is self._host  # noqa: S101
+        assert asyncio.get_running_loop() is self._host
         if prev_task := tasks.current_task():
             tasks._leave_task(self._host, prev_task)  # noqa: SLF001
         events._set_running_loop(self)  # noqa: SLF001
@@ -370,10 +370,10 @@ async def create_loop() -> EventLoop:  # noqa: RUF029
 
 
 def _copy_future_state(source: asyncio.Future[_T], dest: asyncio.Future[_T]) -> None:
-    assert source.done()  # noqa: S101
+    assert source.done()
     if dest.cancelled():
         return
-    assert not dest.done()  # noqa: S101
+    assert not dest.done()
     if source.cancelled():
         _ = dest.cancel()
     elif (exception := source.exception()) is not None:

@@ -271,7 +271,7 @@ class Task(Generic[_T_co]):
                 self._pending_msg.pop()
                 recvd_msgs.remove(id_)
 
-        assert len(recvd_msgs) == 0  # noqa: S101
+        assert len(recvd_msgs) == 0
         if self._main.done():
             return self._main.result()
 
@@ -355,7 +355,7 @@ class Task(Generic[_T_co]):
         op = cast("Op", fut.params)
         match op:
             case FnCall():
-                assert not fut.external, "FnCall futures should not be external"  # noqa: S101
+                assert not fut.external, "FnCall futures should not be external"
                 promise_create_entry: PromiseCreateEntry = {
                     "ts": self._now_us,
                     "id": id_,
@@ -386,7 +386,7 @@ class Task(Generic[_T_co]):
                 fut.add_done_callback(done)
 
             case StreamCreate():
-                assert not fut.external, "StreamCreate futures should not be external"  # noqa: S101
+                assert not fut.external, "StreamCreate futures should not be external"
                 stream_id = id_
 
                 stream_create_entry: StreamCreateEntry = {
@@ -455,7 +455,7 @@ class Task(Generic[_T_co]):
                             op_span.end(stream_close_entry)
                     await self._enqueue_log(stream_close_entry)
             case Barrier():
-                assert not fut.external, "Barrier futures should not be external"  # noqa: S101
+                assert not fut.external, "Barrier futures should not be external"
                 barrier_entry: BarrierEntry = {
                     "ts": self._now_us,
                     "id": id_,
@@ -464,7 +464,7 @@ class Task(Generic[_T_co]):
                 }
                 await self._enqueue_log(barrier_entry)
             case FutureCreate():
-                assert not fut.external, "FutureCreate futures should not be external"  # noqa: S101
+                assert not fut.external, "FutureCreate futures should not be external"
                 promise_create_entry = {
                     "ts": self._now_us,
                     "id": id_,
@@ -672,7 +672,7 @@ async def _prelude_fn(
     init: Callable[[], Coroutine[Any, Any, InitParams]], fn: DurableFn[..., _T_co]
 ) -> _T_co:
     loop = asyncio.get_running_loop()
-    assert isinstance(loop, EventLoop)  # noqa: S101
+    assert isinstance(loop, EventLoop)
 
     init_params: InitParams = await create_op(
         loop,

@@ -243,7 +243,7 @@ async def create_stream(
         A tuple of (stream, writer) where stream is used to consume values and \
                 writer is used to send values and close the stream.
     """
-    assert asyncio.get_running_loop() is loop  # noqa: S101
+    assert asyncio.get_running_loop() is loop
     s, w = create_buffer_stream()
     sid = await create_op(
         loop, StreamCreate(dtype=dtype, observer=w, annotations=annotations)
@@ -375,7 +375,7 @@ async def run_stateful(
     *args: _P.args,
     **kwargs: _P.kwargs,
 ) -> AsyncGenerator[tuple[Stream[_U], Awaitable[_T]], None]:
-    assert asyncio.get_running_loop() is loop  # noqa: S101
+    assert asyncio.get_running_loop() is loop
 
     name = cast("str", getattr(fn, "__name__", repr(fn)))
     stream: _StatefulStream[_U, _T] = _StatefulStream(

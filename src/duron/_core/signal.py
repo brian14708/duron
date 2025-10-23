@@ -66,7 +66,7 @@ class Signal(Generic[_T]):
         task = asyncio.current_task()
         if task is None:
             return
-        assert task.get_loop() == self._loop  # noqa: S101
+        assert task.get_loop() == self._loop
         offset = await create_op(self._loop, Barrier())
         for toffset, value in self._trigger:
             if toffset > offset:

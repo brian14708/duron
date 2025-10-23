@@ -69,7 +69,7 @@ examples = [
 [tool.ruff.lint]
 select = ["ALL"]
 ignore = [
-    "COM812",
+    "COM812", "S101",
     "CPY", "D", "FIX", "TD002", "TD003",
     "PLR0", "PLR1", "PLR2", "C901",
 ]
