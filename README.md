@@ -1,9 +1,10 @@
 # Duron
 
-[![PyPI - Version](https://img.shields.io/pypi/v/duron)](https://pypi.org/project/duron)
 [![CI](https://github.com/brian14708/duron/actions/workflows/ci.yaml/badge.svg)](https://github.com/brian14708/duron/actions/workflows/ci.yaml)
+[![PyPI - Version](https://img.shields.io/pypi/v/duron)](https://pypi.org/project/duron)
+[![License](https://img.shields.io/github/license/brian14708/duron.svg)](https://github.com/brian14708/duron/blob/main/LICENSE)
 
-Duron is a Python library that makes async work _replayable_. You can pause, resume, or rerun async functions without redoing completed steps. Wrap your side effects once, keep orchestration deterministic, and Duron logs every result so repeated runs stay safe.
+Duron is a lightweight durable execution runtime for Python async workflows. It provides replayable execution primitives that work standalone or as building blocks for complex workflow engines.
 
 ## Why Duron?
 
