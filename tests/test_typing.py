@@ -63,7 +63,7 @@ def test_complex_type_annotations() -> None:
 
 
 def test_async_function() -> None:
-    async def async_func(_a: int, _b: str) -> bool:  # noqa: RUF029
+    async def async_func(_a: int, _b: str) -> bool:
         return True
 
     result = inspect_function(async_func)
@@ -96,7 +96,7 @@ def test_positional_only_and_keyword_only() -> None:
 
 
 def test_iterator() -> None:
-    async def generator() -> AsyncGenerator[int]:  # noqa: RUF029
+    async def generator() -> AsyncGenerator[int]:
         yield 1
 
     result = inspect_function(generator)

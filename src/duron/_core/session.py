@@ -76,33 +76,51 @@ class InitParams(TypedDict):
 
 
 class Session:
-    __slots__ = ("_current_task", "_lease", "_log", "_loop", "_token", "_tracer")
+    __slots__ = (
+        "_current_task",
+        "_lease",
+        "_log",
+        "_loop",
+        "_readonly",
+        "_token",
+        "_tracer",
+    )
 
-    def __init__(self, log: LogStorage, /, *, tracer: Tracer | None = None) -> None:
+    def __init__(
+        self,
+        log: LogStorage,
+        /,
+        *,
+        tracer: Tracer | None = None,
+        readonly: bool = False,
+    ) -> None:
         """A session for running durable functions.
 
         Example:
             ```python
             async with Session(log_storage) as session:
-                task = session.start(my_durable_function, arg1, arg2)
+                task = await session.start(my_durable_function, arg1, arg2)
                 result = await task.result()
             ```
 
         Args:
             log: The log storage to use for this session.
             tracer: An optional tracer for tracing operations within the session.
+            readonly: If true, the session will not acquire a lease on the log.
         """
         self._log = log
         self._tracer = tracer
         self._token: contextvars.Token[Tracer] | None = None
         self._loop: EventLoop | None = None
         self._lease: bytes | None = None
+        self._readonly: bool = readonly
         self._current_task: Task[Any] | None = None
 
     async def __aenter__(self) -> Self:
         self._token = current_tracer.set(self._tracer) if self._tracer else None
         self._loop = await create_loop()
-        self._lease = await self._log.acquire_lease()
+        if not self._readonly:
+            self._lease = await self._log.acquire_lease()
         return self
 
     async def __aexit__(
@@ -123,7 +141,7 @@ class Session:
         if tracer_token := self._token:
             current_tracer.reset(tracer_token)
 
-    def start(
+    async def start(
         self, fn: DurableFn[_P, _T_co], *args: _P.args, **kwargs: _P.kwargs
     ) -> Task[_T_co]:
         """Start a new durable function within the session.
@@ -143,7 +161,7 @@ class Session:
         if self._current_task is not None:
             msg = "A durable function is already running"
             raise RuntimeError(msg)
-        if self._lease is None or self._loop is None:
+        if self._loop is None:
             msg = "Session is not started"
             raise RuntimeError(msg)
 
@@ -162,10 +180,11 @@ class Session:
         )
         self._loop = None
         self._lease = None
+        await self._current_task._start()  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
         return self._current_task
 
-    def resume(self, fn: DurableFn[_P, _T_co]) -> Task[_T_co]:
-        """Resume durable function within the session.
+    async def resume(self, fn: DurableFn[_P, _T_co]) -> Task[_T_co]:
+        """Resume a durable function within the session.
 
         Raises:
             RuntimeError: If a durable function is already running or the session is \
@@ -180,7 +199,7 @@ class Session:
         if self._current_task is not None:
             msg = "A durable function is already running"
             raise RuntimeError(msg)
-        if self._lease is None or self._loop is None:
+        if self._loop is None:
             msg = "Session is not started"
             raise RuntimeError(msg)
 
@@ -193,7 +212,39 @@ class Session:
         )
         self._loop = None
         self._lease = None
+        await self._current_task._start()  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
         return self._current_task
+
+    async def verify(self, fn: DurableFn[_P, _T_co]) -> None:
+        """Verify if the durable function has completed within the session.
+
+        Raises:
+            RuntimeError: If a durable function is already running or the session is \
+                    not started.
+
+        Args:
+            fn: The durable function to verify.
+        """
+        if self._current_task is not None:
+            msg = "A durable function is already running"
+            raise RuntimeError(msg)
+        if self._loop is None:
+            msg = "Session is not started"
+            raise RuntimeError(msg)
+
+        async def init() -> InitParams:  # noqa: RUF029
+            msg = "Not started properly"
+            raise RuntimeError(msg)
+
+        self._current_task = Task(
+            self._loop, self._log, self._tracer, self._lease, init, fn
+        )
+        self._loop = None
+        self._lease = None
+        if await self._current_task._resume():  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+            return
+        msg = "Durable function has not completed"
+        raise RuntimeError(msg)
 
 
 class Task(Generic[_T_co]):
@@ -208,9 +259,9 @@ class Task(Generic[_T_co]):
         "_main",
         "_now_us",
         "_pending_msg",
+        "_ready",
         "_stream_manager",
         "_streams",
-        "_task",
         "_task",
         "_task_manager",
         "_tracer",
@@ -221,7 +272,7 @@ class Task(Generic[_T_co]):
         loop: EventLoop,
         log: LogStorage,
         tracer: Tracer | None,
-        lease: bytes,
+        lease: bytes | None,
         init: Callable[[], Coroutine[Any, Any, InitParams]],
         fn: DurableFn[_P, _T_co],
     ) -> None:
@@ -242,7 +293,16 @@ class Task(Generic[_T_co]):
                 streams[name] = stream
                 observers[name] = w
 
-        main = self._loop.schedule_task(_prelude_fn(init, fn))
+        self._ready = asyncio.Event()
+        main = self._loop.schedule_task(
+            _prelude_fn(
+                init,
+                fn,
+                functools.partial(
+                    asyncio.get_running_loop().call_soon, self._ready.set
+                ),
+            )
+        )
         self._main = main
         self._codec = fn.codec
         self._stream_manager = StreamManager(
@@ -252,9 +312,9 @@ class Task(Generic[_T_co]):
         self._task_manager = TaskManager(
             functools.partial(self._loop.call_soon, main.cancel)
         )
-        self._task = asyncio.create_task(self._run())
+        self._task: asyncio.Task[_T_co] | None = None
 
-    async def _run(self) -> _T_co:
+    async def _resume(self) -> bool:
         recvd_msgs: set[str] = set()
         async for o, entry in self._log.stream(None, live=False):
             ts = entry["ts"]
@@ -272,7 +332,27 @@ class Task(Generic[_T_co]):
                 self._pending_msg.pop()
                 recvd_msgs.remove(id_)
 
-        assert len(recvd_msgs) == 0
+        if len(recvd_msgs) > 0:
+            msg = "Extra messages found in log"
+            raise RuntimeError(msg)
+        return self._main.done()
+
+    async def _start(self) -> None:
+        if await self._resume():
+            return
+        self._task = asyncio.create_task(self._run())
+
+        def cb(_t: asyncio.Task[_T_co]) -> None:
+            self._ready.set()
+
+        self._task.add_done_callback(cb)
+        await self._ready.wait()
+        if self._task.done():
+            _ = await self._task
+        else:
+            self._task.remove_done_callback(cb)
+
+    async def _run(self) -> _T_co:
         if self._main.done():
             return self._main.result()
 
@@ -323,9 +403,11 @@ class Task(Generic[_T_co]):
             await self._enqueue_log(trace_entry)
 
     async def close(self) -> None:
-        self._task.cancel()
-        with contextlib.suppress(Exception, asyncio.CancelledError):
-            await self._task
+        if self._task:
+            self._task.cancel()
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await self._task
+            self._task = None
 
         if self._tracer:
             self._tracer.close()
@@ -593,6 +675,8 @@ class Task(Generic[_T_co]):
         Returns:
             The result of the durable function, raises exception if the function failed.
         """
+        if self._task is None:
+            return self._main.result()
         return await asyncio.shield(self._task)
 
     @overload
@@ -664,7 +748,9 @@ class Task(Generic[_T_co]):
 
 
 async def _prelude_fn(
-    init: Callable[[], Coroutine[Any, Any, InitParams]], fn: DurableFn[..., _T_co]
+    init: Callable[[], Coroutine[Any, Any, InitParams]],
+    fn: DurableFn[..., _T_co],
+    ready: Callable[[], object],
 ) -> _T_co:
     loop = asyncio.get_running_loop()
     assert isinstance(loop, EventLoop)
@@ -709,4 +795,5 @@ async def _prelude_fn(
             _, extra_kwargs[name] = await ctx.create_stream(dtype, name=name)
 
     with span("Session"):
+        _ = ready()
         return await fn.fn(ctx, *args, **extra_kwargs, **kwargs)

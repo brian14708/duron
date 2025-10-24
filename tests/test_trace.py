@@ -32,20 +32,20 @@ async def test_contextvars() -> None:
 
     log = MemoryLogStorage()
     async with Session(log) as t:
-        await t.start(activity).result()
+        await (await t.start(activity)).result()
 
 
 @pytest.mark.asyncio
 async def test_trace() -> None:
     @durable()
-    async def activity(_ctx: Context) -> None:  # noqa: RUF029
+    async def activity(_ctx: Context) -> None:
         with span("hello_span") as s:
             s.record(foo="foobar")
             s.set_status("OK")
 
     log = MemoryLogStorage()
     async with Session(log, tracer=Tracer("abc")) as t:
-        await t.start(activity).result()
+        await (await t.start(activity)).result()
 
     events: list[dict[str, JSONValue]] = []
     for entry in await log.entries():

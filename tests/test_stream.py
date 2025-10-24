@@ -41,10 +41,10 @@ async def test_stream() -> None:
 
     log = MemoryLogStorage()
     async with Session(log) as t:
-        await t.start(activity).result()
+        await (await t.start(activity)).result()
 
     async with Session(log) as t:
-        await t.resume(activity).result()
+        await (await t.start(activity)).result()
 
 
 @pytest.mark.asyncio
@@ -63,7 +63,7 @@ async def test_stream_host() -> None:
 
     log = MemoryLogStorage()
     async with Session(log) as t:
-        await t.start(activity).result()
+        await (await t.start(activity)).result()
 
 
 @pytest.mark.asyncio
@@ -92,7 +92,7 @@ async def test_run() -> None:
     log = MemoryLogStorage()
     while True:
         async with Session(log) as t:
-            run = t.start(activity)
+            run = await t.start(activity)
             try:
                 _ = await asyncio.wait_for(run.result(), 0.1)
                 break
@@ -126,7 +126,7 @@ async def test_stream_map() -> None:
 
     log = MemoryLogStorage()
     async with Session(log) as t:
-        await t.start(activity).result()
+        await (await t.start(activity)).result()
 
 
 @pytest.mark.asyncio
@@ -158,10 +158,10 @@ async def test_stream_peek() -> None:
 
     log = MemoryLogStorage()
     async with Session(log) as t:
-        a = await t.start(activity).result()
+        a = await (await t.start(activity)).result()
     for _ in range(4):
         async with Session(log) as t:
-            b = await t.resume(activity).result()
+            b = await (await t.start(activity)).result()
         assert a == b
 
 
@@ -191,8 +191,8 @@ async def test_stream_cross_loop() -> None:
 
     log = MemoryLogStorage()
     async with Session(log) as t:
-        a = await t.start(activity).result()
+        a = await (await t.start(activity)).result()
     for _ in range(4):
         async with Session(log) as t:
-            b = await t.resume(activity).result()
+            b = await (await t.start(activity)).result()
         assert a == b

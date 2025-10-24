@@ -44,7 +44,7 @@ async def test_pydantic_serialize() -> None:
 
     log = MemoryLogStorage()
     async with Session(log) as t:
-        a = await t.start(activity).result()
+        a = await (await t.start(activity)).result()
         assert type(a) is PydanticPoint
         assert a.x == 6
         assert a.y == 12

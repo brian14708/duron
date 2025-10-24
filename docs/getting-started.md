@@ -109,7 +109,8 @@ async def main():
     storage = FileLogStorage(Path("log.jsonl"))
 
     async with duron.Session(storage) as session:
-        result = await session.start(greeting_flow, "Alice").result()
+        task = await session.start(greeting_flow, "Alice")
+        result = await task.result()
 
     print(result)
 
@@ -239,7 +240,7 @@ async def producer(
 
 async def main():
     async with duron.Session(storage) as session:
-        task = session.start(producer)
+        task = await session.start(producer)
         stream: Stream[str] = task.open_stream("output", "r")
 
         async with stream as s:
@@ -270,7 +271,7 @@ async def interruptible_task(
 
 async def main():
     async with duron.Session(storage) as session:
-        task = session.start(interruptible_task)
+        task = await session.start(interruptible_task)
         signal_writer = task.open_stream("signal", "w")
 
         # Later... send interrupt signal
@@ -294,7 +295,8 @@ async def main():
         storage,
         tracer=Tracer("session-123")
     ) as session:
-        result = await session.start(greeting_flow, "Alice").result()
+        task = await session.start(greeting_flow, "Alice")
+        result = await task.result()
 ```
 
 Traces are logged to your storage backend for analysis. Upload the jsonl to [Trace UI](https://brian14708.github.io/duron/trace-ui/) for visualization.

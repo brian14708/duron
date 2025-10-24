@@ -49,4 +49,4 @@ async def test_error_storage() -> None:
         log = FlakyLogStorage(None, i)
         async with Session(log) as t:
             with pytest.raises(RuntimeError, match="Simulated storage failure"):
-                await t.start(activity, "test").result()
+                await (await t.start(activity, "test")).result()

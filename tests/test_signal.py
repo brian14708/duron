@@ -46,10 +46,10 @@ async def test_signal() -> None:
 
     log = MemoryLogStorage()
     async with Session(log) as t:
-        assert await t.start(activity).result() == [2, 3]
+        assert await (await t.start(activity)).result() == [2, 3]
 
     async with Session(log) as t:
-        assert await t.resume(activity).result() == [2, 3]
+        assert await (await t.start(activity)).result() == [2, 3]
 
 
 @pytest.mark.asyncio
@@ -75,7 +75,7 @@ async def test_signal_timing() -> None:
 
     log = MemoryLogStorage()
     async with Session(log) as t:
-        run = t.start(activity)
+        run = await t.start(activity)
         signal = await run.open_stream("s", "w")
 
         async def push() -> None:
@@ -92,4 +92,4 @@ async def test_signal_timing() -> None:
             await pusher
 
     async with Session(log) as t:
-        assert await t.resume(activity).result() == a
+        assert await (await t.start(activity)).result() == a
