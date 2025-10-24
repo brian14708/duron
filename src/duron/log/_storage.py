@@ -16,23 +16,14 @@ class LogStorage(Protocol):
     preventing concurrent writes from multiple processes.
     """
 
-    def stream(
-        self, start: int | None, /, *, live: bool
-    ) -> AsyncGenerator[tuple[int, BaseEntry], None]:
+    def stream(self) -> AsyncGenerator[tuple[int, BaseEntry], None]:
         """Stream log entries from storage.
-
-        Args:
-            start: Starting log index (inclusive). If None, stream from beginning.
-            live: If True, continue streaming new entries as they are appended.
-                  If False, stop after reading existing entries.
 
         Yields:
             Tuple of (log_index, entry) for each log entry in order.
 
         Note:
             Log indices are monotonically increasing but may have gaps.
-            During replay phase, this is called with live=False to restore state.
-            During live execution, this may be called with live=True to monitor logs.
         """
         ...
 

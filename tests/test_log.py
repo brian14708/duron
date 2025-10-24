@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -29,16 +28,9 @@ async def impl_test_log_storage(storage: LogStorage) -> None:
         _ = await storage.append(lease, make_entry("5"))
 
     entries: list[str] = []
-    offset: int | None = None
-    async for o, entry_data in storage.stream(None, live=False):
+    async for _o, entry_data in storage.stream():
         entries.append(entry_data["id"])
-        offset = o
     assert len(entries) == 4
-
-    _ = asyncio.create_task(storage.append(lease2, make_entry("5")))
-    async for _, entry_data in storage.stream(offset, live=True):
-        if entry_data["id"] == "5":
-            break
 
 
 @pytest.mark.asyncio

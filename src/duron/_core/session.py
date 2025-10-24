@@ -317,7 +317,7 @@ class Task(Generic[_T_co]):
 
     async def _resume(self) -> bool:
         recvd_msgs: set[str] = set()
-        async for o, entry in self._log.stream(None, live=False):
+        async for o, entry in self._log.stream():
             ts = entry["ts"]
             self._now_us = max(self._now_us, ts)
             _ = await self._step()
