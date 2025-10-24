@@ -30,11 +30,11 @@ async def generate_lucky_number() -> int:
     return random.randint(1, 100)
 
 
-@duron.effect(stateful=True, initial=lambda: 0, reducer=int.__add__)
+@duron.effect
 async def count_up(count: int, target: int) -> AsyncGenerator[int, int]:
     await asyncio.sleep(0.5)
     while count < target:
-        count = yield 10
+        count = yield (count + 10)
         logger.info("⚡ Current count: %s", count)
         await asyncio.sleep(0.05)
 
@@ -44,7 +44,7 @@ async def greeting_flow(ctx: duron.Context, name: str) -> str:
     message, lucky_number = await asyncio.gather(
         ctx.run(work, name), ctx.run(generate_lucky_number)
     )
-    _ = await ctx.run(count_up, lucky_number)
+    _ = await ctx.run(count_up, 0, lucky_number)
     return f"{message} Your lucky number is {lucky_number}."
 
 

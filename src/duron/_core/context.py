@@ -5,8 +5,8 @@ import contextvars
 import functools
 import inspect
 from random import Random
-from typing import TYPE_CHECKING, cast
-from typing_extensions import Any, ParamSpec, TypeVar, final, overload
+from typing import TYPE_CHECKING, Concatenate, cast, get_args, get_origin
+from typing_extensions import Any, AsyncGenerator, ParamSpec, TypeVar, final, overload
 
 from duron._core.ops import (
     Barrier,
@@ -18,8 +18,9 @@ from duron._core.ops import (
 )
 from duron._core.signal import create_signal
 from duron._core.stream import create_stream, run_stateful
-from duron._decorator.effect import EffectFn, StatefulFn
+from duron._decorator.effect import Reducer
 from duron.typing import inspect_function
+from duron.typing._hint import UnspecifiedType
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine
@@ -46,7 +47,7 @@ class Context:
     @overload
     async def run(
         self,
-        fn: Callable[_P, Coroutine[Any, Any, _T]] | EffectFn[_P, _T],
+        fn: Callable[_P, Coroutine[Any, Any, _T]],
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
@@ -54,20 +55,17 @@ class Context:
     @overload
     async def run(
         self,
-        fn: Callable[_P, _T] | StatefulFn[_P, _T, Any],
+        fn: Callable[Concatenate[_T, _P], AsyncGenerator[_S, _T]],
         /,
+        state: _S,
         *args: _P.args,
         **kwargs: _P.kwargs,
     ) -> _T: ...
+    @overload
     async def run(
-        self,
-        fn: Callable[_P, Coroutine[Any, Any, _T] | _T]
-        | EffectFn[_P, _T]
-        | StatefulFn[_P, _T, Any],
-        /,
-        *args: _P.args,
-        **kwargs: _P.kwargs,
-    ) -> _T:
+        self, fn: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs
+    ) -> _T: ...
+    async def run(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
         """
         Run a function within the context.
 
@@ -81,18 +79,13 @@ class Context:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
 
-        if isinstance(fn, StatefulFn):
-            async with self.stream(
-                cast("StatefulFn[_P, _T, Any]", fn), *args, **kwargs
-            ) as (stream, result):
+        if inspect.isasyncgenfunction(fn):
+            async with self.stream(fn, *args, **kwargs) as (stream, result):
                 await stream.discard()
                 return await result
 
         callable_: Callable[[], Coroutine[Any, Any, object]]
-        if isinstance(fn, EffectFn):
-            hint = fn.type_hint
-            callable_ = functools.partial(fn.fn, *args, **kwargs)
-        elif inspect.iscoroutinefunction(fn):
+        if inspect.iscoroutinefunction(fn):
             hint = inspect_function(fn)
             callable_ = functools.partial(fn, *args, **kwargs)
         else:
@@ -103,7 +96,7 @@ class Context:
             hint = inspect_function(fn)
             callable_ = wrapper
 
-        op: asyncio.Future[_T] = create_op(
+        op: asyncio.Future[object] = create_op(
             self._loop,
             FnCall(
                 callable=callable_,
@@ -115,7 +108,12 @@ class Context:
         return await op
 
     def stream(
-        self, fn: StatefulFn[_P, _T, _S], /, *args: _P.args, **kwargs: _P.kwargs
+        self,
+        fn: Callable[Concatenate[_T, _P], AsyncGenerator[_S, _T]],
+        /,
+        initial: _T,
+        *args: _P.args,
+        **kwargs: _P.kwargs,
     ) -> AbstractAsyncContextManager[tuple[Stream[_S], Awaitable[_T]]]:
         """Stream stateful function partial results.
 
@@ -133,8 +131,17 @@ class Context:
         if asyncio.get_running_loop() is not self._loop:
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)
+
+        type_hint = inspect_function(fn)
+        action_type: TypeHint[_S] = UnspecifiedType
+        if get_origin(ret := type_hint.return_type) is AsyncGenerator:
+            action_type, _ = get_args(ret)
+
+        state_name = type_hint.parameters[0]
+        annotations = type_hint.parameter_annotations.get(state_name, ())
+        reducer = _find_reducer(tuple(annotations))
         return run_stateful(
-            self._loop, fn.action_type, fn.initial(), fn.reducer, fn.fn, *args, **kwargs
+            self._loop, action_type, reducer, fn, initial, *args, **kwargs
         )
 
     async def create_stream(
@@ -288,3 +295,20 @@ class Context:
             self._loop,
             FutureComplete(future_id=future_id, value=result, exception=exception),
         )
+
+
+def _find_reducer(annotations: tuple[Any, ...]) -> Callable[[_S, _T], _S]:
+    for annotation in annotations:
+        if not isinstance(annotation, Reducer):
+            continue
+        hint = inspect_function(annotation.reducer)
+        if len(hint.parameters) != 2:
+            msg = "Reducer function must have exactly two parameters"
+            raise TypeError(msg)
+        return cast("Callable[[_S, _T], _S]", annotation.reducer)
+
+    return cast("Callable[[_S, _T], _S]", _default_reducer)
+
+
+def _default_reducer(_old: object, new: object) -> object:
+    return new

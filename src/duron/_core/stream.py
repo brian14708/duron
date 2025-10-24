@@ -354,10 +354,10 @@ class _Broadcast(Generic[_T]):
 async def run_stateful(
     loop: EventLoop,
     dtype: TypeHint[Any],
-    initial: _T,
     reducer: Callable[[_T, _U], _T],
     fn: Callable[Concatenate[_T, _P], AsyncGenerator[_U, _T]],
     /,
+    initial: _T,
     *args: _P.args,
     **kwargs: _P.kwargs,
 ) -> AsyncGenerator[tuple[Stream[_U], Awaitable[_T]], None]:
@@ -365,7 +365,7 @@ async def run_stateful(
 
     name = cast("str", getattr(fn, "__name__", repr(fn)))
     stream: _StatefulStream[_U, _T] = _StatefulStream(
-        initial, reducer, fn, *args, **kwargs
+        reducer, fn, initial, *args, **kwargs
     )
     sink: StreamWriter[_U] = OpWriter(
         await create_op(
@@ -410,10 +410,10 @@ class _StatefulStream(_BufferStream[_U], Generic[_U, _T]):
 
     def __init__(
         self,
-        initial: _T,
         reducer: Callable[[_T, _U], _T],
         fn: Callable[Concatenate[_T, _P], AsyncGenerator[_U, _T]],
         /,
+        initial: _T,
         *args: _P.args,
         **kwargs: _P.kwargs,
     ) -> None:

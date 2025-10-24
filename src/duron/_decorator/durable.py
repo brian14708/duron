@@ -40,7 +40,6 @@ class DurableFn(Generic[_P, _T_co]):
         self.codec = codec
         self.fn = fn
         self.inject = sorted(inject)
-        self.type_hints = inspect_function(fn)
 
 
 @overload

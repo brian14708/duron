@@ -4,16 +4,14 @@ import asyncio
 import operator
 import random
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Annotated
 
 import pytest
 
-from duron import Context, Session, StreamClosed, durable, effect
+from duron import Context, Reducer, Session, StreamClosed, durable, effect
 from duron.contrib.storage import MemoryLogStorage
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from duron import StreamWriter
 
 
@@ -73,12 +71,10 @@ async def test_run() -> None:
 
     @durable()
     async def activity(ctx: Context) -> None:
-        @effect(
-            stateful=True,
-            initial=str,
-            reducer=cast("Callable[[str, str], str]", operator.add),
-        )
-        async def f(s: str) -> AsyncGenerator[str, str]:
+        @effect
+        async def f(
+            s: Annotated[str, Reducer(operator.add)],
+        ) -> AsyncGenerator[str, str]:
             while len(s) < 100:
                 if len(s) == sleep_idx:
                     await asyncio.sleep(99999)
@@ -87,7 +83,7 @@ async def test_run() -> None:
                 all_states.append(s)
             yield ""
 
-        _ = await ctx.run(f)
+        _ = await ctx.run(f, "")
 
     log = MemoryLogStorage()
     while True:
@@ -107,18 +103,16 @@ async def test_run() -> None:
 async def test_stream_map() -> None:
     @durable()
     async def activity(ctx: Context) -> None:
-        @effect(
-            stateful=True,
-            initial=str,
-            reducer=cast("Callable[[str, str], str]", operator.add),
-        )
-        async def f(s: str) -> AsyncGenerator[str, str]:
+        @effect
+        async def f(
+            s: Annotated[str, Reducer(operator.add)],
+        ) -> AsyncGenerator[str, str]:
             while len(s) < 100:
                 chunk = chr(ord("a") + random.randint(0, 25))
                 s = yield chunk
                 await asyncio.sleep(0)
 
-        async with ctx.stream(f) as (stream, result):
+        async with ctx.stream(f, "") as (stream, result):
             async for s in stream.map(lambda s: s.upper()):
                 assert s == s.upper()
             _ = await result
@@ -169,18 +163,16 @@ async def test_stream_peek() -> None:
 async def test_stream_cross_loop() -> None:
     @durable()
     async def activity(ctx: Context) -> list[str]:
-        @effect(
-            stateful=True,
-            initial=str,
-            reducer=cast("Callable[[str, str], str]", operator.add),
-        )
-        async def f(s: str) -> AsyncGenerator[str, str]:
+        @effect
+        async def f(
+            s: Annotated[str, Reducer(operator.add)],
+        ) -> AsyncGenerator[str, str]:
             while len(s) < 5:
                 chunk = chr(ord("a") + random.randint(0, 25))
                 s = yield chunk
                 await asyncio.sleep(0)
 
-        async with ctx.stream(f) as (stream, _result):
+        async with ctx.stream(f, "") as (stream, _result):
             s = stream.map(lambda x: x * 2)
 
             async def g() -> list[str]:

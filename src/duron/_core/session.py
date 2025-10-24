@@ -40,6 +40,7 @@ from duron.tracing._span import NULL_SPAN
 from duron.tracing._tracer import current_tracer, span
 from duron.typing import JSONValue
 from duron.typing._hint import UnspecifiedType
+from duron.typing._inspect import inspect_function
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -770,7 +771,7 @@ async def _prelude_fn(
     ctx = Context(loop, init_params["nonce"])
 
     codec = fn.codec
-    type_info = fn.type_hints
+    type_info = inspect_function(fn.fn)
     args = tuple(
         codec.decode_json(
             arg,
