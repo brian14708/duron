@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from types import UnionType
-from typing import TYPE_CHECKING, Final, TypeAlias, cast
-from typing_extensions import Any, TypeAliasType, TypeVar
+from typing import TYPE_CHECKING, Final, TypeAlias
+from typing_extensions import TypeAliasType, TypeVar
 
 _T = TypeVar("_T")
 
@@ -15,10 +15,6 @@ class _UnspecifiedType:
 UnspecifiedType: Final = _UnspecifiedType()
 """
 [TypeHint][duron.typing.TypeHint] value indicating that a parameter was not specified.
-"""
-Provided: Final = cast("Any", ...)
-"""
-Mark a parameter as provided when invoked.
 """
 
 MYPY = False

@@ -6,9 +6,8 @@ from typing import cast
 
 import pytest
 
-from duron import Context, Session, Signal, SignalInterrupt, durable
+from duron import Context, Provided, Session, Signal, SignalInterrupt, durable
 from duron.contrib.storage import MemoryLogStorage
-from duron.typing._hint import Provided
 
 
 @pytest.mark.asyncio

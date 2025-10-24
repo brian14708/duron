@@ -9,7 +9,15 @@ as orchestration functions. Durable functions:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Concatenate, Generic, cast, get_args, get_origin
+from typing import (
+    TYPE_CHECKING,
+    Concatenate,
+    Final,
+    Generic,
+    cast,
+    get_args,
+    get_origin,
+)
 from typing_extensions import Any, ParamSpec, TypeVar, final, overload
 
 from duron._core.config import config
@@ -27,6 +35,12 @@ if TYPE_CHECKING:
 
 _T_co = TypeVar("_T_co", covariant=True)
 _P = ParamSpec("_P")
+
+
+Provided: Final = cast("Any", ...)
+"""
+Mark a parameter as provided when invoked.
+"""
 
 
 @final
