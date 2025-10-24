@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import weakref
 from typing import TYPE_CHECKING, cast
 from typing_extensions import Any, NamedTuple
 
@@ -31,7 +32,14 @@ class FunctionType(NamedTuple):
     """
 
 
+_FUNCTION_CACHE: weakref.WeakKeyDictionary[Callable[..., object], FunctionType] = (
+    weakref.WeakKeyDictionary()
+)
+
+
 def inspect_function(fn: Callable[..., object]) -> FunctionType:
+    if fn in _FUNCTION_CACHE:
+        return _FUNCTION_CACHE[fn]
     try:
         sig = inspect.signature(fn, eval_str=True)
     except NameError:
@@ -56,9 +64,11 @@ def inspect_function(fn: Callable[..., object]) -> FunctionType:
             else UnspecifiedType
         )
 
-    return FunctionType(
+    ret = FunctionType(
         name=cast("str", getattr(fn, "__name__", repr(fn))),
         return_type=return_type,
         parameters=parameter_names,
         parameter_types=parameter_types,
     )
+    _FUNCTION_CACHE[fn] = ret
+    return ret
