@@ -61,8 +61,8 @@ docs = [
     "mkdocstrings[python]",
 ]
 examples = [
-    "openai",
     "pydantic",
+    "pydantic-ai-slim[openai]",
     "rich",
 ]
 

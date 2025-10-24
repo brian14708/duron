@@ -35,10 +35,11 @@ import duron
 from duron.contrib.storage import FileLogStorage
 
 
+# Effects encapsulate side effects (I/O, randomness, API calls)
 @duron.effect
 async def work(name: str) -> str:
     print("⚡ Preparing to greet...")
-    await asyncio.sleep(2)  # Simulate I/O
+    await asyncio.sleep(2)
     print("⚡ Greeting...")
     return f"Hello, {name}!"
 
@@ -46,20 +47,26 @@ async def work(name: str) -> str:
 @duron.effect
 async def generate_lucky_number() -> int:
     print("⚡ Generating lucky number...")
-    await asyncio.sleep(1)  # Simulate I/O
+    await asyncio.sleep(1)
     return random.randint(1, 100)
 
 
+# Durable functions orchestrate workflow logic via ctx.run()
+# They're deterministically replayed from logs on resume
 @duron.durable
 async def greeting_flow(ctx: duron.Context, name: str) -> str:
+    # Run effects concurrently - results are logged for replay
     message, lucky_number = await asyncio.gather(
-        ctx.run(work, name), ctx.run(generate_lucky_number)
+        ctx.run(work, name),
+        ctx.run(generate_lucky_number),
     )
     return f"{message} Your lucky number is {lucky_number}."
 
 
 async def main():
+    # Session manages execution and log storage
     async with duron.Session(FileLogStorage(Path("log.jsonl"))) as session:
+        # Starts new workflow or resumes from existing log
         task = await session.start(greeting_flow, "Alice")
         result = await task.result()
     print(result)
@@ -71,4 +78,5 @@ if __name__ == "__main__":
 
 ## Next steps
 
-Read the [getting started guide](https://brian14708.github.io/duron/getting-started/).
+- Read the [getting started guide](https://brian14708.github.io/duron/getting-started/)
+- Explore a more advanced example with streams and signals: [examples/agent.py](https://github.com/brian14708/duron/blob/main/examples/agent.py)

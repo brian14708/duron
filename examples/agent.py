@@ -2,34 +2,33 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import random
-import readline
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
-from typing_extensions import Any, override
+from typing import TYPE_CHECKING, Any, cast
+from typing_extensions import override
 
-from openai import AsyncOpenAI, pydantic_function_tool
-from openai.lib.streaming.chat import ChatCompletionStreamState
-from openai.types.chat import (
-    ChatCompletion,
-    ChatCompletionMessageParam,
-    ChatCompletionMessageToolCallUnion,
+from httpx import AsyncClient
+from pydantic import BaseModel, TypeAdapter
+from pydantic_ai import (
+    Agent,
+    AgentRunResult,
+    DeferredToolRequests,
+    DeferredToolResults,
+    FunctionToolset,
+    ModelMessage,
+    ModelResponse,
+    RunContext,
+    TextPart,
 )
-from pydantic import BaseModel, Field, TypeAdapter
 from rich.console import Console
 
 import duron
-from duron import Provided, Signal, SignalInterrupt, Stream, StreamWriter
 from duron.codec import Codec
 from duron.contrib.storage import FileLogStorage
 from duron.tracing import Tracer, span
 
 if TYPE_CHECKING:
     from duron.typing import JSONValue, TypeHint
-
-client = AsyncOpenAI()
-
-DEFAULT_MODEL = "gpt-5-nano"
 
 
 class PydanticCodec(Codec):
@@ -50,87 +49,110 @@ class PydanticCodec(Codec):
 @duron.durable(codec=PydanticCodec())
 async def agent_fn(
     ctx: duron.Context,
-    input_: Stream[str] = Provided,
-    signal: Signal[None] = Provided,
-    output: StreamWriter[tuple[str, str]] = Provided,
+    input_: duron.Stream[str] = duron.Provided,
+    signal: duron.Signal[None] = duron.Provided,
+    output: duron.StreamWriter[tuple[str, str]] = duron.Provided,
 ) -> None:
-    history: list[ChatCompletionMessageParam] = [
-        {"role": "system", "content": "You are a helpful assistant!"}
-    ]
-    i = 0
-    while True:
+    """
+    Durable agent workflow that runs a PydanticAI agent with tool approval.
+
+    This function demonstrates:
+    - Streaming input/output for interactive chat
+    - Signal handling for interruption (send "!" to interrupt)
+    - Tool approval workflow (all tools require manual approval)
+    - Durable execution that can be paused and resumed
+
+    Args:
+        ctx: Duron context for executing effects
+        input_: Stream of user messages
+        signal: Signal for interrupting the current round
+        output: Stream writer for sending responses
+    """
+    # Initialize HTTP client for API calls
+    deps = Deps(client=AsyncClient())
+
+    # Configure PydanticAI agent with tool approval requirement
+    agent = Agent(
+        "openai:gpt-5-nano",
+        output_type=[str, DeferredToolRequests],
+        toolsets=[weather_toolset.approval_required()],
+        instructions="Be concise, reply with one sentence.",
+        deps_type=Deps,
+    )
+
+    # Store conversation history across rounds
+    messages: list[ModelMessage] = []
+
+    # Print initial instructions to the output stream
+    await output.send((
+        "assistant",
+        "Agent initialized. Available tools: get_lat_lng, get_weather",
+    ))
+    await output.send(("assistant", "Send '!' to interrupt the current request."))
+
+    @duron.effect
+    async def agent_run(
+        user_input: str | None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+    ) -> AgentRunResult[str | DeferredToolRequests]:
+        # wrap for helper and correct typing
+        return await agent.run(
+            user_input,
+            message_history=messages,
+            deps=deps,
+            deferred_tool_results=deferred_tool_results,
+        )
+
+    async def run_round(user_input: str) -> None:
+        """
+        Execute one conversation round, handling tool approval loop.
+
+        Flow:
+        1. Run agent with user input
+        2. If agent requests tools, approve each one and re-run
+        3. Repeat until agent returns a text response
+        """
+        # Initial agent run with user input
+        result = await ctx.run(agent_run, user_input)
+        messages.extend(result.new_messages())
+
+        # Handle tool approval loop
+        while isinstance(result.output, DeferredToolRequests):
+            tool_approval = DeferredToolResults()
+
+            # Auto-approve all requested tools (could be manual in production)
+            for call in result.output.approvals:
+                await output.send(("call", f"{call.tool_name}({call.args})"))
+                tool_approval.approvals[call.tool_call_id] = True
+
+            # Re-run agent with tool approvals
+            result = await ctx.run(agent_run, deferred_tool_results=tool_approval)
+            messages.extend(result.new_messages())
+
+        # Send final text response
+        await output.send(("assistant", result.output))
+
+    # Main conversation loop (max 100 rounds)
+    for i in range(100):
+        # Collect any queued messages without waiting
         msgs: list[str] = [msgs async for msgs in input_.next_nowait()]
+
+        # If no queued messages, wait for next input
         if not msgs:
             m = await input_.next()
             msgs = [m]
 
-        history.append({"role": "user", "content": "\n".join(msgs)})
-        await output.send(("user", "\n".join(msgs)))
-        with span(f"Round #{i}"):
-            i += 1
-            while True:
-                try:
-                    async with signal:
-                        result = await completion(ctx, messages=history)
-                        if result.choices[0].message.content:
-                            await output.send((
-                                "assistant",
-                                result.choices[0].message.content,
-                            ))
-                        history.append({
-                            "role": "assistant",
-                            "content": result.choices[0].message.content,
-                            "tool_calls": [
-                                {
-                                    "id": toolcall.id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": toolcall.function.name,
-                                        "arguments": toolcall.function.arguments,
-                                    },
-                                }
-                                for toolcall in result.choices[0].message.tool_calls
-                                or []
-                                if toolcall.type == "function"
-                            ],
-                        })
-                        if not result.choices[0].message.tool_calls:
-                            break
-
-                        tasks: list[asyncio.Task[tuple[str, str]]] = []
-                        for tool_call in result.choices[0].message.tool_calls:
-                            await output.send(("call", tool_call.model_dump_json()))
-                            tasks.append(
-                                asyncio.create_task(ctx.run(call_tool, tool_call))
-                            )
-                        for id_, tool_result in await asyncio.gather(*tasks):
-                            await output.send(("tool", tool_result))
-                            history.append({
-                                "role": "tool",
-                                "tool_call_id": id_,
-                                "content": tool_result,
-                            })
-                except SignalInterrupt:
-                    await output.send(("assistant", "[Interrupted]"))
-                    history.append({"role": "assistant", "content": "[Interrupted]"})
-                    break
-
-
-@duron.effect
-async def call_tool(params: ChatCompletionMessageToolCallUnion) -> tuple[str, str]:  # noqa: RUF029
-    if params.type != "function" or not params.function.name:
-        return params.id, '{"status": "error", "message": "Invalid tool call"}'
-    tool_name = params.function.name
-
-    if tool_name == "get_temperature":
-        return params.id, get_temperature(
-            TemperatureInput.model_validate_json(params.function.arguments or "{}")
-        ).model_dump_json()
-    if tool_name == "get_forecast":
-        return params.id, get_forecast(
-            ForecastInput.model_validate_json(params.function.arguments or "{}")
-        ).model_dump_json()
-    return params.id, '{"status": "error", "message": "Unknown tool"}'
+        # Execute round with tracing and interruption support
+        with span(f"Round #{i + 1}"):
+            await output.send(("user", "\n".join(msgs)))
+            try:
+                # Signal context allows interruption via signal stream
+                async with signal:
+                    await run_round("\n".join(msgs))
+            except duron.SignalInterrupt:
+                # Handle graceful interruption
+                await output.send(("assistant", "[Interrupted]"))
+                messages.append(ModelResponse(parts=[TextPart("[Interrupted]")]))
 
 
 async def main() -> None:
@@ -143,9 +165,9 @@ async def main() -> None:
     log_storage = FileLogStorage(Path("data") / f"{args.session_id}.jsonl")
     async with duron.Session(log_storage, tracer=Tracer(args.session_id)) as session:
         task = await session.start(agent_fn)
-        input_stream: StreamWriter[str] = await task.open_stream("input_", "w")
-        signal_stream: StreamWriter[None] = await task.open_stream("signal", "w")
-        stream: Stream[tuple[str, str]] = await task.open_stream("output", "r")
+        input_stream: duron.StreamWriter[str] = await task.open_stream("input_", "w")
+        signal_stream: duron.StreamWriter[None] = await task.open_stream("signal", "w")
+        stream: duron.Stream[tuple[str, str]] = await task.open_stream("output", "r")
 
         async def reader() -> None:
             console = Console()
@@ -179,110 +201,75 @@ async def main() -> None:
         )
 
 
-async def completion(
-    ctx: duron.Context, messages: list[ChatCompletionMessageParam]
-) -> ChatCompletion:
-    @duron.effect
-    async def _completion(messages: list[ChatCompletionMessageParam]) -> ChatCompletion:
-        state = ChatCompletionStreamState()
-        async for chunk in await client.chat.completions.create(
-            messages=messages,
-            tools=[
-                pydantic_function_tool(
-                    TemperatureInput,
-                    name="get_temperature",
-                    description="Get current temperature for a location",
-                ),
-                pydantic_function_tool(
-                    ForecastInput,
-                    name="get_forecast",
-                    description="Get weather forecast for a location",
-                ),
-            ],
-            model=DEFAULT_MODEL,
-            stream=True,
-        ):
-            if chunk.object:  # type: ignore[redundant-expr]
-                _ = state.handle_chunk(chunk)
-        return state.get_final_completion()
-
-    return await ctx.run(_completion, messages)
+# Toolset
 
 
-# tools
+@dataclass
+class Deps:
+    client: AsyncClient
 
 
-class TemperatureInput(BaseModel):
-    location: str = Field(..., description="Location to get weather for")
-    unit: Literal["celsius", "fahrenheit"] = Field(
-        default="celsius", description="Temperature unit"
+weather_toolset: FunctionToolset[Deps] = FunctionToolset()
+
+
+class LatLng(BaseModel):
+    lat: float
+    lng: float
+
+
+_ = RunContext[Deps]
+
+
+@weather_toolset.tool
+async def get_lat_lng(ctx: RunContext[Deps], location_description: str) -> LatLng:
+    """Get the latitude and longitude of a location.
+
+    Args:
+        ctx: The context.
+        location_description: A description of a location.
+
+    Returns:
+        A LatLng object containing the latitude and longitude.
+    """
+    r = await ctx.deps.client.get(
+        "https://demo-endpoints.pydantic.workers.dev/latlng",
+        params={"location": location_description},
     )
+    r.raise_for_status()
+    return LatLng.model_validate_json(r.content)
 
 
-class TemperatureOutput(BaseModel):
-    location: str
-    temperature: float | None
-    unit: Literal["celsius", "fahrenheit"]
-    status: Literal["success", "error"]
-    message: str | None = None
+@weather_toolset.tool
+async def get_weather(ctx: RunContext[Deps], lat: float, lng: float) -> dict[str, Any]:
+    """Get the weather at a location.
 
+    Args:
+        ctx: The context.
+        lat: Latitude of the location.
+        lng: Longitude of the location.
 
-class ForecastInput(BaseModel):
-    location: str = Field(..., description="Location for forecast")
-    days: int = Field(default=3, ge=1, le=7, description="Number of days (1-7)")
-
-
-class ForecastDay(BaseModel):
-    day: int
-    high: float
-    low: float
-    humidity: int
-    wind_speed: int
-
-
-class ForecastOutput(BaseModel):
-    location: str
-    forecast: list[ForecastDay]
-    status: Literal["success", "error"]
-
-
-# Simplified tool implementations
-def get_temperature(input_data: TemperatureInput) -> TemperatureOutput:
-    # Generate random temperature based on realistic ranges
-    if input_data.unit == "celsius":
-        temp = round(random.uniform(0, 37), 1)
-    else:  # fahrenheit
-        temp = round(random.uniform(-4, 113), 1)
-
-    return TemperatureOutput(
-        location=input_data.location,
-        temperature=temp,
-        unit=input_data.unit,
-        status="success",
+    Returns:
+        A dictionary containing the temperature and description of the \
+                weather.
+    """
+    # NOTE: the responses here will be random, and are not related to the lat and lng.
+    temp_response, descr_response = await asyncio.gather(
+        ctx.deps.client.get(
+            "https://demo-endpoints.pydantic.workers.dev/number",
+            params={"min": 10, "max": 30},
+        ),
+        ctx.deps.client.get(
+            "https://demo-endpoints.pydantic.workers.dev/weather",
+            params={"lat": lat, "lng": lng},
+        ),
     )
-
-
-def get_forecast(input_data: ForecastInput) -> ForecastOutput:
-    forecast: list[ForecastDay] = []
-    for i in range(input_data.days):
-        high = round(random.uniform(15, 35), 1)
-        low = round(random.uniform(5, high - 5), 1)  # Low is always less than high
-
-        forecast.append(
-            ForecastDay(
-                day=i + 1,
-                high=high,
-                low=low,
-                humidity=random.randint(30, 90),
-                wind_speed=random.randint(5, 25),
-            )
-        )
-
-    return ForecastOutput(
-        location=input_data.location, forecast=forecast, status="success"
-    )
+    temp_response.raise_for_status()
+    descr_response.raise_for_status()
+    return {
+        "temperature": f"{temp_response.text} °C",
+        "description": descr_response.text,
+    }
 
 
 if __name__ == "__main__":
-    _ = readline
     asyncio.run(main())
