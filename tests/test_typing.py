@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from typing import Annotated
 
 from duron.typing import FunctionType, inspect_function
 
@@ -104,3 +105,23 @@ def test_iterator() -> None:
     assert result.parameters == []
     assert result.parameter_types == {}
     assert result.return_type == AsyncGenerator[int]
+
+
+def test_annotation() -> None:
+    def fn(
+        _a: Annotated[int, int.__add__, "first"],
+        _b: str,
+        _c: Annotated[Annotated[list[int], "third"], "extra"],
+    ) -> Annotated[bool, "result"]:
+        return True
+
+    result = inspect_function(fn)
+
+    assert result.parameters == ["_a", "_b", "_c"]
+    assert result.parameter_types == {"_a": int, "_b": str, "_c": list[int]}
+    assert result.parameter_annotations == {
+        "_a": (int.__add__, "first"),
+        "_c": ("third", "extra"),
+    }
+    assert result.return_type is bool
+    assert result.return_annotations == ("result",)
