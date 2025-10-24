@@ -8,23 +8,40 @@ from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+    from io import TextIOBase
 
     from duron.log import BaseEntry, Entry
+
+
+try:
+    import fcntl
+
+    def lock_file(f: TextIOBase, /) -> None:
+        if f.writable():
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def unlock_file(f: TextIOBase, /) -> None:
+        if f.writable():
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+except ModuleNotFoundError:
+
+    def lock_file(_f: TextIOBase, /) -> None:
+        pass
+
+    def unlock_file(_f: TextIOBase, /) -> None:
+        pass
 
 
 class FileLogStorage:
     """A [log storage][duron.log.LogStorage] that uses a file to store log entries."""
 
-    __slots__ = ("_leases", "_lock", "_log_file")
-
-    _log_file: Path
-    _leases: bytes | None
-    _lock: asyncio.Lock
+    __slots__ = ("_lease", "_lock", "_log_file")
 
     def __init__(self, log_file: str | Path) -> None:
         self._log_file = Path(log_file)
         self._log_file.parent.mkdir(parents=True, exist_ok=True)
-        self._leases = None
+        self._lease: TextIOBase | None = None
         self._lock = asyncio.Lock()
 
     async def stream(
@@ -76,27 +93,30 @@ class FileLogStorage:
                         await asyncio.sleep(0.1)
 
     async def acquire_lease(self) -> bytes:
-        lease_id = uuid.uuid4().bytes
         async with self._lock:
-            self._leases = lease_id
-        return lease_id
+            self._lease = Path(self._log_file).open("a", encoding="utf-8")  # noqa: ASYNC230, SIM115
+            lock_file(self._lease)
+            return self._lease.fileno().to_bytes(8, "big")
 
     async def release_lease(self, token: bytes) -> None:
         async with self._lock:
-            if token == self._leases:
-                self._leases = None
+            if self._lease and token == self._lease.fileno().to_bytes(8, "big"):
+                unlock_file(self._lease)
+                self._lease.close()
+                self._lease = None
 
     async def append(self, token: bytes, entry: Entry) -> int:
         async with self._lock:
-            if token != self._leases:
+            if not self._lease or token != self._lease.fileno().to_bytes(8, "big"):
                 msg = "Invalid lease token"
                 raise ValueError(msg)
 
-            with Path(self._log_file).open("a", encoding="utf-8") as f:  # noqa: ASYNC230
-                offset = f.tell()
-                json.dump(entry, f, separators=(",", ":"))
-                _ = f.write("\n")
-                return offset
+            f = self._lease
+            offset = f.tell()
+            json.dump(entry, f, separators=(",", ":"))
+            _ = f.write("\n")
+            f.flush()
+            return offset
 
 
 class MemoryLogStorage:
