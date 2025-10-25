@@ -11,7 +11,6 @@ from httpx import AsyncClient
 from pydantic import BaseModel, TypeAdapter
 from pydantic_ai import (
     Agent,
-    AgentRunResult,
     DeferredToolRequests,
     DeferredToolResults,
     FunctionToolset,
@@ -94,14 +93,15 @@ async def agent_fn(
     async def agent_run(
         user_input: str | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
-    ) -> AgentRunResult[str | DeferredToolRequests]:
+    ) -> tuple[list[ModelMessage], str | DeferredToolRequests]:
         # wrap for helper and correct typing
-        return await agent.run(
+        result = await agent.run(
             user_input,
             message_history=messages,
             deps=deps,
             deferred_tool_results=deferred_tool_results,
         )
+        return (result.new_messages(), result.output)
 
     async def run_round(user_input: str) -> None:
         """
@@ -113,24 +113,26 @@ async def agent_fn(
         3. Repeat until agent returns a text response
         """
         # Initial agent run with user input
-        result = await ctx.run(agent_run, user_input)
-        messages.extend(result.new_messages())
+        new_messages, output_val = await ctx.run(agent_run, user_input)
+        messages.extend(new_messages)
 
         # Handle tool approval loop
-        while isinstance(result.output, DeferredToolRequests):
+        while isinstance(output_val, DeferredToolRequests):
             tool_approval = DeferredToolResults()
 
             # Auto-approve all requested tools (could be manual in production)
-            for call in result.output.approvals:
+            for call in output_val.approvals:
                 await output.send(("call", f"{call.tool_name}({call.args})"))
                 tool_approval.approvals[call.tool_call_id] = True
 
             # Re-run agent with tool approvals
-            result = await ctx.run(agent_run, deferred_tool_results=tool_approval)
-            messages.extend(result.new_messages())
+            new_messages, output_val = await ctx.run(
+                agent_run, deferred_tool_results=tool_approval
+            )
+            messages.extend(new_messages)
 
         # Send final text response
-        await output.send(("assistant", result.output))
+        await output.send(("assistant", output_val))
 
     # Main conversation loop (max 100 rounds)
     for i in range(100):
