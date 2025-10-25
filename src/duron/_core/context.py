@@ -4,9 +4,10 @@ import asyncio
 import contextvars
 import functools
 import inspect
+from collections.abc import AsyncGenerator
 from random import Random
 from typing import TYPE_CHECKING, Concatenate, cast, get_args, get_origin
-from typing_extensions import Any, AsyncGenerator, ParamSpec, TypeVar, final, overload
+from typing_extensions import Any, ParamSpec, TypeVar, final, overload
 
 from duron._core.ops import (
     Barrier,
@@ -269,7 +270,9 @@ class Context:
         return Random(self._loop.generate_op_id() + self._seed)  # noqa: S311
 
     @overload
-    async def complete_future(self, future_id: str, *, result: object) -> None: ...
+    async def complete_future(
+        self, future_id: str, *, result: _T, result_type: TypeHint[_T] = ...
+    ) -> None: ...
     @overload
     async def complete_future(
         self, future_id: str, *, exception: Exception
@@ -280,6 +283,7 @@ class Context:
         *,
         result: object | None = None,
         exception: Exception | None = None,
+        result_type: TypeHint[object] = UnspecifiedType,
     ) -> None:
         """Complete an external future with a result or exception.
 
@@ -293,7 +297,12 @@ class Context:
         """
         await create_op(
             self._loop,
-            FutureComplete(future_id=future_id, value=result, exception=exception),
+            FutureComplete(
+                future_id=future_id,
+                value=result,
+                exception=exception,
+                dtype=result_type,
+            ),
         )
 
 

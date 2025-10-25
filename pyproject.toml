@@ -96,6 +96,7 @@ ban-relative-imports = "all"
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "typing.TypedDict".msg = "Use typing_extensions.TypedDict instead."
 "typing_extensions.AsyncContextManager".msg = "Use contextlib.AbstractAsyncContextManager instead."
+"typing_extensions.AsyncGenerator".msg = "Use collections.abc.AsyncGenerator instead."
 
 [tool.ruff.format]
 preview = true

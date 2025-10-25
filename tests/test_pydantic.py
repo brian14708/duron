@@ -22,10 +22,14 @@ class PydanticPoint(pydantic.BaseModel):
 async def test_pydantic_serialize() -> None:
     class PydanticCodec:
         @staticmethod
-        def encode_json(result: object) -> JSONValue:
+        def encode_json(result: object, annotated_type: TypeHint[Any]) -> JSONValue:
             return cast(
                 "JSONValue",
-                pydantic.TypeAdapter(type(result)).dump_python(result, mode="json"),
+                pydantic.TypeAdapter(
+                    cast("type[object]", annotated_type)
+                    if annotated_type
+                    else type(result)
+                ).dump_python(result, mode="json", exclude_none=True),
             )
 
         @staticmethod

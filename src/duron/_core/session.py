@@ -38,8 +38,7 @@ from duron.log._helper import is_entry
 from duron.loop import EventLoop, create_loop, random_id
 from duron.tracing._span import NULL_SPAN
 from duron.tracing._tracer import current_tracer, span
-from duron.typing import JSONValue
-from duron.typing._hint import UnspecifiedType
+from duron.typing import JSONValue, UnspecifiedType
 from duron.typing._inspect import inspect_function
 
 if TYPE_CHECKING:
@@ -61,6 +60,9 @@ if TYPE_CHECKING:
     from duron.loop import OpFuture, WaitSet
     from duron.tracing import Tracer
     from duron.tracing._tracer import OpSpan
+    from duron.typing import TypeHint
+
+    _T = TypeVar("_T")
 
 
 _P = ParamSpec("_P")
@@ -169,10 +171,24 @@ class Session:
         codec = fn.codec
 
         async def init() -> InitParams:  # noqa: RUF029
+            hint = inspect_function(fn.fn)
             return {
                 "version": _CURRENT_VERSION,
-                "args": [codec.encode_json(arg) for arg in args],
-                "kwargs": {k: codec.encode_json(v) for k, v in kwargs.items()},
+                "args": [
+                    codec.encode_json(
+                        arg,
+                        hint.parameter_types[hint.parameters[i]]
+                        if i < len(hint.parameters)
+                        else UnspecifiedType,
+                    )
+                    for i, arg in enumerate(args)
+                ],
+                "kwargs": {
+                    k: codec.encode_json(
+                        v, hint.parameter_types.get(k, UnspecifiedType)
+                    )
+                    for k, v in kwargs.items()
+                },
                 "nonce": random_id(),
             }
 
@@ -493,17 +509,19 @@ class Task(Generic[_T_co]):
                 await self._enqueue_log(stream_create_entry)
 
             case StreamEmit():
+                stream_info = self._stream_manager.get_info(op.stream_id)
                 stream_emit_entry: StreamEmitEntry = {
                     "ts": self._now_us,
                     "id": id_,
                     "stream_id": op.stream_id,
                     "type": "stream.emit",
-                    "value": self._codec.encode_json(op.value),
+                    "value": self._codec.encode_json(
+                        op.value, stream_info[0] if stream_info else UnspecifiedType
+                    ),
                     "source": "effect" if fut.external else "task",
                 }
-                stream_info = self._stream_manager.get_info(op.stream_id)
                 if stream_info:
-                    (op_span,) = stream_info
+                    _, op_span = stream_info
                     if op_span:
                         op_span.attach(
                             stream_emit_entry,
@@ -513,7 +531,7 @@ class Task(Generic[_T_co]):
             case StreamClose():
                 stream_info = self._stream_manager.get_info(op.stream_id)
                 if stream_info:
-                    (op_span,) = stream_info
+                    _, op_span = stream_info
                     if op.exception:
                         stream_close_entry: StreamCompleteEntry = {
                             "ts": self._now_us,
@@ -569,7 +587,9 @@ class Task(Generic[_T_co]):
                 if op.exception is not None:
                     promise_complete_entry["error"] = encode_error(op.exception)
                 else:
-                    promise_complete_entry["result"] = self._codec.encode_json(op.value)
+                    promise_complete_entry["result"] = self._codec.encode_json(
+                        op.value, op.dtype
+                    )
 
                 if tracer := self._tracer:
                     tracer.end_op_span(op.future_id, promise_complete_entry)
@@ -657,7 +677,7 @@ class Task(Generic[_T_co]):
             ) as span:
                 try:
                     result = await op.callable()
-                    entry["result"] = codec.encode_json(result)
+                    entry["result"] = codec.encode_json(result, op.return_type)
                     span.set_status("OK")
                 except (Exception, asyncio.CancelledError) as e:  # noqa: BLE001
                     entry["error"] = encode_error(e)
@@ -706,7 +726,9 @@ class Task(Generic[_T_co]):
         return w
 
     @overload
-    async def complete_future(self, future_id: str, *, result: object) -> None: ...
+    async def complete_future(
+        self, future_id: str, *, result: _T, result_type: TypeHint[_T] = ...
+    ) -> None: ...
     @overload
     async def complete_future(
         self, future_id: str, *, exception: Exception
@@ -717,6 +739,7 @@ class Task(Generic[_T_co]):
         *,
         result: object | None = None,
         exception: Exception | None = None,
+        result_type: TypeHint[object] = UnspecifiedType,
     ) -> None:
         """Complete a future with the given result or exception.
 
@@ -742,7 +765,7 @@ class Task(Generic[_T_co]):
         if exception is not None:
             entry["error"] = encode_error(exception)
         else:
-            entry["result"] = self._codec.encode_json(result)
+            entry["result"] = self._codec.encode_json(result, result_type)
         if self._tracer:
             self._tracer.end_op_span(future_id, entry)
         await self._enqueue_log(entry)

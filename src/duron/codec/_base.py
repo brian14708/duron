@@ -14,7 +14,9 @@ class Codec(Protocol):
     by the default codec (e.g., dataclasses, Pydantic models, custom objects).
     """
 
-    def encode_json(self, result: object, /) -> JSONValue:
+    def encode_json(
+        self, result: object, annotated_type: TypeHint[Any], /
+    ) -> JSONValue:
         """Convert a Python object to a JSON-serializable value for persistence.
 
         Args:
@@ -49,7 +51,7 @@ class DefaultCodec:
     """
 
     @staticmethod
-    def encode_json(result: object) -> JSONValue:
+    def encode_json(result: object, _annotated_type: TypeHint[Any]) -> JSONValue:
         if DefaultCodec._is_json_value(result):
             return result
         msg = f"Result is not JSON-serializable: {result!r}"

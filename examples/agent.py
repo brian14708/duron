@@ -34,12 +34,12 @@ DEFAULT_MODEL = "gpt-5-nano"
 
 class PydanticCodec(Codec):
     @override
-    def encode_json(self, result: object) -> JSONValue:
+    def encode_json(self, result: object, annotated_type: TypeHint[Any]) -> JSONValue:
         return cast(
             "JSONValue",
-            TypeAdapter(type(result)).dump_python(
-                result, mode="json", exclude_none=True
-            ),
+            TypeAdapter(
+                cast("type[object]", annotated_type) if annotated_type else type(result)
+            ).dump_python(result, mode="json", exclude_none=True),
         )
 
     @override

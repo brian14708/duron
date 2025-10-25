@@ -72,9 +72,9 @@ class StreamManager:
             observer.on_close(offset, exc)
         return True
 
-    def get_info(self, stream_id: str) -> tuple[OpSpan | None] | None:
+    def get_info(self, stream_id: str) -> tuple[TypeHint[Any], OpSpan | None] | None:
         if s := self._streams.get(stream_id):
-            return (s.op_span,)
+            return (s.dtype, s.op_span)
         return None
 
     async def wait_stream(self, name: str) -> str:

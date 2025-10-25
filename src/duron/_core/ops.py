@@ -59,6 +59,7 @@ class FutureCreate(NamedTuple):
 class FutureComplete(NamedTuple):
     future_id: str
     value: object
+    dtype: TypeHint[Any]
     exception: Exception | None
 
 

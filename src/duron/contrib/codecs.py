@@ -15,7 +15,7 @@ class PickleCodec:
     """
 
     @staticmethod
-    def encode_json(result: object) -> str:
+    def encode_json(result: object, _annotated_type: TypeHint[Any]) -> str:
         return binascii.b2a_base64(pickle.dumps(result), newline=False).decode()
 
     @staticmethod
