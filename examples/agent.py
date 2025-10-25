@@ -54,12 +54,12 @@ async def agent_fn(
     output: duron.StreamWriter[tuple[str, str]] = duron.Provided,
 ) -> None:
     """
-    Durable agent workflow that runs a PydanticAI agent with tool approval.
+    Durable agent workflow that runs a PydanticAI agent.
 
     This function demonstrates:
     - Streaming input/output for interactive chat
     - Signal handling for interruption (send "!" to interrupt)
-    - Tool approval workflow (all tools require manual approval)
+    - Tool approval workflow (to simulate checkpoint)
     - Durable execution that can be paused and resumed
 
     Args:

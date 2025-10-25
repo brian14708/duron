@@ -2,11 +2,10 @@
 
 [![CI](https://github.com/brian14708/duron/actions/workflows/ci.yaml/badge.svg)](https://github.com/brian14708/duron/actions/workflows/ci.yaml)
 [![PyPI - Version](https://img.shields.io/pypi/v/duron)](https://pypi.org/project/duron)
+[![Python Versions](https://img.shields.io/pypi/pyversions/duron)](https://pypi.org/project/duron)
 [![License](https://img.shields.io/github/license/brian14708/duron.svg)](https://github.com/brian14708/duron/blob/main/LICENSE)
 
 Duron is a lightweight durable execution runtime for Python async workflows. It provides replayable execution primitives that work standalone or as building blocks for complex workflow engines.
-
-## Why Duron?
 
 - 🪶 **Zero extra deps** — Lightweight library that layers on top of asyncio; add Duron without bloating your stack.
 - 🧩 **Pluggable architecture** — Bring your own storage or infra components and swap them without changing orchestration code.
