@@ -137,7 +137,7 @@ async def agent_fn(
     # Main conversation loop (max 100 rounds)
     for i in range(100):
         # Collect any queued messages without waiting
-        msgs: list[str] = [msgs async for msgs in input_.next_nowait()]
+        msgs: list[str] = list(await input_.next_nowait())
 
         # If no queued messages, wait for next input
         if not msgs:

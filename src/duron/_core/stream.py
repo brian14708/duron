@@ -22,7 +22,7 @@ from duron._core.ops import (
 from duron.loop import EventLoop, wrap_future
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Sequence
     from types import TracebackType
 
     from duron._core.ops import StreamObserver
@@ -162,7 +162,7 @@ class Stream(ABC, Generic[_T]):
         _, val = await self._next()
         return val
 
-    async def next_nowait(self) -> AsyncGenerator[_T]:
+    async def next_nowait(self) -> Iterator[_T]:
         """Yield available values from the stream without blocking.
 
         Yields values that have already been emitted up to the current barrier
@@ -170,20 +170,27 @@ class Stream(ABC, Generic[_T]):
 
         Raises:
             RuntimeError: If called outside of the context's event loop.
+            StreamClosed: If the stream has been closed.
 
-        Yields:
-            Tuples of (offset, value) for each available value.
+        Returns:
+            An iterator over the available stream values.
         """
         if not isinstance(loop := asyncio.get_running_loop(), EventLoop):
             msg = "Context time can only be used in the context loop"
             raise RuntimeError(msg)  # noqa: TRY004
         offset, _ = await create_op(loop, Barrier())
+        output: list[_T] = []
         try:
             while True:
                 _, val = self._next_nowait(offset)
-                yield val
+                output.append(val)
+        except StreamClosed:
+            if output:
+                return iter(output)
+            raise
         except EmptyStream:
-            return
+            pass
+        return iter(output)
 
     # collect methods
 
@@ -263,18 +270,20 @@ class _BufferStream(Stream[_T], Generic[_T]):
             self._event.clear()
             _ = await self._event.wait()
 
-        t, item = self._buffer.popleft()
+        t, item = self._buffer[0]
         if isinstance(item, StreamClosed):
             raise item
+        _ = self._buffer.popleft()
         return t, item
 
     @final
     @override
     def _next_nowait(self, offset: int) -> tuple[int, _T]:
         while self._buffer and self._buffer[0][0] <= offset:
-            t, item = self._buffer.popleft()
+            t, item = self._buffer[0]
             if isinstance(item, StreamClosed):
                 raise item
+            _ = self._buffer.popleft()
             return t, item
         raise EmptyStream
 

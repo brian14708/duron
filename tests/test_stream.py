@@ -140,7 +140,7 @@ async def test_stream_peek() -> None:
         while True:
             data: list[int] = []
             try:
-                data.extend([u async for u in stream.next_nowait()])
+                data.extend(await stream.next_nowait())
                 await asyncio.sleep(0.003)
             except StreamClosed:
                 break
