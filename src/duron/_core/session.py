@@ -339,10 +339,10 @@ class Task(Generic[_T_co]):
             _ = await self._step()
             if is_entry(entry):
                 if entry["source"] == "task":
-                    recvd_msgs.add(entry["id"])
                     if not self._handle_message(o, entry):
-                        msg = "Extra messages found in log"
-                        raise RuntimeError(msg)
+                        e = "Extra messages found in log"
+                        raise RuntimeError(e)
+                    recvd_msgs.add(entry["id"])
                 else:
                     _ = self._handle_message(o, entry)
                 _ = await self._step()
@@ -353,10 +353,19 @@ class Task(Generic[_T_co]):
                 self._pending_msg.pop()
                 recvd_msgs.remove(id_)
 
+        pending: list[Entry] = []
+        for msg in self._pending_msg:
+            if msg["id"] not in recvd_msgs:
+                pending.append(msg)
+            else:
+                recvd_msgs.remove(msg["id"])
+        self._pending_msg = pending
+
         if len(recvd_msgs) > 0:
-            msg = "Extra messages found in log"
-            raise RuntimeError(msg)
-        return self._main.done()
+            e = "Extra messages found in log"
+            raise RuntimeError(e)
+
+        return self._main.done() and len(self._pending_msg) == 0
 
     async def _start(self) -> None:
         if await self._resume():
@@ -599,6 +608,7 @@ class Task(Generic[_T_co]):
                     tracer.end_op_span(op.future_id, promise_complete_entry)
                 await self._enqueue_log(promise_complete_entry)
                 self._loop.post_completion(id_, result=None)
+
             case _:
                 assert_never(op)
 

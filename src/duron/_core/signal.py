@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections import deque
-from typing import TYPE_CHECKING, Final, Generic, cast
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Generic, Literal, cast
 from typing_extensions import Any, TypeVar, final, override
 
-from duron._core.ops import Barrier, StreamCreate, create_op
+from duron._core.ops import StreamCreate, create_op
 from duron._core.stream import OpWriter
 
 if TYPE_CHECKING:
@@ -36,7 +36,10 @@ class SignalInterrupt(Exception):  # noqa: N818
         return f"SignalInterrupt(value={self.value!r})"
 
 
-_SIGNAL_TRIGGER: Final = object()
+@dataclass(slots=True)
+class _SignalState:
+    depth: int
+    triggered: Literal[False] | SignalInterrupt
 
 
 @final
@@ -58,22 +61,19 @@ class Signal(Generic[_T]):
 
     def __init__(self, loop: EventLoop) -> None:
         self._loop = loop
-        # task -> [offset, stack depth]
-        self._tasks: dict[asyncio.Task[Any], tuple[int, int]] = {}
-        self._trigger: deque[tuple[int, _T]] = deque()
+        self._tasks: dict[asyncio.Task[Any], _SignalState] = {}
 
     async def __aenter__(self) -> None:
         task = asyncio.current_task()
         if task is None:
             return
         assert task.get_loop() == self._loop
-        offset, _ = await create_op(self._loop, Barrier())
-        for toffset, value in self._trigger:
-            if toffset > offset:
-                raise SignalInterrupt(value=value)
-        _, depth = self._tasks.get(task, (0, -1))
-        self._tasks[task] = (offset, depth + 1)
-        self._flush()
+        if task not in self._tasks:
+            val = _SignalState(depth=0, triggered=False)
+            self._tasks[task] = val
+        else:
+            val = self._tasks[task]
+            val.depth += 1
 
     async def __aexit__(
         self,
@@ -84,39 +84,26 @@ class Signal(Generic[_T]):
         task = asyncio.current_task()
         if task is None:
             return
-        offset_end, _ = await create_op(self._loop, Barrier())
+        state = self._tasks.pop(task)
+        _ = self._loop.generate_op_scope()
+        triggered = state.triggered
+        if state.depth > 0:
+            state.triggered = False
+            state.depth -= 1
+            self._tasks[task] = state
+        if triggered is not False:
+            if sys.version_info >= (3, 11):
+                _ = task.uncancel()
+            raise triggered from None
 
-        offset_start, depth = self._tasks.pop(task)
-        if depth > 0:
-            self._tasks[task] = (offset_end, depth - 1)
-        for toffset, value in self._trigger:
-            if (
-                offset_start < toffset < offset_end
-                and exc_type is asyncio.CancelledError
-                and (args := cast("asyncio.CancelledError", exc_value).args)
-                and args[0] is _SIGNAL_TRIGGER
-            ):
-                if sys.version_info >= (3, 11):
-                    _ = task.uncancel()
-                self._flush()
-                raise SignalInterrupt(value=value)
-
-    def on_next(self, offset: int, value: _T) -> None:
-        self._trigger.append((offset, value))
-        for t, (toffset, _depth) in self._tasks.items():
-            if toffset < offset:
-                _ = self._loop.call_soon(t.cancel, _SIGNAL_TRIGGER)
+    def on_next(self, _offset: int, value: _T) -> None:
+        for t, state in self._tasks.items():
+            if state.triggered is False:
+                state.triggered = SignalInterrupt(value=value)
+                _ = self._loop.call_soon(t.cancel, state.triggered)
 
     def on_close(self, _offset: int, _exc: Exception | None) -> None:
         pass
-
-    def _flush(self) -> None:
-        if not self._tasks:
-            self._trigger.clear()
-            return
-        min_offset = min((offset for offset, _ in self._tasks.values()))
-        while self._trigger and self._trigger[0][0] < min_offset:
-            _ = self._trigger.popleft()
 
 
 async def create_signal(

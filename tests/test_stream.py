@@ -8,7 +8,15 @@ from typing import TYPE_CHECKING, Annotated
 
 import pytest
 
-from duron import Context, Reducer, Session, StreamClosed, durable, effect
+from duron import (
+    Context,
+    Reducer,
+    Session,
+    SignalInterrupt,
+    StreamClosed,
+    durable,
+    effect,
+)
 from duron.contrib.storage import MemoryLogStorage
 
 if TYPE_CHECKING:
@@ -140,7 +148,7 @@ async def test_stream_peek() -> None:
         while True:
             data: list[int] = []
             try:
-                data.extend(await stream.next_nowait())
+                data.extend(await stream.next_nowait() or ())
                 await asyncio.sleep(0.003)
             except StreamClosed:
                 break
@@ -188,3 +196,61 @@ async def test_stream_cross_loop() -> None:
         async with Session(log) as t:
             b = await (await t.start(activity)).result()
         assert a == b
+
+
+@pytest.mark.asyncio
+async def test_next_timing() -> None:
+    @durable()
+    async def activity(ctx: Context) -> list[list[list[int]]]:
+        stream, write = await ctx.create_stream(int)
+        signal1, sig1_write = await ctx.create_signal(str)
+        results: list[list[list[int]]] = []
+
+        # Emit values continuously
+        async def emitter() -> None:
+            async with write as w:
+                for i in range(50):
+                    await w.send(i)
+                    await asyncio.sleep(0.001)
+
+        # Trigger signal at specific time
+        async def trigger_signal() -> None:
+            async with sig1_write as w:
+                for _i in range(5):
+                    await asyncio.sleep(0.015)
+                    await w.send("interrupt_1")
+
+        a = asyncio.create_task(emitter())
+        b = asyncio.create_task(trigger_signal())
+        # Consume with signal context
+        for i in range(5):
+            batch: list[list[int]] = []
+            try:
+                async with signal1:
+                    # Consume values until interrupted
+                    while True:
+                        if i % 2 == 0:
+                            batch.append(list(await stream.next()))
+                        else:
+                            batch.append(list(await stream.next_nowait() or ()))
+                            await asyncio.sleep(0.002)
+            except StreamClosed:
+                results.append(batch)
+            except SignalInterrupt:
+                results.append(batch)
+        await asyncio.gather(a, b)
+        return results
+
+    # First run
+    log = MemoryLogStorage()
+    async with Session(log) as t:
+        result1 = await (await t.start(activity)).result()
+    a = len(await log.entries())
+    async with Session(log) as t:
+        result2 = await (await t.start(activity)).result()
+    b = len(await log.entries())
+    for chunk1, chunk2 in zip(result1, result2, strict=True):
+        length = min(len(chunk1), len(chunk2))
+        assert len(chunk2) >= len(chunk1)
+        assert chunk1[:length] == chunk2[:length]
+    assert a == b

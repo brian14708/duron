@@ -137,12 +137,14 @@ async def agent_fn(
     # Main conversation loop (max 100 rounds)
     for i in range(100):
         # Collect any queued messages without waiting
-        msgs: list[str] = list(await input_.next_nowait())
+        it = await input_.next_nowait()
+        msgs: list[str] = list(it) if it is not None else []
 
         # If no queued messages, wait for next input
         if not msgs:
+            await output.send(("assistant", "[Waiting on user input...]"))
             m = await input_.next()
-            msgs = [m]
+            msgs.extend(m)
 
         # Execute round with tracing and interruption support
         with span(f"Round #{i + 1}"):

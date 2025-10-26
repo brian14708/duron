@@ -16,6 +16,7 @@ from typing_extensions import Any, TypeVar, TypeVarTuple, Unpack, overload, over
 
 if TYPE_CHECKING:
     import sys
+    from asyncio import CancelledError
     from asyncio.futures import Future
     from collections.abc import Callable, Coroutine, Generator, Sequence
     from contextvars import Context
@@ -118,6 +119,13 @@ class EventLoop(asyncio.AbstractEventLoop):
         ctx = _task_ctx.get()
         ctx.seq += 1
         return derive_id(ctx.parent_id, context=(ctx.seq - 1).to_bytes(4, "big"))
+
+    @staticmethod
+    def generate_op_scope() -> str:
+        ctx = _task_ctx.get()
+        ctx.parent_id = derive_id(ctx.parent_id)
+        ctx.seq = 0
+        return ctx.parent_id
 
     @override
     def call_soon(
@@ -271,6 +279,7 @@ class EventLoop(asyncio.AbstractEventLoop):
         op_fut = OpFuture(id_, params, self, external=external)
         self._ops[id_] = op_fut
         self._added.append(op_fut)
+        op_fut.add_done_callback(lambda f: self._ops.pop(f.id, None))
         return op_fut
 
     @overload
@@ -292,10 +301,7 @@ class EventLoop(asyncio.AbstractEventLoop):
                 raise RuntimeError(msg)
             tid = derive_id(op.id)
             token = _task_ctx.set(_TaskCtx(parent_id=tid))
-            if exception is None:
-                _ = self.call_soon(op.set_result, result)
-            else:
-                _ = self.call_soon(op.set_exception, exception)
+            _ = self.call_soon(_complete_op, op, result, exception)
             _task_ctx.reset(token)
             return True
         return False
@@ -387,6 +393,17 @@ def _copy_future_state(source: asyncio.Future[_T], dest: asyncio.Future[_T]) -> 
         dest.set_exception(exception)
     else:
         dest.set_result(source.result())
+
+
+def _complete_op(
+    op: OpFuture, result: object, exception: Exception | CancelledError | None
+) -> None:
+    if op.cancelled():
+        return
+    if exception is not None:
+        op.set_exception(exception)
+    else:
+        op.set_result(result)
 
 
 def wrap_future(

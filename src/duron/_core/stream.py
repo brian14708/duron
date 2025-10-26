@@ -8,7 +8,7 @@ from asyncio.exceptions import CancelledError
 from collections import deque
 from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Concatenate, Generic, cast
-from typing_extensions import Any, ParamSpec, Protocol, Self, TypeVar, final, override
+from typing_extensions import Any, ParamSpec, Protocol, TypeVar, final, override
 
 from duron._core.ops import (
     Barrier,
@@ -22,7 +22,7 @@ from duron._core.ops import (
 from duron.loop import EventLoop, wrap_future
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Sequence
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
     from types import TracebackType
 
     from duron._core.ops import StreamObserver
@@ -58,10 +58,6 @@ class StreamClosed(Exception):  # noqa: N818
     @property
     def reason(self) -> Exception | None:
         return cast("Exception | None", self.__cause__)
-
-
-class EmptyStream(Exception):  # noqa: N818
-    __slots__ = ()
 
 
 class StreamWriter(
@@ -133,23 +129,7 @@ class Stream(ABC, Generic[_T]):
     """Abstract base class for readable streams."""
 
     @abstractmethod
-    async def _next(self) -> tuple[int, _T]: ...
-    @abstractmethod
-    def _next_nowait(self, offset: int, /) -> tuple[int, _T]: ...
-
-    def __aiter__(self) -> Self:
-        return self
-
-    async def __anext__(self) -> _T:
-        try:
-            _, val = await self._next()
-        except StreamClosed as e:
-            if e.reason is not None:
-                raise e.reason from None
-            raise StopAsyncIteration from None
-        return val
-
-    async def next(self) -> _T:
+    async def next(self) -> Iterator[_T]:
         """Wait for and return the next value from the stream.
 
         Returns:
@@ -158,11 +138,11 @@ class Stream(ABC, Generic[_T]):
 
         Raises:
             StreamClosed: When the stream has been closed.
-        """  # noqa: DOC502
-        _, val = await self._next()
-        return val
+        """
+        ...
 
-    async def next_nowait(self) -> Iterator[_T]:
+    @abstractmethod
+    async def next_nowait(self) -> Iterator[_T] | None:
         """Yield available values from the stream without blocking.
 
         Yields values that have already been emitted up to the current barrier
@@ -175,22 +155,16 @@ class Stream(ABC, Generic[_T]):
         Returns:
             An iterator over the available stream values.
         """
-        if not isinstance(loop := asyncio.get_running_loop(), EventLoop):
-            msg = "Context time can only be used in the context loop"
-            raise RuntimeError(msg)  # noqa: TRY004
-        offset, _ = await create_op(loop, Barrier())
-        output: list[_T] = []
+        ...
+
+    async def __aiter__(self) -> AsyncGenerator[_T]:
         try:
             while True:
-                _, val = self._next_nowait(offset)
-                output.append(val)
-        except StreamClosed:
-            if output:
-                return iter(output)
-            raise
-        except EmptyStream:
-            pass
-        return iter(output)
+                for val in await self.next():
+                    yield val
+        except StreamClosed as e:
+            if e.reason is not None:
+                raise e.reason from None
 
     # collect methods
 
@@ -220,18 +194,6 @@ class Stream(ABC, Generic[_T]):
         """
         return _Map(self, fn)
 
-    def broadcast(self, n: int) -> AbstractAsyncContextManager[Sequence[Stream[_T]]]:
-        """Broadcast stream values to multiple consumers.
-
-        Args:
-            n: Number of broadcast streams to create.
-
-        Returns:
-            An async context manager yielding a sequence of n streams, each \
-                    receiving all values from the source stream.
-        """
-        return _Broadcast(self, n)
-
 
 async def create_stream(
     loop: EventLoop, dtype: TypeHint[_T], name: str | None, metadata: OpMetadata
@@ -258,34 +220,75 @@ class _BufferStream(Stream[_T], Generic[_T]):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._event: asyncio.Event | None = None
         self._buffer: deque[tuple[int, _T | StreamClosed]] = deque()
+        self._cursor: int = -1
 
     @final
     @override
-    async def _next(self) -> tuple[int, _T]:
+    async def next(self) -> Iterator[_T]:
         if not self._event:
             self._loop = asyncio.get_running_loop()
             self._event = asyncio.Event()
 
-        while not self._buffer:
-            self._event.clear()
+        self._event.clear()
+        while not (it := await self.next_nowait()):
             _ = await self._event.wait()
+            self._event.clear()
 
-        t, item = self._buffer[0]
-        if isinstance(item, StreamClosed):
-            raise item
-        _ = self._buffer.popleft()
-        return t, item
+        return it
 
     @final
     @override
-    def _next_nowait(self, offset: int) -> tuple[int, _T]:
-        while self._buffer and self._buffer[0][0] <= offset:
-            t, item = self._buffer[0]
+    async def next_nowait(self) -> Iterator[_T] | None:
+        if not self._loop:
+            self._loop = asyncio.get_running_loop()
+        if isinstance(self._loop, EventLoop):
+            offset = start_cursor = self._cursor
+
+            op = create_op(self._loop, Barrier())
+
+            def cb(f: asyncio.Future[tuple[int, int]]) -> None:
+                if not f.cancelled():
+                    offset, _ = f.result()
+                    self._cursor = max(self._cursor, offset)
+
+            op.add_done_callback(cb)
+            offset, _ = await asyncio.shield(op)
+            self._cursor = max(self._cursor, offset)
+        else:
+            start_cursor = -1
+            offset = -1
+
+        result: list[_T] = []
+        for t, item in self._buffer:
+            if t > offset and offset != -1:
+                break
+
+            if t < start_cursor:
+                continue
+
             if isinstance(item, StreamClosed):
+                if len(result) > 0:
+                    break
                 raise item
-            _ = self._buffer.popleft()
-            return t, item
-        raise EmptyStream
+            result.append(item)
+
+        if self._buffer:
+            t, item = self._buffer[0]
+            if (
+                isinstance(item, StreamClosed)
+                and t <= start_cursor
+                and len(result) == 0
+            ):
+                raise item
+
+        while self._buffer:
+            t, item = self._buffer[0]
+            if t > offset and offset != -1:
+                break
+            if isinstance(item, StreamClosed):
+                break
+            self._buffer.popleft()
+        return iter(result) if result else None
 
     def on_next(self, offset: int, value: object) -> None:
         self._buffer.append((offset, cast("_T", value)))
@@ -308,55 +311,13 @@ class _Map(Stream[_U], Generic[_T, _U]):
         self._fn = fn
 
     @override
-    async def _next(self) -> tuple[int, _U]:
-        t, val = await self._stream._next()  # noqa: SLF001
-        return t, self._fn(val)
+    async def next(self) -> Iterator[_U]:
+        return map(self._fn, await self._stream.next())
 
     @override
-    def _next_nowait(self, offset: int) -> tuple[int, _U]:
-        t, val = self._stream._next_nowait(offset)  # noqa: SLF001
-        return t, self._fn(val)
-
-
-@final
-class _Broadcast(Generic[_T]):
-    __slots__ = ("_n", "_parent", "_task")
-
-    def __init__(self, parent: Stream[_T], n: int) -> None:
-        self._parent = parent
-        self._task: asyncio.Task[None] | None = None
-        self._n = n
-
-    async def _pump(self, writers: list[StreamObserver]) -> None:
-        try:
-            while True:
-                o, v = await self._parent._next()  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
-                for s in writers:
-                    s.on_next(o, v)
-        except StreamClosed as e:
-            for s in writers:
-                s.on_close(e.offset, e.reason)
-
-    async def __aenter__(self) -> Sequence[Stream[_T]]:
-        writers: list[StreamObserver] = []
-        streams: list[Stream[_T]] = []
-        for _i in range(self._n):
-            s, w = create_buffer_stream()
-            streams.append(s)
-            writers.append(w)
-        self._task = asyncio.create_task(self._pump(writers))
-        return streams
-
-    async def __aexit__(
-        self,
-        _exc_type: type[BaseException] | None,
-        _exc_value: BaseException | None,
-        _traceback: TracebackType | None,
-    ) -> None:
-        if self._task:
-            _ = self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
+    async def next_nowait(self) -> Iterator[_U] | None:
+        it = await self._stream.next_nowait()
+        return map(self._fn, it) if it is not None else None
 
 
 @contextlib.asynccontextmanager

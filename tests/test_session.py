@@ -312,6 +312,8 @@ async def test_mismatch() -> None:
     @durable()
     async def activity2(ctx: Context) -> None:
         _ = await ctx.time_ns()
+        _ = await ctx.time_ns()
+        _ = await ctx.time_ns()
 
     @durable()
     async def activity3(ctx: Context) -> None:
@@ -325,7 +327,7 @@ async def test_mismatch() -> None:
         await t.verify(activity)
 
     async with Session(log) as t:
-        with pytest.raises(RuntimeError, match="Extra"):
+        with pytest.raises(RuntimeError, match="not complete"):
             await t.verify(activity2)
 
     async with Session(log) as t:
