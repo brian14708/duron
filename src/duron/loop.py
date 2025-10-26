@@ -274,21 +274,22 @@ class EventLoop(asyncio.AbstractEventLoop):
         return op_fut
 
     @overload
-    def post_completion(self, id_: str, *, result: object) -> None: ...
+    def post_completion(self, id_: str, *, result: object) -> bool: ...
     @overload
     def post_completion(
         self, id_: str, *, exception: Exception | asyncio.CancelledError
-    ) -> None: ...
+    ) -> bool: ...
     def post_completion(
         self,
         id_: str,
         *,
         result: object = None,
         exception: Exception | asyncio.CancelledError | None = None,
-    ) -> None:
+    ) -> bool:
         if op := self._ops.pop(id_, None):
-            if op.done():
-                return
+            if op.done() and not op.cancelled():
+                msg = "operation already completed"
+                raise RuntimeError(msg)
             tid = derive_id(op.id)
             token = _task_ctx.set(_TaskCtx(parent_id=tid))
             if exception is None:
@@ -296,6 +297,8 @@ class EventLoop(asyncio.AbstractEventLoop):
             else:
                 _ = self.call_soon(op.set_exception, exception)
             _task_ctx.reset(token)
+            return True
+        return False
 
     @override
     def is_closed(self) -> bool:
@@ -315,7 +318,7 @@ class EventLoop(asyncio.AbstractEventLoop):
             _ = asyncio.gather(*to_cancel, return_exceptions=True)
             _ = self._poll(self.time_us())
             for task in to_cancel:
-                if task.cancelled():
+                if task.cancelled() or not task.done():
                     continue
                 if task.exception() is not None:
                     self.call_exception_handler({

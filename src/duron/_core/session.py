@@ -338,10 +338,14 @@ class Task(Generic[_T_co]):
             self._now_us = max(self._now_us, ts)
             _ = await self._step()
             if is_entry(entry):
-                await self._handle_message(o, entry)
+                if entry["source"] == "task":
+                    recvd_msgs.add(entry["id"])
+                    if not self._handle_message(o, entry):
+                        msg = "Extra messages found in log"
+                        raise RuntimeError(msg)
+                else:
+                    _ = self._handle_message(o, entry)
                 _ = await self._step()
-            if entry["source"] == "task":
-                recvd_msgs.add(entry["id"])
             while self._pending_msg:
                 id_ = self._pending_msg[-1]["id"]
                 if id_ not in recvd_msgs:
@@ -606,41 +610,41 @@ class Task(Generic[_T_co]):
             return
         else:
             offset = await self._log.append(self._lease, entry)
-            await self._handle_message(offset, entry)
+            self._handle_message(offset, entry)
 
-    async def _handle_message(self, offset: int, e: Entry) -> None:
+    def _handle_message(self, offset: int, e: Entry) -> bool:
         if e["type"] == "promise.complete":
             id_ = e["promise_id"]
             (return_type,) = self._task_manager.complete_task(id_)
             if "error" in e:
-                self._loop.post_completion(id_, exception=decode_error(e["error"]))
-            elif "result" in e:
+                return self._loop.post_completion(
+                    id_, exception=decode_error(e["error"])
+                )
+            if "result" in e:
                 try:
                     result = self._codec.decode_json(e["result"], return_type)
-                    self._loop.post_completion(id_, result=result)
+                    return self._loop.post_completion(id_, result=result)
                 except Exception as exc:  # noqa: BLE001
-                    self._loop.post_completion(id_, exception=exc)
+                    return self._loop.post_completion(id_, exception=exc)
             else:
                 msg = f"Invalid promise.complete entry: {e!r}"
                 raise ValueError(msg)
         elif e["type"] == "stream.create":
             id_ = e["id"]
             if self._stream_manager.get_info(e["id"]) is None:
-                self._loop.post_completion(
+                return self._loop.post_completion(
                     id_, exception=ValueError("Stream not found")
                 )
-            else:
-                self._loop.post_completion(id_, result=e["id"])
+            return self._loop.post_completion(id_, result=e["id"])
         elif e["type"] == "stream.emit":
             id_ = e["id"]
             if self._stream_manager.send_to_stream(
                 e["stream_id"], self._codec, offset, e["value"]
             ):
-                self._loop.post_completion(id_, result=None)
-            else:
-                self._loop.post_completion(
-                    id_, exception=ValueError("Stream not found")
-                )
+                return self._loop.post_completion(id_, result=None)
+            return self._loop.post_completion(
+                id_, exception=ValueError("Stream not found")
+            )
         elif e["type"] == "stream.complete":
             id_ = e["id"]
             succ = self._stream_manager.close_stream(
@@ -649,15 +653,15 @@ class Task(Generic[_T_co]):
                 decode_error(e["error"]) if "error" in e else None,
             )
             if succ:
-                self._loop.post_completion(id_, result=None)
-            else:
-                self._loop.post_completion(
-                    id_, exception=ValueError("Stream not found")
-                )
+                return self._loop.post_completion(id_, result=None)
+            return self._loop.post_completion(
+                id_, exception=ValueError("Stream not found")
+            )
         elif e["type"] == "barrier":
-            self._loop.post_completion(e["id"], result=(offset, e["ts"]))
+            return self._loop.post_completion(e["id"], result=(offset, e["ts"]))
         else:
             assert_type(e["type"], Literal["promise.create", "trace"])
+            return True
 
     def _task_run(
         self, id_: str, op: FnCall, op_span: OpSpan | None
