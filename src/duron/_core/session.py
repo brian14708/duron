@@ -399,6 +399,7 @@ class Task(Generic[_T_co]):
                 await self._enqueue_log(msg)
             self._pending_msg.clear()
             self._task_manager.start()
+            await asyncio.sleep(0)
 
             if self._now_us == 0:
                 self._now_us = max(self._now_us, time.time_ns() // 1_000)
@@ -498,6 +499,7 @@ class Task(Generic[_T_co]):
 
                 if self._is_live:
                     self._task_manager.add_task(id_, run(), op.context, op.return_type)
+                    await asyncio.sleep(0)
                 else:
                     self._task_manager.add_pending(id_, run, op.context, op.return_type)
 

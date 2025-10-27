@@ -344,9 +344,8 @@ async def test_fast_error() -> None:
 
     log = MemoryLogStorage()
     async with Session(log) as t:
-        run = await t.start(activity)
         with pytest.raises(ValueError, match="test error"):
-            await run.result()
+            await (await t.start(activity)).result()
 
 
 @durable
