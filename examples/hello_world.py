@@ -31,11 +31,11 @@ async def generate_lucky_number() -> int:
 
 
 @duron.effect
-async def count_up(count: int, target: int) -> AsyncGenerator[int, int]:
+async def count_up(curr: int, target: int) -> AsyncGenerator[int, int]:
     await asyncio.sleep(0.5)
-    while count < target:
-        count = yield (count + 10)
-        logger.info("⚡ Current count: %s", count)
+    while curr < target:
+        curr = yield (curr + 10)
+        logger.info("⚡ Current count: %s", curr)
         await asyncio.sleep(0.05)
 
 

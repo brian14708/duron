@@ -234,18 +234,18 @@ async def producer(
     ctx: duron.Context,
     output: StreamWriter[str] = Provided
 ) -> None:
-    for i in range(5):
-        await output.send(f"Message {i}")
-        await asyncio.sleep(1)
+    async with output as o:
+        for i in range(5):
+            await o.send(f"Message {i}")
+            await asyncio.sleep(1)
 
 async def main():
     async with duron.Session(storage) as session:
         task = await session.start(producer)
-        stream: Stream[str] = task.open_stream("output", "r")
+        stream: Stream[str] = await task.open_stream("output", "r")
 
-        async with stream as s:
-            async for message in s:
-                print(f"Received: {message}")
+        async for message in stream:
+            print(f"Received: {message}")
 
         await task.result()
 ```
