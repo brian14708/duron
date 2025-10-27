@@ -400,7 +400,8 @@ class Task(Generic[_T_co]):
             self._pending_msg.clear()
             self._task_manager.start()
 
-            self._now_us = max(self._now_us + 1, time.time_ns() // 1_000)
+            if self._now_us == 0:
+                self._now_us = max(self._now_us, time.time_ns() // 1_000)
             while waitset := await self._step():
                 if self._tracer:
                     await waitset.block(self._now_us, 1_000_000)
