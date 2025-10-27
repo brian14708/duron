@@ -35,7 +35,7 @@ _task_ctx: contextvars.ContextVar[_TaskCtx] = contextvars.ContextVar("duron.task
 
 
 class OpFuture(asyncio.Future[object]):
-    __slots__: tuple[str, ...] = ("id", "params")
+    __slots__: tuple[str, ...] = ("external", "id", "params")
 
     def __init__(
         self,
@@ -121,11 +121,10 @@ class EventLoop(asyncio.AbstractEventLoop):
         return derive_id(ctx.parent_id, context=(ctx.seq - 1).to_bytes(4, "big"))
 
     @staticmethod
-    def generate_op_scope() -> str:
+    def generate_op_scope() -> None:
         ctx = _task_ctx.get()
         ctx.parent_id = derive_id(ctx.parent_id)
         ctx.seq = 0
-        return ctx.parent_id
 
     @override
     def call_soon(

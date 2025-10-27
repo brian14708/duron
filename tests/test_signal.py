@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import random
+import sys
 from typing import cast
 
 import pytest
@@ -92,3 +94,34 @@ async def test_signal_timing() -> None:
 
     async with Session(log) as t:
         assert await (await t.start(activity)).result() == a
+
+
+@pytest.mark.asyncio
+async def test_timeout_timing() -> None:
+    @durable()
+    async def activity(ctx: Context) -> list[int]:
+        async def work() -> None:
+            await asyncio.sleep(random.random() * 0.02)
+
+        async def tracker() -> int:
+            values = 0
+            for _i in range(100):
+                with contextlib.suppress(asyncio.TimeoutError):
+                    if sys.version_info >= (3, 11):
+                        async with asyncio.timeout(0.01):
+                            await ctx.run(work)
+                            await ctx.time_ns()
+                            values += 1
+            return values
+
+        return await asyncio.gather(*(tracker() for _ in range(4)))
+
+    log = MemoryLogStorage()
+    async with Session(log) as t:
+        run = await t.start(activity)
+        a = await run.result()
+
+    async with Session(log) as t:
+        b = await (await t.start(activity)).result()
+
+    assert a == b

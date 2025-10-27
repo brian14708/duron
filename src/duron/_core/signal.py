@@ -84,17 +84,21 @@ class Signal(Generic[_T]):
         task = asyncio.current_task()
         if task is None:
             return
-        state = self._tasks.pop(task)
-        _ = self._loop.generate_op_scope()
+
+        state = self._tasks[task]
         triggered = state.triggered
         if state.depth > 0:
             state.triggered = False
             state.depth -= 1
-            self._tasks[task] = state
+        else:
+            del self._tasks[task]
+
+        self._loop.generate_op_scope()
         if triggered is not False:
+            # the last op might be in indeterminate state
             if sys.version_info >= (3, 11):
                 _ = task.uncancel()
-            raise triggered from None
+            raise triggered from exc_value
 
     def on_next(self, _offset: int, value: _T) -> None:
         for t, state in self._tasks.items():

@@ -148,7 +148,7 @@ async def test_stream_peek() -> None:
         while True:
             data: list[int] = []
             try:
-                data.extend(await stream.next_nowait() or ())
+                data.extend(await stream.next(block=False))
                 await asyncio.sleep(0.003)
             except StreamClosed:
                 break
@@ -208,10 +208,11 @@ async def test_next_timing() -> None:
 
         # Emit values continuously
         async def emitter() -> None:
+            rnd = ctx.random()
             async with write as w:
                 for i in range(50):
                     await w.send(i)
-                    await asyncio.sleep(0.001)
+                    await asyncio.sleep(rnd.random() * 0.001)
 
         # Trigger signal at specific time
         async def trigger_signal() -> None:
@@ -229,11 +230,14 @@ async def test_next_timing() -> None:
                 async with signal1:
                     # Consume values until interrupted
                     while True:
-                        if i % 2 == 0:
-                            batch.append(list(await stream.next()))
+                        if i % 3 == 0:
+                            batch.append(list(await stream.next(block=True)))
+                        if i % 3 == 1:
+                            batch.append(list(await stream.next(block=False)))
+                            await asyncio.sleep(0.01)
                         else:
-                            batch.append(list(await stream.next_nowait() or ()))
-                            await asyncio.sleep(0.002)
+                            batch.append(list(await stream.next(block=False)))
+                            await asyncio.sleep(0.0001)
             except StreamClosed:
                 results.append(batch)
             except SignalInterrupt:
