@@ -333,10 +333,15 @@ class Task(Generic[_T_co]):
 
     async def _resume(self) -> bool:
         recvd_msgs: set[str] = set()
+        ws: WaitSet | None = None
         async for o, entry in self._log.stream():
             ts = entry["ts"]
+            while ws and ws.timer and ws.timer < ts:
+                self._now_us = max(self._now_us, ws.timer)
+                ws = await self._step()
+
             self._now_us = max(self._now_us, ts)
-            _ = await self._step()
+            ws = await self._step()
             if is_entry(entry):
                 if entry["source"] == "task":
                     if not self._handle_message(o, entry):
@@ -345,7 +350,7 @@ class Task(Generic[_T_co]):
                     recvd_msgs.add(entry["id"])
                 else:
                     _ = self._handle_message(o, entry)
-                _ = await self._step()
+                ws = await self._step()
             while self._pending_msg:
                 id_ = self._pending_msg[-1]["id"]
                 if id_ not in recvd_msgs:
@@ -402,8 +407,12 @@ class Task(Generic[_T_co]):
                     await self._send_traces()
                 else:
                     await waitset.block(self._now_us)
-                _ = await self._step()
-                self._now_us = max(self._now_us + 1, time.time_ns() // 1_000)
+                waitset = await self._step()
+                now = time.time_ns() // 1_000
+                if waitset and waitset.timer and waitset.timer < now:
+                    self._now_us = max(self._now_us, waitset.timer)
+                else:
+                    self._now_us = max(self._now_us, now)
 
             # cleanup
             self._loop.close()

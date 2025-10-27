@@ -68,6 +68,7 @@ class Signal(Generic[_T]):
         if task is None:
             return
         assert task.get_loop() == self._loop
+
         if task not in self._tasks:
             val = _SignalState(depth=0, triggered=False)
             self._tasks[task] = val

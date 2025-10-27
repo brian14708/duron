@@ -60,12 +60,16 @@ async def test_signal_timing() -> None:
         async def tracker(signal: Signal[int], t: float) -> list[int]:
             values: list[int] = []
             while True:
+                cnt = 0
                 await asyncio.sleep(t)
                 try:
                     async with signal:
-                        await asyncio.sleep(9999)
+                        while True:
+                            cnt += 1
+                            await asyncio.sleep(0.0001)
+                            await ctx.run(asyncio.sleep, 0.001)
                 except SignalInterrupt as e:
-                    values.append(cast("int", e.value))
+                    values.append(cast("int", e.value) + cnt)
                     if len(values) > 10:
                         return values
 
@@ -110,7 +114,6 @@ async def test_timeout_timing() -> None:
                     if sys.version_info >= (3, 11):
                         async with asyncio.timeout(0.01):
                             await ctx.run(work)
-                            await ctx.time_ns()
                             values += 1
             return values
 

@@ -147,9 +147,8 @@ class EventLoop(asyncio.AbstractEventLoop):
         *args: Unpack[_Ts],
         context: Context | None = None,
     ) -> asyncio.TimerHandle:
-        th = asyncio.TimerHandle(
-            int(when * 1e6), callback, args, loop=self, context=context
-        )
+        t = int(when * 1e6 - self._now_us) + self._now_us
+        th = asyncio.TimerHandle(t, callback, args, loop=self, context=context)
         heappush(self._timers, th)
         if asyncio.get_running_loop() is self._host:
             self._event.set()
@@ -164,11 +163,7 @@ class EventLoop(asyncio.AbstractEventLoop):
         context: Context | None = None,
     ) -> asyncio.TimerHandle:
         th = asyncio.TimerHandle(
-            self.time_us() + int(delay * 1e6),
-            callback,
-            args,
-            loop=self,
-            context=context,
+            self._now_us + int(delay * 1e6), callback, args, loop=self, context=context
         )
         heappush(self._timers, th)
         if asyncio.get_running_loop() is self._host:
@@ -244,7 +239,6 @@ class EventLoop(asyncio.AbstractEventLoop):
 
     def poll_completion(self, task: Future[_T]) -> WaitSet | None:
         assert asyncio.get_running_loop() is self._host
-        now = self.time_us()
         self._event.clear()
 
         # hot path - inline task context switch
@@ -252,7 +246,7 @@ class EventLoop(asyncio.AbstractEventLoop):
             tasks._leave_task(self._host, prev_task)  # noqa: SLF001
         events._set_running_loop(self)  # noqa: SLF001
         try:
-            next_deadline = self._poll(now)
+            next_deadline = self._poll(self._now_us)
             if task.done():
                 return None
             added, self._added = self._added, []
@@ -316,12 +310,12 @@ class EventLoop(asyncio.AbstractEventLoop):
             tasks._leave_task(self._host, prev_task)  # noqa: SLF001
         events._set_running_loop(self)  # noqa: SLF001
         try:
-            _ = self._poll(self.time_us())
+            _ = self._poll(self._now_us)
             to_cancel = (*tasks.all_tasks(), *self._ops.values())
             for t in to_cancel:
                 t.cancel()
             _ = asyncio.gather(*to_cancel, return_exceptions=True)
-            _ = self._poll(self.time_us())
+            _ = self._poll(self._now_us)
             for task in to_cancel:
                 if task.cancelled() or not task.done():
                     continue
