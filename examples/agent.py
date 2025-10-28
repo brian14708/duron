@@ -4,8 +4,8 @@ import argparse
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
-from typing_extensions import override
+from typing import TYPE_CHECKING, cast
+from typing_extensions import Any, override
 
 from httpx import AsyncClient
 from pydantic import BaseModel, TypeAdapter
@@ -52,8 +52,7 @@ async def agent_fn(
     signal: duron.Signal[None] = duron.Provided,
     output: duron.StreamWriter[tuple[str, str]] = duron.Provided,
 ) -> None:
-    """
-    Durable agent workflow that runs a PydanticAI agent.
+    """Durable agent workflow that runs a PydanticAI agent.
 
     This function demonstrates:
     - Streaming input/output for interactive chat
@@ -66,6 +65,7 @@ async def agent_fn(
         input_: Stream of user messages
         signal: Signal for interrupting the current round
         output: Stream writer for sending responses
+
     """
     # Initialize HTTP client for API calls
     deps = Deps(client=AsyncClient())
@@ -104,8 +104,7 @@ async def agent_fn(
         return (result.new_messages(), result.output)
 
     async def run_round(user_input: str) -> None:
-        """
-        Execute one conversation round, handling tool approval loop.
+        """Execute one conversation round, handling tool approval loop.
 
         Flow:
         1. Run agent with user input
@@ -234,6 +233,7 @@ async def get_lat_lng(ctx: RunContext[Deps], location_description: str) -> LatLn
 
     Returns:
         A LatLng object containing the latitude and longitude.
+
     """
     r = await ctx.deps.client.get(
         "https://demo-endpoints.pydantic.workers.dev/latlng",
@@ -255,6 +255,7 @@ async def get_weather(ctx: RunContext[Deps], lat: float, lng: float) -> dict[str
     Returns:
         A dictionary containing the temperature and description of the \
                 weather.
+
     """
     # NOTE: the responses here will be random, and are not related to the lat and lng.
     temp_response, descr_response = await asyncio.gather(

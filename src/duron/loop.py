@@ -5,6 +5,7 @@ import binascii
 import contextlib
 import contextvars
 import logging
+import math
 import os
 from asyncio import events, tasks
 from collections import deque
@@ -69,12 +70,8 @@ class WaitSet:
         else:
             t = (self.timer - now_us) * 1e-6
         if t > 0:
-            task = asyncio.create_task(self.event.wait())
-            done, _ = await asyncio.wait((task,), timeout=t)
-            if task not in done:
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+            with contextlib.suppress(asyncio.TimeoutError):
+                _ = await asyncio.wait_for(self.event.wait(), timeout=t)
 
 
 @dataclass(slots=True)
@@ -147,7 +144,7 @@ class EventLoop(asyncio.AbstractEventLoop):
         *args: Unpack[_Ts],
         context: Context | None = None,
     ) -> asyncio.TimerHandle:
-        t = int(when * 1e6 - self._now_us) + self._now_us
+        t = math.ceil(when * 1e6 - self._now_us) + self._now_us
         th = asyncio.TimerHandle(t, callback, args, loop=self, context=context)
         heappush(self._timers, th)
         if asyncio.get_running_loop() is self._host:
@@ -163,7 +160,11 @@ class EventLoop(asyncio.AbstractEventLoop):
         context: Context | None = None,
     ) -> asyncio.TimerHandle:
         th = asyncio.TimerHandle(
-            self._now_us + int(delay * 1e6), callback, args, loop=self, context=context
+            self._now_us + math.ceil(delay * 1e6),
+            callback,
+            args,
+            loop=self,
+            context=context,
         )
         heappush(self._timers, th)
         if asyncio.get_running_loop() is self._host:
@@ -173,9 +174,6 @@ class EventLoop(asyncio.AbstractEventLoop):
     @override
     def time(self) -> float:
         return self._now_us * 1e-6
-
-    def time_us(self) -> int:
-        return self._now_us
 
     def tick(self, time: int) -> None:
         self._now_us = time
@@ -211,31 +209,23 @@ class EventLoop(asyncio.AbstractEventLoop):
             deadline: int | None = None
             while timers:
                 ht = timers[0]
-                t = int(ht.when())
                 if ht._cancelled:  # noqa: SLF001
                     _ = heappop(timers)
-                elif t <= now:
+                elif (t := int(ht.when())) <= now:
                     _ = heappop(timers)
                     ready.append(ht)
                 else:
                     deadline = t
                     break
 
-            if not ready:
-                break
+            if len(ready) == 0:
+                return deadline
+
             while ready:
                 h = ready.popleft()
                 if h._cancelled:  # noqa: SLF001
                     continue
-                try:
-                    h._run()  # noqa: SLF001
-                except Exception as exc:  # noqa: BLE001
-                    self.call_exception_handler({
-                        "message": "exception in callback",
-                        "exception": exc,
-                        "handle": h,
-                    })
-        return deadline
+                h._run()  # noqa: SLF001
 
     def poll_completion(self, task: Future[_T]) -> WaitSet | None:
         assert asyncio.get_running_loop() is self._host

@@ -23,7 +23,7 @@ from typing_extensions import Any, ParamSpec, TypeVar, final, overload
 from duron._core.config import config
 from duron._core.signal import Signal
 from duron._core.stream import Stream, StreamWriter
-from duron.typing._inspect import inspect_function
+from duron.typing import inspect_function
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Iterable
@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from duron.typing import TypeHint
 
 
-_T_co = TypeVar("_T_co", covariant=True)
+_T = TypeVar("_T")
 _P = ParamSpec("_P")
 
 
@@ -44,11 +44,13 @@ Mark a parameter as provided when invoked.
 
 
 @final
-class DurableFn(Generic[_P, _T_co]):
+class DurableFn(Generic[_P, _T]):
+    __slots__ = ("codec", "fn", "inject")
+
     def __init__(
         self,
         codec: Codec,
-        fn: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]],
+        fn: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T]],
         inject: Iterable[tuple[str, type, TypeHint[Any]]],
     ) -> None:
         self.codec = codec
@@ -58,28 +60,26 @@ class DurableFn(Generic[_P, _T_co]):
 
 @overload
 def durable(
-    f: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]], /
-) -> DurableFn[_P, _T_co]: ...
+    f: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T]], /
+) -> DurableFn[_P, _T]: ...
 @overload
 def durable(
     *, codec: Codec | None = None
 ) -> Callable[
-    [Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]]],
-    DurableFn[_P, _T_co],
+    [Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T]]], DurableFn[_P, _T]
 ]: ...
 def durable(
-    f: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]] | None = None,
+    f: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T]] | None = None,
     /,
     *,
     codec: Codec | None = None,
 ) -> (
-    DurableFn[_P, _T_co]
+    DurableFn[_P, _T]
     | Callable[
-        [Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]]],
-        DurableFn[_P, _T_co],
+        [Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T]]], DurableFn[_P, _T]
     ]
 ):
-    """Decorator to mark async functions as durable.
+    """Mark async functions as durable.
 
     Durable functions are the main orchestration layer in Duron. They:
 
@@ -88,6 +88,7 @@ def durable(
     - Use [duron.Provided][] to mark parameters that will be injected at runtime
 
     Args:
+        f: Function to mark as durable
         codec: Optional codec for serialization
 
     Example:
@@ -100,11 +101,12 @@ def durable(
 
     Returns:
         DurableFn that can be passed to [Session.start][duron.Session.start]
+
     """
 
     def decorate(
-        fn: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T_co]],
-    ) -> DurableFn[_P, _T_co]:
+        fn: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T]],
+    ) -> DurableFn[_P, _T]:
         info = inspect_function(fn)
         inject = (
             (name, *ty)
@@ -120,8 +122,10 @@ def durable(
 
 def _parse_type(tp: TypeHint[Any]) -> tuple[type, TypeHint[Any]] | None:
     origin = get_origin(tp)
-    args = get_args(tp)
+    if not origin:
+        return None
 
+    args = get_args(tp)
     if origin is Stream and args:
         return (Stream, cast("TypeHint[Any]", args[0]))
     if origin is Signal and args:

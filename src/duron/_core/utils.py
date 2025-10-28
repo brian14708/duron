@@ -8,7 +8,7 @@ if TYPE_CHECKING:
 
 
 def encode_error(error: Exception | CancelledError) -> ErrorInfo:
-    if type(error) is CancelledError:
+    if isinstance(error, CancelledError):
         return {"code": -2, "message": repr(error)}
     return {"code": -1, "message": repr(error)}
 

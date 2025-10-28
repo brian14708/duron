@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import functools
 from abc import ABC, abstractmethod
 from asyncio.exceptions import CancelledError
 from collections import deque
@@ -33,7 +34,7 @@ if TYPE_CHECKING:
 
 _T = TypeVar("_T")
 _U = TypeVar("_U")
-_InT = TypeVar("_InT", contravariant=True)  # noqa: PLC0105
+_T_contra = TypeVar("_T_contra", contravariant=True)
 
 
 @final
@@ -47,6 +48,7 @@ class StreamClosed(Exception):  # noqa: N818
     Attributes:
         offset: The operation offset at which the stream was closed.
         reason: The exception that caused the stream to close, if any.
+
     """
 
     __slots__ = ("offset",)
@@ -62,15 +64,16 @@ class StreamClosed(Exception):  # noqa: N818
 
 
 class StreamWriter(
-    AbstractAsyncContextManager["StreamWriter[_InT]"], Protocol, Generic[_InT]
+    AbstractAsyncContextManager["StreamWriter[_T_contra]"], Protocol, Generic[_T_contra]
 ):
     """Protocol for writing values to a stream."""
 
-    async def send(self, value: _InT, /) -> None:
+    async def send(self, value: _T_contra, /) -> None:
         """Send a value to the stream.
 
         Args:
             value: The value to send to stream consumers.
+
         """
         ...
 
@@ -79,12 +82,13 @@ class StreamWriter(
 
         Args:
             error: Optional exception to signal an error condition to consumers.
+
         """
         ...
 
 
 @final
-class OpWriter(Generic[_InT]):
+class OpWriter(Generic[_T_contra]):
     __slots__ = ("_closed", "_loop", "_stream_id")
 
     def __init__(self, stream_id: str, loop: EventLoop) -> None:
@@ -92,7 +96,7 @@ class OpWriter(Generic[_InT]):
         self._loop = loop
         self._closed = False
 
-    async def send(self, value: _InT, /) -> None:
+    async def send(self, value: _T_contra, /) -> None:
         await wrap_future(
             create_op(self._loop, StreamEmit(stream_id=self._stream_id, value=value))
         )
@@ -105,7 +109,7 @@ class OpWriter(Generic[_InT]):
         )
         self._closed = True
 
-    async def __aenter__(self) -> StreamWriter[_InT]:
+    async def __aenter__(self) -> StreamWriter[_T_contra]:
         return self
 
     async def __aexit__(
@@ -142,6 +146,7 @@ class Stream(ABC, AsyncIterable[_T], Generic[_T]):
 
         Raises:
             StreamClosed: When the stream has been closed.
+
         """
         ...
 
@@ -152,6 +157,7 @@ class Stream(ABC, AsyncIterable[_T], Generic[_T]):
 
         Returns:
             A list containing all values emitted by the stream.
+
         """
         return [e async for e in self]
 
@@ -170,6 +176,7 @@ class Stream(ABC, AsyncIterable[_T], Generic[_T]):
 
         Returns:
             A new stream that yields transformed values.
+
         """
         return _Map(self, fn)
 
@@ -211,12 +218,11 @@ class _BufferStream(Stream[_T], Generic[_T]):
         if not block:
             return await self._next_nowait()
 
-        self._event.clear()
-        while not (it := await self._next_nowait()):
+        while True:
             _ = await self._event.wait()
             self._event.clear()
-
-        return it
+            if it := await self._next_nowait():
+                return it
 
     async def _next_nowait(self) -> Sequence[_T]:
         if not self._loop:
@@ -336,7 +342,7 @@ async def run_stateful(
         create_op(
             loop,
             FnCall(
-                callable=lambda: stream.worker(sink),
+                callable=functools.partial(stream.worker, sink),
                 return_type=type(initial),
                 context=contextvars.copy_context(),
                 metadata=OpMetadata(name=name),

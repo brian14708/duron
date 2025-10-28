@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Generic, Literal, cast
+from typing import TYPE_CHECKING, Generic
 from typing_extensions import Any, TypeVar, final, override
 
 from duron._core.ops import StreamCreate, create_op
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from duron._core.ops import OpMetadata
     from duron._core.stream import StreamWriter
     from duron.loop import EventLoop
-    from duron.typing._hint import TypeHint
+    from duron.typing import TypeHint
 
 _T = TypeVar("_T")
 
@@ -25,6 +25,7 @@ class SignalInterrupt(Exception):  # noqa: N818
 
     Attributes:
         value: The value passed to the signal trigger that caused the interrupt.
+
     """
 
     def __init__(self, value: object) -> None:
@@ -39,7 +40,7 @@ class SignalInterrupt(Exception):  # noqa: N818
 @dataclass(slots=True)
 class _SignalState:
     depth: int
-    triggered: Literal[False] | SignalInterrupt
+    triggered: SignalInterrupt | None
 
 
 @final
@@ -57,6 +58,7 @@ class Signal(Generic[_T]):
             # This code can be interrupted if signal.trigger() is called
             await long_running_operation()
         ```
+
     """
 
     def __init__(self, loop: EventLoop) -> None:
@@ -70,7 +72,7 @@ class Signal(Generic[_T]):
         assert task.get_loop() == self._loop
 
         if task not in self._tasks:
-            val = _SignalState(depth=0, triggered=False)
+            val = _SignalState(depth=0, triggered=None)
             self._tasks[task] = val
         else:
             val = self._tasks[task]
@@ -89,22 +91,22 @@ class Signal(Generic[_T]):
         state = self._tasks[task]
         triggered = state.triggered
         if state.depth > 0:
-            state.triggered = False
+            state.triggered = None
             state.depth -= 1
         else:
             del self._tasks[task]
 
+        # the last op might be in indeterminate state
         self._loop.generate_op_scope()
-        if triggered is not False:
-            # the last op might be in indeterminate state
+        if triggered is not None:
             if sys.version_info >= (3, 11):
                 _ = task.uncancel()
             raise triggered from exc_value
 
-    def on_next(self, _offset: int, value: _T) -> None:
+    def on_next(self, _offset: int, value: object) -> None:
         for t, state in self._tasks.items():
-            if state.triggered is False:
-                state.triggered = SignalInterrupt(value=value)
+            if state.triggered is None:
+                state.triggered = SignalInterrupt(value)
                 _ = self._loop.call_soon(t.cancel, state.triggered)
 
     def on_close(self, _offset: int, _exc: Exception | None) -> None:
@@ -116,13 +118,7 @@ async def create_signal(
 ) -> tuple[Signal[_T], StreamWriter[_T]]:
     s: Signal[_T] = Signal(loop)
     sid = await create_op(
-        loop,
-        StreamCreate(
-            dtype=dtype,
-            name=name,
-            observer=cast("Signal[object]", s),
-            metadata=metadata,
-        ),
+        loop, StreamCreate(dtype=dtype, name=name, observer=s, metadata=metadata)
     )
     w: OpWriter[_T] = OpWriter(sid, loop)
     return (s, w)

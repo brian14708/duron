@@ -58,6 +58,7 @@ class Tracer:
             trace_id (str): The trace identifier
             run_id (str | None): The run identifier. If None, a random id will be \
                     generated.
+
         """
         self.trace_id: str = trace_id
         self.run_id: str = run_id or _trace_id()
@@ -103,7 +104,7 @@ class Tracer:
 
     def close(self) -> None:
         with self._lock:
-            if self._state == TracerState.CLOSED or self._state == TracerState.INIT:
+            if self._state in {TracerState.CLOSED, TracerState.INIT}:
                 return
 
             for span_id in list(self._open_spans.keys()):
@@ -306,6 +307,7 @@ def setup_tracing(
 
     Raises:
         RuntimeError: if the logging handler is already configured.
+
     """
     target_logger = logger if logger is not None else logging.getLogger()
 
@@ -335,6 +337,7 @@ def span(
 
     Returns:
         A context manager that enters the span on entry and exits on exit.
+
     """
     if tracer := current_tracer.get(None):
         return tracer.new_span(name, metadata)

@@ -49,14 +49,14 @@ _FUNCTION_CACHE: weakref.WeakKeyDictionary[Callable[..., object], FunctionType] 
 def _unwrap_annotated(
     type_hint: TypeHint[Any],
 ) -> tuple[TypeHint[Any], tuple[Any, ...]]:
-    """
-    Unwrap an Annotated type to get the actual type and its annotations.
+    """Unwrap an Annotated type to get the actual type and its annotations.
 
     Args:
         type_hint: A type hint that may be Annotated
 
     Returns:
         A tuple of (actual_type, annotations_tuple)
+
     """
     if get_origin(type_hint) is Annotated:
         args = get_args(type_hint)

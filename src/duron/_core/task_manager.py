@@ -132,6 +132,9 @@ if sys.version_info >= (3, 11):
 else:
 
     def _create_task_context(
-        coro: Coroutine[Any, Any, _T], *, context: contextvars.Context
+        coro: Coroutine[Any, Any, _T],
+        *,
+        context: contextvars.Context,
+        name: str | None = None,
     ) -> asyncio.Task[_T]:
-        return context.run(asyncio.create_task, coro)
+        return context.run(asyncio.create_task, coro, name=name)

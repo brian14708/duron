@@ -7,7 +7,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
-_T_co = TypeVar("_T_co", covariant=True)
+_T = TypeVar("_T")
 _P = ParamSpec("_P")
 
 
@@ -18,13 +18,13 @@ class Reducer(NamedTuple):
 
 
 @overload
-def effect(fn: Callable[_P, _T_co], /) -> Callable[_P, _T_co]: ...
+def effect(fn: Callable[_P, _T], /) -> Callable[_P, _T]: ...
 @overload
-def effect() -> Callable[[Callable[_P, _T_co]], Callable[_P, _T_co]]: ...
+def effect() -> Callable[[Callable[_P, _T]], Callable[_P, _T]]: ...
 def effect(
-    fn: Callable[_P, _T_co] | None = None, /
-) -> Callable[_P, _T_co] | Callable[[Callable[_P, _T_co]], Callable[_P, _T_co]]:
-    """Decorator to mark async functions as effects.
+    fn: Callable[_P, _T] | None = None, /
+) -> Callable[_P, _T] | Callable[[Callable[_P, _T]], Callable[_P, _T]]:
+    """Mark async function as effect.
 
     Effects are operations that interact with the outside world.
 
@@ -47,12 +47,12 @@ def effect(
 
     Returns:
         Function wrapper that can be invoked with [ctx.run()][duron.Context.run]
-    """
 
+    """
     if fn is not None:
         return fn
 
-    def decorate(fn: Callable[_P, _T_co]) -> Callable[_P, _T_co]:
+    def decorate(fn: Callable[_P, _T]) -> Callable[_P, _T]:
         return fn
 
     return decorate

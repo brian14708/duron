@@ -24,6 +24,7 @@ class LogStorage(Protocol):
 
         Note:
             Log indices are monotonically increasing but may have gaps.
+
         """
         ...
 
@@ -40,6 +41,7 @@ class LogStorage(Protocol):
         Note:
             Leases provide concurrency control to ensure only one invoke can append
             to a log at a time, preventing interleaved writes from multiple processes.
+
         """
         ...
 
@@ -52,6 +54,7 @@ class LogStorage(Protocol):
         Note:
             Should be called when invoke completes or encounters an error.
             Implementations should be idempotent.
+
         """
         ...
 
@@ -72,5 +75,6 @@ class LogStorage(Protocol):
         Note:
             Appends must be atomic and durable. The returned index must be
             monotonically increasing and consistent with stream() output.
+
         """
         ...

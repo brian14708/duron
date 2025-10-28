@@ -17,6 +17,7 @@ class Span(Protocol):
 
         Args:
             **kwargs: JSON-serializable value to record
+
         """
         ...
 
@@ -29,6 +30,7 @@ class Span(Protocol):
             status: Either "OK" for successful completion or "ERROR" for failure
             message: Optional status message, typically used with "ERROR" status
                     to provide error details
+
         """
         ...
 

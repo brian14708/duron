@@ -20,7 +20,7 @@ class OpMetadata(NamedTuple):
 
 
 class FnCall(NamedTuple):
-    callable: Callable[[], Coroutine[Any, Any, object]]
+    callable: Callable[[], Coroutine[Any, Any, object] | object]
     return_type: TypeHint[Any]
     context: Context
     metadata: OpMetadata

@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import contextvars
 import functools
+import inspect
 import time
 from typing import TYPE_CHECKING, Final, Generic, Literal, cast
 from typing_extensions import (
@@ -36,10 +37,9 @@ from duron._core.task_manager import TaskError, TaskManager
 from duron._core.utils import decode_error, encode_error
 from duron.log._helper import is_entry
 from duron.loop import EventLoop, create_loop, random_id
-from duron.tracing._span import NULL_SPAN
-from duron.tracing._tracer import current_tracer, span
-from duron.typing import JSONValue, UnspecifiedType
-from duron.typing._inspect import inspect_function
+from duron.tracing import NULL_SPAN, span
+from duron.tracing._tracer import current_tracer
+from duron.typing import JSONValue, UnspecifiedType, inspect_function
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -62,11 +62,8 @@ if TYPE_CHECKING:
     from duron.tracing._tracer import OpSpan
     from duron.typing import TypeHint
 
-    _T = TypeVar("_T")
-
-
+_T = TypeVar("_T")
 _P = ParamSpec("_P")
-_T_co = TypeVar("_T_co", covariant=True)
 
 _CURRENT_VERSION: Final = 0
 
@@ -97,7 +94,7 @@ class Session:
         tracer: Tracer | None = None,
         readonly: bool = False,
     ) -> None:
-        """A session for running durable functions.
+        """Session for running durable functions.
 
         Example:
             ```python
@@ -110,6 +107,7 @@ class Session:
             log: The log storage to use for this session.
             tracer: An optional tracer for tracing operations within the session.
             readonly: If true, the session will not acquire a lease on the log.
+
         """
         self._log = log
         self._tracer = tracer
@@ -145,8 +143,8 @@ class Session:
             current_tracer.reset(tracer_token)
 
     async def start(
-        self, fn: DurableFn[_P, _T_co], *args: _P.args, **kwargs: _P.kwargs
-    ) -> Task[_T_co]:
+        self, fn: DurableFn[_P, _T], *args: _P.args, **kwargs: _P.kwargs
+    ) -> Task[_T]:
         """Start a new durable function within the session.
 
         Raises:
@@ -160,6 +158,7 @@ class Session:
 
         Returns:
             A `Task` representing the running durable function.
+
         """
         if self._current_task is not None:
             msg = "A durable function is already running"
@@ -170,7 +169,7 @@ class Session:
 
         codec = fn.codec
 
-        async def init() -> InitParams:  # noqa: RUF029
+        def init() -> InitParams:
             hint = inspect_function(fn.fn)
             return {
                 "version": _CURRENT_VERSION,
@@ -200,7 +199,7 @@ class Session:
         await self._current_task._start()  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
         return self._current_task
 
-    async def resume(self, fn: DurableFn[_P, _T_co]) -> Task[_T_co]:
+    async def resume(self, fn: DurableFn[_P, _T]) -> Task[_T]:
         """Resume a durable function within the session.
 
         Raises:
@@ -212,6 +211,7 @@ class Session:
 
         Returns:
             A `Task` representing the running durable function.
+
         """
         if self._current_task is not None:
             msg = "A durable function is already running"
@@ -220,7 +220,7 @@ class Session:
             msg = "Session is not started"
             raise RuntimeError(msg)
 
-        async def init() -> InitParams:  # noqa: RUF029
+        def init() -> InitParams:
             msg = "Not started properly"
             raise RuntimeError(msg)
 
@@ -232,7 +232,7 @@ class Session:
         await self._current_task._start()  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
         return self._current_task
 
-    async def verify(self, fn: DurableFn[_P, _T_co]) -> None:
+    async def verify(self, fn: DurableFn[_P, _T]) -> None:
         """Verify if the durable function has completed within the session.
 
         Raises:
@@ -241,6 +241,7 @@ class Session:
 
         Args:
             fn: The durable function to verify.
+
         """
         if self._current_task is not None:
             msg = "A durable function is already running"
@@ -249,7 +250,7 @@ class Session:
             msg = "Session is not started"
             raise RuntimeError(msg)
 
-        async def init() -> InitParams:  # noqa: RUF029
+        def init() -> InitParams:
             msg = "Not started properly"
             raise RuntimeError(msg)
 
@@ -264,7 +265,7 @@ class Session:
         raise RuntimeError(msg)
 
 
-class Task(Generic[_T_co]):
+class Task(Generic[_T]):
     """A task representing a running durable function within a session."""
 
     __slots__ = (
@@ -290,8 +291,8 @@ class Task(Generic[_T_co]):
         log: LogStorage,
         tracer: Tracer | None,
         lease: bytes | None,
-        init: Callable[[], Coroutine[Any, Any, InitParams]],
-        fn: DurableFn[_P, _T_co],
+        init: Callable[[], InitParams],
+        fn: DurableFn[_P, _T],
     ) -> None:
         self._loop = loop
         self._log = log
@@ -329,7 +330,7 @@ class Task(Generic[_T_co]):
         self._task_manager = TaskManager(
             functools.partial(self._loop.call_soon, main.cancel)
         )
-        self._task: asyncio.Task[_T_co] | None = None
+        self._task: asyncio.Task[_T] | None = None
 
     async def _resume(self) -> bool:
         recvd_msgs: set[str] = set()
@@ -377,7 +378,7 @@ class Task(Generic[_T_co]):
             return
         self._task = asyncio.create_task(self._run())
 
-        def cb(_t: asyncio.Task[_T_co]) -> None:
+        def cb(_t: asyncio.Task[_T]) -> None:
             self._ready.set()
 
         self._task.add_done_callback(cb)
@@ -387,7 +388,7 @@ class Task(Generic[_T_co]):
         else:
             self._task.remove_done_callback(cb)
 
-    async def _run(self) -> _T_co:
+    async def _run(self) -> _T:
         if self._main.done():
             return self._main.result()
 
@@ -702,7 +703,10 @@ class Task(Generic[_T_co]):
                 op_span.new_span(op.metadata.get_name()) if op_span else NULL_SPAN
             ) as span:
                 try:
-                    result = await op.callable()
+                    if inspect.iscoroutinefunction(op.callable):
+                        result = await op.callable()
+                    else:
+                        result = op.callable()
                     entry["result"] = codec.encode_json(result, op.return_type)
                     span.set_status("OK")
                 except (Exception, asyncio.CancelledError) as e:  # noqa: BLE001
@@ -716,11 +720,12 @@ class Task(Generic[_T_co]):
 
         return _run
 
-    async def result(self) -> _T_co:
+    async def result(self) -> _T:
         """Wait for the durable function to complete and return its result.
 
         Returns:
             The result of the durable function, raises exception if the function failed.
+
         """
         if self._task is None:
             return self._main.result()
@@ -743,6 +748,7 @@ class Task(Generic[_T_co]):
         Returns:
             A `Stream` for reading or a `StreamWriter` for writing, depending on the \
                     mode.
+
         """
         if mode == "r":
             return self._streams.pop(name)
@@ -764,8 +770,8 @@ class Task(Generic[_T_co]):
         future_id: str,
         *,
         result: object | None = None,
-        exception: Exception | None = None,
         result_type: TypeHint[object] = UnspecifiedType,
+        exception: Exception | None = None,
     ) -> None:
         """Complete a future with the given result or exception.
 
@@ -775,7 +781,9 @@ class Task(Generic[_T_co]):
         Args:
             future_id: The ID created by [`create_future`][duron.Context.create_future].
             result: The result to complete the future with.
+            result_type: The type of the result.
             exception: The exception to complete the future with.
+
         """
         if not self._task_manager.has_future(future_id):
             msg = "Promise not found"
@@ -798,10 +806,8 @@ class Task(Generic[_T_co]):
 
 
 async def _prelude_fn(
-    init: Callable[[], Coroutine[Any, Any, InitParams]],
-    fn: DurableFn[..., _T_co],
-    ready: Callable[[], object],
-) -> _T_co:
+    init: Callable[[], InitParams], fn: DurableFn[..., _T], ready: Callable[[], object]
+) -> _T:
     loop = asyncio.get_running_loop()
     assert isinstance(loop, EventLoop)
 

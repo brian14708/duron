@@ -20,8 +20,7 @@ from duron._core.ops import (
 from duron._core.signal import create_signal
 from duron._core.stream import create_stream, run_stateful
 from duron._decorator.effect import Reducer
-from duron.typing import inspect_function
-from duron.typing._hint import UnspecifiedType
+from duron.typing import UnspecifiedType, inspect_function
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine
@@ -45,6 +44,12 @@ class Context:
         self._loop: EventLoop = loop
         self._seed: str = seed
 
+    def _check(self) -> bool:
+        if asyncio.get_running_loop() is not self._loop:
+            msg = "Context time can only be used in the context loop"
+            raise RuntimeError(msg)
+        return True
+
     @overload
     async def run(
         self,
@@ -67,35 +72,21 @@ class Context:
         self, fn: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs
     ) -> _T: ...
     async def run(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
-        """
-        Run a function within the context.
+        """Run a function within the context.
 
         Returns:
             The result of the function call.
 
-        Raises:
-            RuntimeError: If called outside of the context's event loop.
         """
-        if asyncio.get_running_loop() is not self._loop:
-            msg = "Context time can only be used in the context loop"
-            raise RuntimeError(msg)
+        assert self._check()
 
         if inspect.isasyncgenfunction(fn):
             async with self.stream(fn, *args, **kwargs) as (stream, result):
                 await stream.discard()
                 return await result
 
-        callable_: Callable[[], Coroutine[Any, Any, object]]
-        if inspect.iscoroutinefunction(fn):
-            hint = inspect_function(fn)
-            callable_ = functools.partial(fn, *args, **kwargs)
-        else:
-
-            async def wrapper() -> object:  # noqa: RUF029
-                return fn(*args, **kwargs)
-
-            hint = inspect_function(fn)
-            callable_ = wrapper
+        hint = inspect_function(fn)
+        callable_ = functools.partial(fn, *args, **kwargs)
 
         op: asyncio.Future[object] = create_op(
             self._loop,
@@ -120,18 +111,15 @@ class Context:
 
         Args:
             fn: The stateful function to stream.
+            initial: The initial state to pass to the function.
             *args: Positional arguments to pass to the function.
             **kwargs: Keyword arguments to pass to the function.
 
-        Raises:
-            RuntimeError: If called outside of the context's event loop.
-
         Returns:
             An async context manager that yields a Stream of the function's results.
+
         """
-        if asyncio.get_running_loop() is not self._loop:
-            msg = "Context time can only be used in the context loop"
-            raise RuntimeError(msg)
+        assert self._check()
 
         type_hint = inspect_function(fn)
         action_type: TypeHint[_S] = UnspecifiedType
@@ -154,15 +142,11 @@ class Context:
             dtype: The data type of the stream.
             name: Optional name for the stream.
 
-        Raises:
-            RuntimeError: If called outside of the context's event loop.
-
         Returns:
             Reader and writer for the created stream.
+
         """
-        if asyncio.get_running_loop() is not self._loop:
-            msg = "Context time can only be used in the context loop"
-            raise RuntimeError(msg)
+        assert self._check()
 
         return await create_stream(
             self._loop, dtype, name, metadata=OpMetadata(name=name)
@@ -177,15 +161,11 @@ class Context:
             dtype: The data type of the stream.
             name: Optional name for the stream.
 
-        Raises:
-            RuntimeError: If called outside of the context's event loop.
-
         Returns:
             Reader and writer for the created stream.
+
         """
-        if asyncio.get_running_loop() is not self._loop:
-            msg = "Context time can only be used in the context loop"
-            raise RuntimeError(msg)
+        assert self._check()
 
         return await create_signal(
             self._loop, dtype, name, metadata=OpMetadata(name=name)
@@ -200,15 +180,11 @@ class Context:
             dtype: The data type of the stream.
             name: Optional name for the stream.
 
-        Raises:
-            RuntimeError: If called outside of the context's event loop.
-
         Returns:
             Reader and writer for the created stream.
+
         """
-        if asyncio.get_running_loop() is not self._loop:
-            msg = "Context time can only be used in the context loop"
-            raise RuntimeError(msg)
+        assert self._check()
 
         fut = create_op(
             self._loop, FutureCreate(return_type=dtype, metadata=OpMetadata(name=name))
@@ -221,15 +197,11 @@ class Context:
         This provides a deterministic timestamp that is consistent during replay.
         Use this instead of `time.time()` to ensure deterministic behavior.
 
-        Raises:
-            RuntimeError: If called outside of the context's event loop.
-
         Returns:
             The current time in seconds as a float.
+
         """
-        if asyncio.get_running_loop() is not self._loop:
-            msg = "Context time can only be used in the context loop"
-            raise RuntimeError(msg)
+        assert self._check()
         _log_offset, time_us = await create_op(self._loop, Barrier())
         return time_us * 1e-6
 
@@ -239,15 +211,11 @@ class Context:
         This provides a deterministic timestamp that is consistent during replay.
         Use this instead of `time.time_ns()` to ensure deterministic behavior.
 
-        Raises:
-            RuntimeError: If called outside of the context's event loop.
-
         Returns:
             The current time in nanoseconds as an integer.
+
         """
-        if asyncio.get_running_loop() is not self._loop:
-            msg = "Context time can only be used in the context loop"
-            raise RuntimeError(msg)
+        assert self._check()
         _log_offset, time_us = await create_op(self._loop, Barrier())
         return time_us * 1_000
 
@@ -258,15 +226,11 @@ class Context:
         during replay. Use this instead of the `random` module to ensure
         deterministic behavior.
 
-        Raises:
-            RuntimeError: If called outside of the context's event loop.
-
         Returns:
             A Random instance seeded with a deterministic operation ID.
+
         """
-        if asyncio.get_running_loop() is not self._loop:
-            msg = "Context random can only be used in the context loop"
-            raise RuntimeError(msg)
+        assert self._check()
         return Random(self._loop.generate_op_id() + self._seed)  # noqa: S311
 
     @overload
@@ -293,8 +257,11 @@ class Context:
         Args:
             future_id: The ID of the future to complete.
             result: The result value to set on the future.
+            result_type: The type hint for the result value.
             exception: The exception to set on the future.
+
         """
+        assert self._check()
         await create_op(
             self._loop,
             FutureComplete(
@@ -308,13 +275,8 @@ class Context:
 
 def _find_reducer(annotations: tuple[Any, ...]) -> Callable[[_S, _T], _S]:
     for annotation in annotations:
-        if not isinstance(annotation, Reducer):
-            continue
-        hint = inspect_function(annotation.reducer)
-        if len(hint.parameters) != 2:
-            msg = "Reducer function must have exactly two parameters"
-            raise TypeError(msg)
-        return cast("Callable[[_S, _T], _S]", annotation.reducer)
+        if isinstance(annotation, Reducer):
+            return cast("Callable[[_S, _T], _S]", annotation.reducer)
 
     return cast("Callable[[_S, _T], _S]", _default_reducer)
 

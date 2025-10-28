@@ -6,7 +6,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from duron.log._entry import BaseEntry, Entry
-    from duron.typing._hint import JSONValue
+    from duron.typing import JSONValue
 
 
 def set_metadata(entry: Entry, metadata: Mapping[str, JSONValue]) -> None:

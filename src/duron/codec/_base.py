@@ -21,12 +21,14 @@ class Codec(Protocol):
 
         Args:
             result: The object to encode (e.g., operation result or argument)
+            annotated_type: Type hint for the object's type
 
         Returns:
             A JSON-serializable value (None, bool, int, float, str, list, or dict)
 
         Raises:
             TypeError: If the object cannot be serialized
+
         """
         ...
 
@@ -41,6 +43,7 @@ class Codec(Protocol):
 
         Returns:
             The reconstructed Python object
+
         """
         ...
 

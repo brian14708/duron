@@ -69,16 +69,17 @@ examples = [
 [tool.ruff.lint]
 select = ["ALL"]
 ignore = [
-    "COM812", "S101",
-    "CPY", "D", "FIX", "TD002", "TD003",
-    "PLR0", "PLR1", "PLR2", "C901",
+    "COM812", "S101", "CPY",
+    "D10", "D203", "D205", "D213",
+    "FIX", "TD002", "TD003",
+    "PLR09", "PLR2004", "C901",
 ]
 extend-safe-fixes = ["TC", "F401"]
 preview = true
 future-annotations = true
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S101", "S311", "PLC2701", "RUF029"]
+"tests/**/*.py" = ["S101", "S311", "PLC2701", "PLR2004", "RUF029"]
 "examples/**/*.py" = ["T201", "S311"]
 
 [tool.ruff.lint.isort]
