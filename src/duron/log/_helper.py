@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import binascii
+import os
 from typing import TYPE_CHECKING, TypeGuard
 
 if TYPE_CHECKING:
@@ -28,3 +30,7 @@ def is_entry(entry: Entry | BaseEntry) -> TypeGuard[Entry]:
         "barrier",
         "trace",
     }
+
+
+def random_id() -> str:
+    return binascii.b2a_base64(os.urandom(12), newline=False).decode()

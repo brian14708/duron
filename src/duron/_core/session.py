@@ -35,8 +35,8 @@ from duron._core.stream import OpWriter, Stream, StreamWriter, create_buffer_str
 from duron._core.stream_manager import StreamManager
 from duron._core.task_manager import TaskError, TaskManager
 from duron._core.utils import decode_error, encode_error
-from duron.log._helper import is_entry
-from duron.loop import EventLoop, create_loop, random_id
+from duron.log._helper import is_entry, random_id
+from duron.loop import EventLoop, create_loop
 from duron.tracing import NULL_SPAN, span
 from duron.tracing._tracer import current_tracer
 from duron.typing import JSONValue, UnspecifiedType, inspect_function

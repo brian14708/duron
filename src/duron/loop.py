@@ -115,12 +115,12 @@ class EventLoop(asyncio.AbstractEventLoop):
     def generate_op_id() -> str:
         ctx = _task_ctx.get()
         ctx.seq += 1
-        return derive_id(ctx.parent_id, context=(ctx.seq - 1).to_bytes(4, "big"))
+        return _derive_id(ctx.parent_id, context=(ctx.seq - 1).to_bytes(4, "big"))
 
     @staticmethod
     def generate_op_scope() -> None:
         ctx = _task_ctx.get()
-        ctx.parent_id = derive_id(ctx.parent_id)
+        ctx.parent_id = _derive_id(ctx.parent_id)
         ctx.seq = 0
 
     @override
@@ -195,7 +195,7 @@ class EventLoop(asyncio.AbstractEventLoop):
     def schedule_task(self, coro: _TaskCompatibleCoro[_T]) -> asyncio.Task[_T]:
         assert asyncio.get_running_loop() is self._host
         self._root_task_seq += 1
-        id_ = derive_id("", context=(self._root_task_seq - 1).to_bytes(4, "big"))
+        id_ = _derive_id("", context=(self._root_task_seq - 1).to_bytes(4, "big"))
 
         token = _task_ctx.set(_TaskCtx(parent_id=id_))
         task = asyncio.Task(coro, loop=self)
@@ -253,7 +253,7 @@ class EventLoop(asyncio.AbstractEventLoop):
         if self._closed:
             raise LoopClosedError
         if asyncio.get_running_loop() is self._host:
-            id_ = random_id()
+            id_ = _random_id()
             external = True
             self._event.set()
         else:
@@ -282,7 +282,7 @@ class EventLoop(asyncio.AbstractEventLoop):
             if op.done() and not op.cancelled():
                 msg = "operation already completed"
                 raise RuntimeError(msg)
-            tid = derive_id(op.id)
+            tid = _derive_id(op.id)
             token = _task_ctx.set(_TaskCtx(parent_id=tid))
             _ = self.call_soon(_complete_op, op, result, exception)
             _task_ctx.reset(token)
@@ -410,11 +410,11 @@ def wrap_future(
     return dst_future
 
 
-def random_id() -> str:
+def _random_id() -> str:
     return binascii.b2a_base64(os.urandom(12), newline=False).decode()
 
 
-def derive_id(base: str, *, context: bytes = b"", key: bytes = b"") -> str:
+def _derive_id(base: str, *, context: bytes = b"", key: bytes = b"") -> str:
     return binascii.b2a_base64(
         blake2b(
             binascii.a2b_base64(base), salt=context, key=key, digest_size=12
