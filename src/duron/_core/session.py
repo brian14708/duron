@@ -757,6 +757,18 @@ class Task(Generic[_T]):
         w: OpWriter[Any] = OpWriter(sid, self._loop)
         return w
 
+    def is_future_pending(self, future_id: str) -> bool:
+        """Check if a future is still pending.
+
+        Args:
+            future_id: The ID created by [`create_future`][duron.Context.create_future].
+
+        Returns:
+            True if the future is still pending, False otherwise.
+
+        """
+        return self._task_manager.has_future(future_id)
+
     @overload
     async def complete_future(
         self, future_id: str, *, result: _T, result_type: TypeHint[_T] = ...

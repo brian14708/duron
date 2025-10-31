@@ -195,7 +195,9 @@ async def test_external_promise() -> None:
                 if v.get("data") is None:
                     await asyncio.sleep(0.01)
                     continue
+                assert run.is_future_pending(v["data"])
                 await run.complete_future(v["data"], result=9)
+                assert not run.is_future_pending(v["data"])
                 break
 
         bg = asyncio.create_task(do())
