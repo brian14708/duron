@@ -7,13 +7,12 @@ from typing import TYPE_CHECKING, Generic
 from typing_extensions import Any, TypeVar, final, override
 
 from duron._core.ops import StreamCreate, create_op
-from duron._core.stream import OpWriter
+from duron._core.stream import StreamWriter
 
 if TYPE_CHECKING:
     from types import TracebackType
 
     from duron._core.ops import OpMetadata
-    from duron._core.stream import StreamWriter
     from duron.loop import EventLoop
     from duron.typing import TypeHint
 
@@ -120,5 +119,5 @@ async def create_signal(
     sid = await create_op(
         loop, StreamCreate(dtype=dtype, name=name, observer=s, metadata=metadata)
     )
-    w: OpWriter[_T] = OpWriter(sid, loop)
+    w: StreamWriter[_T] = StreamWriter(sid, loop)
     return (s, w)

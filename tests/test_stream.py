@@ -10,14 +10,18 @@ import pytest
 
 from duron import (
     Context,
+    Provided,
     Reducer,
     Session,
+    Signal,
     SignalInterrupt,
+    Stream,
     StreamClosed,
     durable,
     effect,
 )
 from duron.contrib.storage import MemoryLogStorage
+from duron.loop import LoopClosedError
 
 if TYPE_CHECKING:
     from duron import StreamWriter
@@ -254,7 +258,79 @@ async def test_next_timing() -> None:
         result2 = await (await t.start(activity)).result()
     b = len(await log.entries())
     for chunk1, chunk2 in zip(result1, result2, strict=True):
-        length = min(len(chunk1), len(chunk2))
-        assert len(chunk2) >= len(chunk1)
-        assert chunk1[:length] == chunk2[:length]
+        assert len(chunk2) == len(chunk1)
+        assert chunk1 == chunk2
+    assert a == b
+
+
+@pytest.mark.asyncio
+async def test_external_stream_signal_timing() -> None:
+    @durable()
+    async def activity(
+        _ctx: Context,
+        input_stream: Stream[int] = Provided,
+        interrupt_signal: Signal[str] = Provided,
+    ) -> list[list[list[int]]]:
+        results: list[list[list[int]]] = []
+
+        # Consume with signal context
+        for i in range(1000):
+            batch: list[list[int]] = []
+            try:
+                async with interrupt_signal:
+                    # Consume values until interrupted
+                    while True:
+                        if i % 3 == 0:
+                            batch.append(list(await input_stream.next(block=False)))
+                            await asyncio.sleep(0.01)
+                        else:
+                            batch.append(list(await input_stream.next(block=True)))
+            except StreamClosed:
+                results.append(batch)
+            except SignalInterrupt as e:
+                results.append(batch)
+                if e.value is True:
+                    break
+        return results
+
+    # First run
+    log = MemoryLogStorage()
+    async with Session(log) as sess:
+        run = await sess.start(activity)
+        input_stream = await run.open_stream("input_stream", "w")
+        interrupt_signal = await run.open_stream("interrupt_signal", "w")
+
+        # Emit values continuously
+        async def emitter() -> None:
+            async with input_stream as w:
+                for i in range(500):
+                    try:
+                        await w.send(i)
+                    except LoopClosedError:
+                        break
+                    await asyncio.sleep(random.random() * 0.001)
+
+        # Trigger signal at specific time
+        async def trigger_signal() -> None:
+            async with interrupt_signal as w:
+                for i in range(5):
+                    await asyncio.sleep(0.015)
+                    await w.send(i == 4)
+
+        result1, _, _ = await asyncio.gather(
+            run.result(),
+            asyncio.create_task(emitter()),
+            asyncio.create_task(trigger_signal()),
+        )
+
+    # Replay
+    a = len(await log.entries())
+    async with Session(log) as sess:
+        result2 = await (await sess.start(activity)).result()
+    b = len(await log.entries())
+
+    # Verify results match
+    for chunk1, chunk2 in zip(result1, result2, strict=True):
+        assert len(chunk2) == len(chunk1)
+        assert chunk1 == chunk2
     assert a == b

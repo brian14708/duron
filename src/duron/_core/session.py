@@ -31,7 +31,7 @@ from duron._core.ops import (
     create_op,
 )
 from duron._core.signal import Signal
-from duron._core.stream import OpWriter, Stream, StreamWriter, create_buffer_stream
+from duron._core.stream import Stream, StreamWriter, create_buffer_stream
 from duron._core.stream_manager import StreamManager
 from duron._core.task_manager import TaskError, TaskManager
 from duron._core.utils import decode_error, encode_error
@@ -754,7 +754,7 @@ class Task(Generic[_T]):
             return self._streams.pop(name)
 
         sid = await self._stream_manager.wait_stream(name)
-        w: OpWriter[Any] = OpWriter(sid, self._loop)
+        w: StreamWriter[Any] = StreamWriter(sid, self._loop)
         return w
 
     def is_future_pending(self, future_id: str) -> bool:

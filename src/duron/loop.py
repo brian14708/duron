@@ -354,7 +354,7 @@ class EventLoop(asyncio.AbstractEventLoop):
         pass
 
     @override
-    async def shutdown_default_executor(self) -> None:
+    async def shutdown_default_executor(self, timeout: float | None = None) -> None:
         pass
 
     def _timer_handle_cancelled(self, _th: asyncio.TimerHandle) -> None:

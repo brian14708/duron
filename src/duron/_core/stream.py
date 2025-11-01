@@ -8,9 +8,8 @@ from abc import ABC, abstractmethod
 from asyncio.exceptions import CancelledError
 from collections import deque
 from collections.abc import AsyncIterable
-from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Concatenate, Generic, cast
-from typing_extensions import Any, ParamSpec, Protocol, TypeVar, final, override
+from typing_extensions import Any, ParamSpec, TypeVar, final, override
 
 from duron._core.ops import (
     Barrier,
@@ -21,7 +20,7 @@ from duron._core.ops import (
     StreamEmit,
     create_op,
 )
-from duron.loop import EventLoop, wrap_future
+from duron.loop import EventLoop, LoopClosedError, wrap_future
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
@@ -63,32 +62,10 @@ class StreamClosed(Exception):  # noqa: N818
         return cast("Exception | None", self.__cause__)
 
 
-class StreamWriter(
-    AbstractAsyncContextManager["StreamWriter[_T_contra]"], Protocol, Generic[_T_contra]
-):
+@final
+class StreamWriter(Generic[_T_contra]):
     """Protocol for writing values to a stream."""
 
-    async def send(self, value: _T_contra, /) -> None:
-        """Send a value to the stream.
-
-        Args:
-            value: The value to send to stream consumers.
-
-        """
-        ...
-
-    async def close(self, error: Exception | None = None, /) -> None:
-        """Close the stream, optionally with an error.
-
-        Args:
-            error: Optional exception to signal an error condition to consumers.
-
-        """
-        ...
-
-
-@final
-class OpWriter(Generic[_T_contra]):
     __slots__ = ("_closed", "_loop", "_stream_id")
 
     def __init__(self, stream_id: str, loop: EventLoop) -> None:
@@ -97,11 +74,35 @@ class OpWriter(Generic[_T_contra]):
         self._closed = False
 
     async def send(self, value: _T_contra, /) -> None:
+        """Send a value to the stream.
+
+        Raises:
+            RuntimeError: If the stream is already closed.
+
+        Args:
+            value: The value to send to stream consumers.
+
+        """
+        if self._closed:
+            msg = "Cannot send to a closed stream"
+            raise RuntimeError(msg)
         await wrap_future(
             create_op(self._loop, StreamEmit(stream_id=self._stream_id, value=value))
         )
 
     async def close(self, exception: Exception | None = None, /) -> None:
+        """Close the stream, optionally with an error.
+
+        Raises:
+            RuntimeError: If the stream is already closed.
+
+        Args:
+            exception: Optional exception to signal an error condition to consumers.
+
+        """
+        if self._closed:
+            msg = "Cannot send to a closed stream"
+            raise RuntimeError(msg)
         await wrap_future(
             create_op(
                 self._loop, StreamClose(stream_id=self._stream_id, exception=exception)
@@ -120,14 +121,15 @@ class OpWriter(Generic[_T_contra]):
     ) -> None:
         if self._closed:
             return
-        if not exc_value:
-            await self.close()
-        elif isinstance(exc_value, Exception):
-            await self.close(exc_value)
-        else:
-            await self.close(
-                Exception(f"StreamWriter exited with exception: {exc_value}")
-            )
+        with contextlib.suppress(LoopClosedError):
+            if not exc_value:
+                await self.close()
+            elif isinstance(exc_value, Exception):
+                await self.close(exc_value)
+            else:
+                await self.close(
+                    Exception(f"StreamWriter exited with exception: {exc_value}")
+                )
 
 
 class Stream(ABC, AsyncIterable[_T], Generic[_T]):
@@ -189,7 +191,7 @@ async def create_stream(
     sid = await create_op(
         loop, StreamCreate(dtype=dtype, observer=w, name=name, metadata=metadata)
     )
-    writer: OpWriter[_T] = OpWriter(sid, loop)
+    writer: StreamWriter[_T] = StreamWriter(sid, loop)
     return (s, writer)
 
 
@@ -199,14 +201,15 @@ def create_buffer_stream() -> tuple[Stream[Any], StreamObserver]:
 
 
 class _BufferStream(Stream[_T], Generic[_T]):
-    __slots__ = ("_buffer", "_event", "_loop")
+    __slots__ = ("_buffer", "_cursor", "_event", "_loop", "_write_cursor")
 
     def __init__(self) -> None:
         super().__init__()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._event: asyncio.Event | None = None
         self._buffer: deque[tuple[int, _T | StreamClosed]] = deque()
-        self._cursor: int = -1
+        self._cursor: int = 0
+        self._write_cursor: int = -1
 
     @final
     @override
@@ -216,34 +219,41 @@ class _BufferStream(Stream[_T], Generic[_T]):
             self._event = asyncio.Event()
 
         if not block:
-            return await self._next_nowait()
+            begin, end = await self._next_cursor()
+            return self._pop(begin, end)
 
         while True:
-            _ = await self._event.wait()
             self._event.clear()
-            if it := await self._next_nowait():
-                return it
-
-    async def _next_nowait(self) -> Sequence[_T]:
-        if not self._loop:
-            self._loop = asyncio.get_running_loop()
-
-        if isinstance(self._loop, EventLoop):
-
-            def cb(f: asyncio.Future[tuple[int, int]]) -> None:
-                if not f.cancelled():
-                    offset, _ = f.result()
-                    self._cursor = max(self._cursor, offset)
-
             begin = self._cursor
-            op = create_op(self._loop, Barrier())
-            op.add_done_callback(cb)
-            end, _ = await asyncio.shield(op)
-            self._cursor = max(self._cursor, end)
-        else:
+            while self._write_cursor < begin:
+                await self._event.wait()
+                self._event.clear()
+
+            begin, end = await self._next_cursor()
+            items = self._pop(begin, end)
+            if items:
+                return items
+
+    async def _next_cursor(self) -> tuple[int, int | None]:
+        if not isinstance(self._loop, EventLoop):
+            return (0, None)
+
+        def cb(f: asyncio.Future[tuple[int, int]]) -> None:
+            if not f.cancelled():
+                offset, _ = f.result()
+                self._cursor = max(self._cursor, offset)
+
+        begin = self._cursor
+        op = create_op(self._loop, Barrier())
+        op.add_done_callback(cb)
+        end, _ = await asyncio.shield(op)
+        self._cursor = max(self._cursor, end)
+        return (begin, end)
+
+    def _pop(self, begin: int, end: int | None) -> Sequence[_T]:
+        if end is None:
             if not self._buffer:
                 return ()
-            begin = 0
             end = self._buffer[-1][0] + 1
 
         result: list[_T] = []
@@ -283,11 +293,13 @@ class _BufferStream(Stream[_T], Generic[_T]):
 
     def on_next(self, offset: int, value: object) -> None:
         self._buffer.append((offset, cast("_T", value)))
+        self._write_cursor = offset
         if self._loop and self._event:
             _ = self._loop.call_soon(self._event.set)
 
     def on_close(self, offset: int, exc: Exception | None) -> None:
         self._buffer.append((offset, StreamClosed(offset=offset, reason=exc)))
+        self._write_cursor = offset
         if self._loop and self._event:
             _ = self._loop.call_soon(self._event.set)
 
@@ -328,7 +340,7 @@ async def run_stateful(
     stream: _StatefulStream[_U, _T] = _StatefulStream(
         reducer, fn, initial, *args, **kwargs
     )
-    sink: StreamWriter[_U] = OpWriter(
+    sink: StreamWriter[_U] = StreamWriter(
         await create_op(
             loop,
             StreamCreate(

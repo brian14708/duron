@@ -79,12 +79,12 @@ preview = true
 future-annotations = true
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S101", "S311", "PLC2701", "PLR2004", "RUF029"]
+"tests/**/*.py" = ["S311", "PLC2701", "PLR2004", "RUF029"]
 "examples/**/*.py" = ["T201", "S311"]
 
 [tool.ruff.lint.isort]
 extra-standard-library = ["typing_extensions"]
-split-on-trailing-comma=false
+split-on-trailing-comma = false
 
 [tool.ruff.lint.flake8-type-checking]
 runtime-evaluated-base-classes = ["typing_extensions.TypedDict"]
