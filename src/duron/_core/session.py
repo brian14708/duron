@@ -5,6 +5,7 @@ import contextlib
 import contextvars
 import functools
 import inspect
+import sys
 import time
 from typing import TYPE_CHECKING, Final, Generic, Literal, cast
 from typing_extensions import (
@@ -42,7 +43,7 @@ from duron.tracing._tracer import current_tracer
 from duron.typing import JSONValue, UnspecifiedType, inspect_function
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    from collections.abc import Callable
     from types import TracebackType
 
     from duron._core.ops import Op, StreamObserver
@@ -377,6 +378,8 @@ class Task(Generic[_T]):
         if await self._resume():
             return
         self._task = asyncio.create_task(self._run())
+        if sys.version_info >= (3, 14):
+            asyncio.future_add_to_awaited_by(self._main, self._task)
 
         def cb(_t: asyncio.Task[_T]) -> None:
             self._ready.set()
@@ -496,13 +499,16 @@ class Task(Generic[_T]):
                     op_span = None
                 await self._enqueue_log(promise_create_entry)
 
-                run = self._task_run(id_, op, op_span)
+                run = functools.partial(self._task_run, id_, op, op_span)
 
                 if self._is_live:
-                    self._task_manager.add_task(id_, run(), op.context, op.return_type)
-                    await asyncio.sleep(0)
+                    await self._task_manager.add_task(
+                        id_, run(), op.context, op.return_type, fut
+                    )
                 else:
-                    self._task_manager.add_pending(id_, run, op.context, op.return_type)
+                    self._task_manager.add_pending(
+                        id_, run, op.context, op.return_type, fut
+                    )
 
                 def done(f: OpFuture) -> None:
                     if f.cancelled():
@@ -686,39 +692,32 @@ class Task(Generic[_T]):
             assert_type(e["type"], Literal["promise.create", "trace"])
             return True
 
-    def _task_run(
-        self, id_: str, op: FnCall, op_span: OpSpan | None
-    ) -> Callable[[], Coroutine[None, None, None]]:
+    async def _task_run(self, id_: str, op: FnCall, op_span: OpSpan | None) -> None:
         codec = self._codec
 
-        async def _run() -> None:
-            entry: PromiseCompleteEntry = {
-                "ts": -1,
-                "id": random_id(),
-                "type": "promise.complete",
-                "promise_id": id_,
-                "source": "effect",
-            }
-            with (
-                op_span.new_span(op.metadata.get_name()) if op_span else NULL_SPAN
-            ) as span:
-                try:
-                    if inspect.iscoroutinefunction(op.callable):
-                        result = await op.callable()
-                    else:
-                        result = op.callable()
-                    entry["result"] = codec.encode_json(result, op.return_type)
-                    span.set_status("OK")
-                except (Exception, asyncio.CancelledError) as e:  # noqa: BLE001
-                    entry["error"] = encode_error(e)
-                    span.set_status("ERROR", str(e))
+        entry: PromiseCompleteEntry = {
+            "ts": -1,
+            "id": random_id(),
+            "type": "promise.complete",
+            "promise_id": id_,
+            "source": "effect",
+        }
+        with op_span.new_span(op.metadata.get_name()) if op_span else NULL_SPAN as span:
+            try:
+                if inspect.iscoroutinefunction(op.callable):
+                    result = await op.callable()
+                else:
+                    result = op.callable()
+                entry["result"] = codec.encode_json(result, op.return_type)
+                span.set_status("OK")
+            except (Exception, asyncio.CancelledError) as e:  # noqa: BLE001
+                entry["error"] = encode_error(e)
+                span.set_status("ERROR", str(e))
 
-            if op_span:
-                op_span.end(entry)
-            entry["ts"] = self._now_us
-            await self._enqueue_log(entry)
-
-        return _run
+        if op_span:
+            op_span.end(entry)
+        entry["ts"] = self._now_us
+        await self._enqueue_log(entry)
 
     async def result(self) -> _T:
         """Wait for the durable function to complete and return its result.

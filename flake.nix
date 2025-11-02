@@ -47,7 +47,7 @@
                 ))
               ];
               env = {
-                UV_PYTHON = pkgs.python313.interpreter;
+                UV_PYTHON = pkgs.python314.interpreter;
               };
             };
           };

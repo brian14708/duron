@@ -192,13 +192,15 @@ class EventLoop(asyncio.AbstractEventLoop):
         _task_ctx.reset(token)
         return task
 
-    def schedule_task(self, coro: _TaskCompatibleCoro[_T]) -> asyncio.Task[_T]:
+    def schedule_task(
+        self, coro: _TaskCompatibleCoro[_T], name: str | None = None
+    ) -> asyncio.Task[_T]:
         assert asyncio.get_running_loop() is self._host
         self._root_task_seq += 1
         id_ = _derive_id("", context=(self._root_task_seq - 1).to_bytes(4, "big"))
 
         token = _task_ctx.set(_TaskCtx(parent_id=id_))
-        task = asyncio.Task(coro, loop=self)
+        task = asyncio.Task(coro, loop=self, name=name)
         _task_ctx.reset(token)
         return task
 
@@ -307,9 +309,14 @@ class EventLoop(asyncio.AbstractEventLoop):
             _ = asyncio.gather(*to_cancel, return_exceptions=True)
             _ = self._poll(self._now_us)
             for task in to_cancel:
-                if task.cancelled() or not task.done():
+                if task.cancelled():
                     continue
-                if task.exception() is not None:
+                if not task.done():
+                    self.call_exception_handler({
+                        "message": "unable to properly cancel task",
+                        "task": task,
+                    })
+                elif task.exception() is not None:
                     self.call_exception_handler({
                         "message": "unhandled exception during asyncio.run() shutdown",
                         "exception": task.exception(),

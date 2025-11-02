@@ -37,6 +37,7 @@ class TaskManager:
                 Callable[[], Coroutine[Any, Any, None]],
                 contextvars.Context,
                 TypeHint[Any],
+                asyncio.Future[object],
             ],
         ] = {}
         self._tasks: dict[str, tuple[asyncio.Future[None], TypeHint[Any]]] = {}
@@ -58,19 +59,24 @@ class TaskManager:
         task_fn: Callable[[], Coroutine[Any, Any, None]],
         context: contextvars.Context,
         return_type: TypeHint[Any],
+        waiter: asyncio.Future[object],
     ) -> None:
-        self._pending_task[task_id] = (task_fn, context, return_type)
+        self._pending_task[task_id] = (task_fn, context, return_type, waiter)
 
-    def add_task(
+    async def add_task(
         self,
         task_id: str,
         future: Coroutine[Any, Any, None],
         context: contextvars.Context,
         return_type: TypeHint[Any],
+        waiter: asyncio.Future[object],
     ) -> None:
         t = _create_task_context(future, context=context)
         t.add_done_callback(self._done_callback)
+        if sys.version_info >= (3, 14):
+            asyncio.future_add_to_awaited_by(t, waiter)
         self._tasks[task_id] = (t, return_type)
+        await asyncio.sleep(0)
 
     def _done_callback(self, t: asyncio.Task[Any]) -> None:
         if t.cancelled():
@@ -93,9 +99,16 @@ class TaskManager:
         return task_id in self._pending_task
 
     def start(self) -> None:
-        for task_id, (task_fn, context, return_type) in self._pending_task.items():
+        for task_id, (
+            task_fn,
+            context,
+            return_type,
+            waiter,
+        ) in self._pending_task.items():
             t = _create_task_context(task_fn(), context=context)
             t.add_done_callback(self._done_callback)
+            if sys.version_info >= (3, 14):
+                asyncio.future_add_to_awaited_by(t, waiter)
             self._tasks[task_id] = (t, return_type)
         self._pending_task.clear()
 
@@ -113,7 +126,7 @@ class TaskManager:
 
     def complete_task(self, task_id: str) -> tuple[TypeHint[Any],]:
         if p := self._pending_task.pop(task_id, None):
-            _, _, return_type = p
+            _, _, return_type, _ = p
             return (return_type,)
         if t := self._tasks.pop(task_id, None):
             fut, return_type = t
