@@ -5,13 +5,13 @@
 [![Python Versions](https://img.shields.io/pypi/pyversions/duron)](https://pypi.org/project/duron)
 [![License](https://img.shields.io/github/license/brian14708/duron.svg)](https://github.com/brian14708/duron/blob/main/LICENSE)
 
-Duron is a lightweight durable execution runtime for Python async workflows. It provides replayable execution primitives that work standalone or as building blocks for complex workflow engines.
+**Durable workflows for modern Python.** Build resilient async applications with native support for streaming and interruption.
 
-- 🪶 **Zero extra deps** — Lightweight library that layers on top of asyncio; add Duron without bloating your stack.
-- 🧩 **Pluggable architecture** — Bring your own storage or infra components and swap them without changing orchestration code.
-- 🔄 **Streams & signals** — Model long-running conversations, live data feeds, and feedback loops with built-in primitives.
-- 🐍 **Python-native & typed** — Type hints make replay serialization predictable, and everything feels like idiomatic Python.
-- 🔭 **Built-in tracing** — Detailed logs help you inspect replays and surface observability data wherever you need it.
+- 💬 **Interactive workflows** — AI agents, chatbots, and human-in-the-loop automation with bidirectional streaming
+- ⚡ **Crash recovery** — Deterministic replay from append-only logs means workflows survive restarts
+- 🎯 **Graceful interruption** — Cancel or redirect operations mid-execution with signals
+- 🔌 **Zero dependencies** — Pure Python built on asyncio, fully typed
+- 🧩 **Pluggable storage** — Bring your own database or filesystem backend
 
 ## Install
 
@@ -23,52 +23,75 @@ uv pip install duron
 
 ## Quickstart
 
-Duron wraps async orchestration (`@duron.durable`) and effectful steps (`@duron.effect`) so complex workflows stay deterministic—even when they touch the outside world.
-
 ```python
-import asyncio
-import random
-from pathlib import Path
+# /// script
+# dependencies = ["duron"]
+# ///
 
+import asyncio
+from pathlib import Path
 import duron
 from duron.contrib.storage import FileLogStorage
 
 
-# Effects encapsulate side effects (I/O, randomness, API calls)
 @duron.effect
-async def work(name: str) -> str:
-    print("⚡ Preparing to greet...")
-    await asyncio.sleep(2)
-    print("⚡ Greeting...")
-    return f"Hello, {name}!"
+async def check_fraud(amount: float, recipient: str) -> float:
+    print("Executing risk check...")
+    await asyncio.sleep(0.5)
+    return 0.85  # High risk score
 
 
 @duron.effect
-async def generate_lucky_number() -> int:
-    print("⚡ Generating lucky number...")
+async def execute_transfer(amount: float, recipient: str) -> str:
+    print("Executing transfer...")
     await asyncio.sleep(1)
-    return random.randint(1, 100)
+    return f"Transferred ${amount} to {recipient}"
 
 
-# Durable functions orchestrate workflow logic via ctx.run()
-# They're deterministically replayed from logs on resume
 @duron.durable
-async def greeting_flow(ctx: duron.Context, name: str) -> str:
-    # Run effects concurrently - results are logged for replay
-    message, lucky_number = await asyncio.gather(
-        ctx.run(work, name),
-        ctx.run(generate_lucky_number),
-    )
-    return f"{message} Your lucky number is {lucky_number}."
+async def transfer_workflow(
+    ctx: duron.Context,
+    amount: float,
+    recipient: str,
+    events: duron.StreamWriter[list[str]] = duron.Provided,
+) -> str:
+    async with events:
+        # report progress through events stream
+        await events.send(["log", f"Checking transfer: ${amount} → {recipient}"])
+        # durable function calls
+        risk = await ctx.run(check_fraud, amount, recipient)
+
+        if risk > 0.8:
+            approval_id, approval = await ctx.create_future(bool)
+            await events.send(["log", "⚠️  High risk - approval required"])
+            await events.send(["approval", approval_id])
+
+            if not await approval:
+                await events.send(["log", "❌ Transfer rejected by manager"])
+                return "Transfer rejected"
+
+        result = await ctx.run(execute_transfer, amount, recipient)
+        await events.send(["log", f"✓ {result}"])
+        return result
 
 
 async def main():
-    # Session manages execution and log storage
-    async with duron.Session(FileLogStorage(Path("log.jsonl"))) as session:
-        # Starts new workflow or resumes from existing log
-        task = await session.start(greeting_flow, "Alice")
-        result = await task.result()
-    print(result)
+    async with duron.Session(FileLogStorage(Path("transfer.jsonl"))) as session:
+        task = await session.start(transfer_workflow, 10000.0, "suspicious-account")
+        stream = await task.open_stream("events", "r")
+
+        async def handle_events():
+            async for event_type, data in stream:
+                if event_type == "log":
+                    print(data)
+                elif event_type == "approval":
+                    if task.is_future_pending(data): # if not pending means it was a rerun
+                        decision = await asyncio.to_thread(input, "Approve? (y/n): ")
+                        await task.complete_future(
+                            data, result=(decision.lower() == "y")
+                        )
+
+        await asyncio.gather(task.result(), handle_events())
 
 
 if __name__ == "__main__":
