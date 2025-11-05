@@ -1,6 +1,6 @@
 [project]
 name = "duron"
-version = "0.0.3"
+version = "0.0.4"
 description = "Durable async runtime for Python"
 license = "Apache-2.0"
 readme = "README.md"
