@@ -480,12 +480,13 @@ class Task(Generic[_T]):
 
     async def _enqueue_op(self, fut: OpFuture) -> None:
         id_ = fut.id
+        now = self._now_us
         op = cast("Op", fut.params)
         match op:
             case FnCall():
                 assert not fut.external, "FnCall futures should not be external"
                 promise_create_entry: PromiseCreateEntry = {
-                    "ts": self._now_us,
+                    "ts": now,
                     "id": id_,
                     "type": "promise.create",
                     "source": "task",
@@ -499,15 +500,21 @@ class Task(Generic[_T]):
                     op_span = None
                 await self._enqueue_log(promise_create_entry)
 
-                run = functools.partial(self._task_run, id_, op, op_span)
-
                 if self._is_live:
                     await self._task_manager.add_task(
-                        id_, run(), op.context, op.return_type, fut
+                        id_,
+                        self._task_run(id_, op, op_span),
+                        op.context,
+                        op.return_type,
+                        fut,
                     )
                 else:
                     self._task_manager.add_pending(
-                        id_, run, op.context, op.return_type, fut
+                        id_,
+                        functools.partial(self._task_run, id_, op, op_span),
+                        op.context,
+                        op.return_type,
+                        fut,
                     )
 
                 def done(f: OpFuture) -> None:
@@ -518,34 +525,35 @@ class Task(Generic[_T]):
 
             case StreamCreate():
                 assert not fut.external, "StreamCreate futures should not be external"
-                stream_id = id_
 
                 stream_create_entry: StreamCreateEntry = {
-                    "ts": self._now_us,
-                    "id": stream_id,
+                    "ts": now,
+                    "id": id_,
                     "type": "stream.create",
                     "source": "task",
                     "name": op.name,
                 }
-                if tracer := self._tracer:
-                    op_span = tracer.new_op_span(
-                        "stream:" + op.metadata.get_name(), stream_create_entry
-                    )
-                else:
-                    op_span = None
 
                 self._stream_manager.create_stream(
-                    stream_id, op.observer, op.dtype, op.name, op_span
+                    id_,
+                    op.observer,
+                    op.dtype,
+                    op.name,
+                    self._tracer.new_op_span(
+                        "stream:" + op.metadata.get_name(), stream_create_entry
+                    )
+                    if self._tracer
+                    else None,
                 )
 
                 await self._enqueue_log(stream_create_entry)
 
-            case StreamEmit():
-                stream_info = self._stream_manager.get_info(op.stream_id)
+            case StreamEmit(stream_id):
+                stream_info = self._stream_manager.get_info(stream_id)
                 stream_emit_entry: StreamEmitEntry = {
-                    "ts": self._now_us,
+                    "ts": now,
                     "id": id_,
-                    "stream_id": op.stream_id,
+                    "stream_id": stream_id,
                     "type": "stream.emit",
                     "value": self._codec.encode_json(
                         op.value, stream_info[0] if stream_info else UnspecifiedType
@@ -557,40 +565,29 @@ class Task(Generic[_T]):
                     if op_span:
                         op_span.attach(
                             stream_emit_entry,
-                            {"type": "event", "ts": self._now_us, "kind": "stream"},
+                            {"type": "event", "ts": -1, "kind": "stream"},
                         )
                 await self._enqueue_log(stream_emit_entry)
-            case StreamClose():
-                stream_info = self._stream_manager.get_info(op.stream_id)
+            case StreamClose(stream_id, exception):
+                stream_info = self._stream_manager.get_info(stream_id)
                 if stream_info:
                     _, op_span = stream_info
-                    if op.exception:
-                        stream_close_entry: StreamCompleteEntry = {
-                            "ts": self._now_us,
-                            "id": id_,
-                            "stream_id": op.stream_id,
-                            "type": "stream.complete",
-                            "error": encode_error(op.exception),
-                            "source": "effect" if fut.external else "task",
-                        }
-                        if op_span:
-                            op_span.end(stream_close_entry)
-                        await self._enqueue_log(stream_close_entry)
-                    else:
-                        stream_close_entry = {
-                            "ts": self._now_us,
-                            "id": id_,
-                            "stream_id": op.stream_id,
-                            "type": "stream.complete",
-                            "source": "effect" if fut.external else "task",
-                        }
-                        if op_span:
-                            op_span.end(stream_close_entry)
+                    stream_close_entry: StreamCompleteEntry = {
+                        "ts": now,
+                        "id": id_,
+                        "stream_id": stream_id,
+                        "type": "stream.complete",
+                        "source": "effect" if fut.external else "task",
+                    }
+                    if exception:
+                        stream_close_entry["error"] = encode_error(exception)
+                    if op_span:
+                        op_span.end(stream_close_entry)
                     await self._enqueue_log(stream_close_entry)
             case Barrier():
                 assert not fut.external, "Barrier futures should not be external"
                 barrier_entry: BarrierEntry = {
-                    "ts": self._now_us,
+                    "ts": now,
                     "id": id_,
                     "type": "barrier",
                     "source": "task",
@@ -599,7 +596,7 @@ class Task(Generic[_T]):
             case FutureCreate():
                 assert not fut.external, "FutureCreate futures should not be external"
                 promise_create_entry = {
-                    "ts": self._now_us,
+                    "ts": now,
                     "id": id_,
                     "type": "promise.create",
                     "source": "task",
@@ -610,7 +607,7 @@ class Task(Generic[_T]):
                 await self._enqueue_log(promise_create_entry)
             case FutureComplete():
                 promise_complete_entry: PromiseCompleteEntry = {
-                    "ts": self._now_us,
+                    "ts": now,
                     "id": id_,
                     "type": "promise.complete",
                     "promise_id": op.future_id,
@@ -642,31 +639,30 @@ class Task(Generic[_T]):
             self._handle_message(offset, entry)
 
     def _handle_message(self, offset: int, e: Entry) -> bool:
+        id_ = e["id"]
         if e["type"] == "promise.complete":
             id_ = e["promise_id"]
             (return_type,) = self._task_manager.complete_task(id_)
-            if "error" in e:
-                return self._loop.post_completion(
-                    id_, exception=decode_error(e["error"])
-                )
             if "result" in e:
                 try:
                     result = self._codec.decode_json(e["result"], return_type)
                     return self._loop.post_completion(id_, result=result)
                 except Exception as exc:  # noqa: BLE001
                     return self._loop.post_completion(id_, exception=exc)
+            elif "error" in e:
+                return self._loop.post_completion(
+                    id_, exception=decode_error(e["error"])
+                )
             else:
                 msg = f"Invalid promise.complete entry: {e!r}"
                 raise ValueError(msg)
         elif e["type"] == "stream.create":
-            id_ = e["id"]
             if self._stream_manager.get_info(e["id"]) is None:
                 return self._loop.post_completion(
                     id_, exception=ValueError("Stream not found")
                 )
             return self._loop.post_completion(id_, result=e["id"])
         elif e["type"] == "stream.emit":
-            id_ = e["id"]
             if self._stream_manager.send_to_stream(
                 e["stream_id"], self._codec, offset, e["value"]
             ):
@@ -675,7 +671,6 @@ class Task(Generic[_T]):
                 id_, exception=ValueError("Stream not found")
             )
         elif e["type"] == "stream.complete":
-            id_ = e["id"]
             succ = self._stream_manager.close_stream(
                 e["stream_id"],
                 offset,
@@ -687,7 +682,7 @@ class Task(Generic[_T]):
                 id_, exception=ValueError("Stream not found")
             )
         elif e["type"] == "barrier":
-            return self._loop.post_completion(e["id"], result=(offset, e["ts"]))
+            return self._loop.post_completion(id_, result=(offset, e["ts"]))
         else:
             assert_type(e["type"], Literal["promise.create", "trace"])
             return True
@@ -799,9 +794,8 @@ class Task(Generic[_T]):
         if not self._task_manager.has_future(future_id):
             msg = "Promise not found"
             raise ValueError(msg)
-        now_us = self._now_us
         entry: PromiseCompleteEntry = {
-            "ts": now_us,
+            "ts": self._now_us,
             "id": random_id(),
             "type": "promise.complete",
             "promise_id": future_id,
@@ -834,11 +828,10 @@ async def _prelude_fn(
     if init_params["version"] != _CURRENT_VERSION:
         msg = "version mismatch"
         raise RuntimeError(msg)
-    ctx = Context(loop, init_params["nonce"])
 
     codec = fn.codec
     type_info = inspect_function(fn.fn)
-    args = tuple(
+    args = (
         codec.decode_json(
             arg,
             type_info.parameter_types.get(type_info.parameters[i + 1], UnspecifiedType)
@@ -849,18 +842,18 @@ async def _prelude_fn(
     )
     kwargs = {
         k: codec.decode_json(v, type_info.parameter_types.get(k, UnspecifiedType))
-        for k, v in sorted(init_params["kwargs"].items())
+        for k, v in init_params["kwargs"].items()
     }
 
-    extra_kwargs: dict[str, Stream[Any] | StreamWriter[Any] | Signal[Any]] = {}
+    ctx = Context(loop, init_params["nonce"])
     for name, type_, dtype in fn.inject:
         if type_ is Stream:
-            extra_kwargs[name], _stw = await ctx.create_stream(dtype, name=name)
+            kwargs[name], _ = await ctx.create_stream(dtype, name=name)
         elif type_ is Signal:
-            extra_kwargs[name], _sgw = await ctx.create_signal(dtype, name=name)
+            kwargs[name], _ = await ctx.create_signal(dtype, name=name)
         elif type_ is StreamWriter:
-            _, extra_kwargs[name] = await ctx.create_stream(dtype, name=name)
+            _, kwargs[name] = await ctx.create_stream(dtype, name=name)
 
     with span("Session"):
         _ = ready()
-        return await fn.fn(ctx, *args, **extra_kwargs, **kwargs)
+        return await fn.fn(ctx, *args, **kwargs)

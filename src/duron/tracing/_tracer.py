@@ -199,6 +199,7 @@ class OpSpan(NamedTuple):
 
     def attach(self, entry: Entry, event: Event) -> None:
         event["span_id"] = self.id
+        event["ts"] = time.time_ns() // 1000
         set_metadata(
             entry,
             {

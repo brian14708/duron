@@ -33,7 +33,6 @@ if TYPE_CHECKING:
 
 _T = TypeVar("_T")
 _U = TypeVar("_U")
-_T_contra = TypeVar("_T_contra", contravariant=True)
 
 
 @final
@@ -63,7 +62,7 @@ class StreamClosed(Exception):  # noqa: N818
 
 
 @final
-class StreamWriter(Generic[_T_contra]):
+class StreamWriter(Generic[_T]):
     """Protocol for writing values to a stream."""
 
     __slots__ = ("_closed", "_loop", "_stream_id")
@@ -73,7 +72,7 @@ class StreamWriter(Generic[_T_contra]):
         self._loop = loop
         self._closed = False
 
-    async def send(self, value: _T_contra, /) -> None:
+    async def send(self, value: _T, /) -> None:
         """Send a value to the stream.
 
         Raises:
@@ -110,7 +109,7 @@ class StreamWriter(Generic[_T_contra]):
         )
         self._closed = True
 
-    async def __aenter__(self) -> StreamWriter[_T_contra]:
+    async def __aenter__(self) -> StreamWriter[_T]:
         return self
 
     async def __aexit__(
@@ -122,13 +121,11 @@ class StreamWriter(Generic[_T_contra]):
         if self._closed:
             return
         with contextlib.suppress(LoopClosedError):
-            if not exc_value:
-                await self.close()
-            elif isinstance(exc_value, Exception):
+            if exc_value is None or isinstance(exc_value, Exception):
                 await self.close(exc_value)
             else:
                 await self.close(
-                    Exception(f"StreamWriter exited with exception: {exc_value}")
+                    RuntimeError(f"StreamWriter exited with exception: {exc_value}")
                 )
 
 

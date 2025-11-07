@@ -68,14 +68,12 @@ class Signal(Generic[_T]):
         task = asyncio.current_task()
         if task is None:
             return
-        assert task.get_loop() == self._loop
+        assert task.get_loop() is self._loop
 
         if task not in self._tasks:
-            val = _SignalState(depth=0, triggered=None)
-            self._tasks[task] = val
+            self._tasks[task] = _SignalState(depth=0, triggered=None)
         else:
-            val = self._tasks[task]
-            val.depth += 1
+            self._tasks[task].depth += 1
 
     async def __aexit__(
         self,
