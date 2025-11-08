@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -143,3 +144,271 @@ class MemoryLogStorage:
     async def entries(self) -> list[BaseEntry]:
         async with self._lock:
             return self._entries.copy()
+
+
+class SQLiteLogManager:
+    """A log manager that stores multiple task logs in a single SQLite database.
+
+    Uses WAL mode and database-backed leases for multiprocess support.
+    Last acquirer wins - no expiration tracking.
+    """
+
+    __slots__ = ("_db_path", "_lock", "_logs")
+
+    def __init__(self, db_path: str | Path) -> None:
+        """Initialize the SQLite log manager.
+
+        Args:
+            db_path: Path to the SQLite database file.
+
+        """
+        self._db_path = Path(db_path)
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._logs: dict[str, SQLiteLog] = {}
+        self._lock = asyncio.Lock()
+
+        # Initialize database schema with WAL mode
+        conn = sqlite3.connect(self._db_path)
+        try:
+            # Enable WAL mode for better concurrent access
+            conn.execute("PRAGMA journal_mode=WAL")
+
+            # Create log entries table - stores full entry data except metadata
+            # Uses ROWID as offset (implicit, auto-incrementing)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS log_entries (
+                    task_id TEXT NOT NULL,
+                    id TEXT NOT NULL,
+                    data BLOB NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_log_entries_task_id
+                ON log_entries (task_id)
+            """)
+
+            # Create log metadata table - stores metadata separately
+            # Joined with log_entries on entry_rowid
+            # Only created when metadata exists
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS log_metadata (
+                    entry_rowid INTEGER PRIMARY KEY,
+                    metadata BLOB NOT NULL,
+                    FOREIGN KEY (entry_rowid) REFERENCES log_entries(rowid)
+                )
+            """)
+
+            # Create leases table for multiprocess coordination
+            # Last acquirer wins - no expiration
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS leases (
+                    task_id TEXT PRIMARY KEY,
+                    lease_id TEXT NOT NULL
+                )
+            """)
+
+            conn.commit()
+        finally:
+            conn.close()
+
+    async def create_log(self, task_id: str) -> SQLiteLog:
+        """Create or retrieve a log storage for the given task ID.
+
+        Returns:
+            A SQLiteLog instance for the specified task.
+
+        """
+        async with self._lock:
+            if task_id not in self._logs:
+                self._logs[task_id] = SQLiteLog(self._db_path, task_id)
+            return self._logs[task_id]
+
+
+class SQLiteLog:
+    """A [log storage][duron.log.LogStorage] for a single task in a SQLite database.
+
+    Implements multiprocess-safe lease mechanism using database-backed leases.
+    Last acquirer wins - lease is only validated on append.
+    """
+
+    __slots__ = ("_db_path", "_lock", "_task_id")
+
+    def __init__(self, db_path: Path, task_id: str) -> None:
+        self._db_path = db_path
+        self._task_id = task_id
+        self._lock = asyncio.Lock()
+
+    async def stream(self) -> AsyncGenerator[tuple[int, BaseEntry], None]:
+        loop = asyncio.get_running_loop()
+
+        def _read_entries() -> list[tuple[int, BaseEntry]]:
+            conn = sqlite3.connect(self._db_path)
+            try:
+                # Read from log_entries, convert JSONB data to JSON text
+                # Data contains full entry except metadata
+                cursor = conn.execute(
+                    "SELECT rowid, json(data) "
+                    "FROM log_entries "
+                    "WHERE task_id = ? ORDER BY rowid",
+                    (self._task_id,),
+                )
+                results: list[tuple[int, BaseEntry]] = []
+                for rowid, data_json in cursor:
+                    try:
+                        # Parse entry from JSONB data
+                        if data_json:
+                            entry = json.loads(data_json)
+                            if isinstance(entry, dict):
+                                results.append((
+                                    rowid,
+                                    cast("BaseEntry", cast("object", entry)),
+                                ))
+                    except json.JSONDecodeError:  # noqa: PERF203
+                        pass
+                return results
+            finally:
+                conn.close()
+
+        entries = await loop.run_in_executor(None, _read_entries)
+        for offset, entry in entries:
+            yield (offset, entry)
+
+    async def acquire_lease(self) -> bytes:
+        """Acquire a lease for this task log.
+
+        Uses database-backed leases for multiprocess coordination.
+        Last acquirer wins - replaces any existing lease.
+
+        Returns:
+            A lease token that must be provided to append() and release_lease().
+
+        """
+        async with self._lock:
+            loop = asyncio.get_running_loop()
+
+            def _acquire() -> bytes:
+                conn = sqlite3.connect(self._db_path)
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    lease_id = uuid.uuid4().hex
+
+                    # Upsert new lease (replaces existing lease for this task)
+                    conn.execute(
+                        "INSERT INTO leases (task_id, lease_id) "
+                        "VALUES (?, ?) "
+                        "ON CONFLICT(task_id) DO UPDATE SET "
+                        "lease_id = excluded.lease_id",
+                        (self._task_id, lease_id),
+                    )
+                    conn.commit()
+                    return lease_id.encode("utf-8")
+                except Exception:
+                    conn.rollback()
+                    raise
+                finally:
+                    conn.close()
+
+            return await loop.run_in_executor(None, _acquire)
+
+    async def release_lease(self, token: bytes) -> None:
+        """Release a previously acquired lease.
+
+        Args:
+            token: The lease token returned by acquire_lease().
+
+        """
+        async with self._lock:
+            loop = asyncio.get_running_loop()
+
+            def _release() -> None:
+                conn = sqlite3.connect(self._db_path)
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    lease_id = token.decode("utf-8")
+                    conn.execute(
+                        "DELETE FROM leases WHERE task_id = ? AND lease_id = ?",
+                        (self._task_id, lease_id),
+                    )
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+                finally:
+                    conn.close()
+
+            await loop.run_in_executor(None, _release)
+
+    async def append(self, token: bytes, entry: Entry) -> int:
+        """Append an entry to the log.
+
+        Validates the lease before appending. Raises ValueError if invalid.
+
+        Args:
+            token: The lease token returned by acquire_lease().
+            entry: The log entry to append.
+
+        Returns:
+            The offset (ROWID) of the appended entry.
+
+        """
+        async with self._lock:
+            loop = asyncio.get_running_loop()
+
+            def _append_entry() -> int:
+                def _raise_invalid_lease() -> None:
+                    msg = "Invalid lease token"
+                    raise ValueError(msg)
+
+                conn = sqlite3.connect(self._db_path)
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    lease_id = token.decode("utf-8")
+
+                    # Extract fields
+                    entry_id = entry["id"]
+                    metadata = entry.get("metadata")
+
+                    # Create entry without metadata for log_entries table
+                    entry_without_metadata = {
+                        k: v for k, v in entry.items() if k != "metadata"
+                    }
+                    data_json = json.dumps(
+                        entry_without_metadata, separators=(",", ":")
+                    )
+
+                    # Validate lease and insert into log_entries
+                    cursor = conn.execute(
+                        "INSERT INTO log_entries (task_id, id, data) "
+                        "SELECT ?, ?, jsonb(?) "
+                        "WHERE EXISTS ("
+                        "    SELECT 1 FROM leases "
+                        "    WHERE task_id = ? AND lease_id = ?"
+                        ")",
+                        (self._task_id, entry_id, data_json, self._task_id, lease_id),
+                    )
+
+                    # Check if insert succeeded (rowcount = 1 means valid lease)
+                    if cursor.rowcount == 0:
+                        conn.rollback()
+                        _raise_invalid_lease()
+
+                    rowid = cursor.lastrowid
+
+                    # Insert into log_metadata only if metadata exists
+                    if metadata is not None:
+                        metadata_json = json.dumps(metadata, separators=(",", ":"))
+                        conn.execute(
+                            "INSERT INTO log_metadata (entry_rowid, metadata) "
+                            "VALUES (?, jsonb(?))",
+                            (rowid, metadata_json),
+                        )
+                except Exception:
+                    conn.rollback()
+                    raise
+                else:
+                    conn.commit()
+                    return rowid if rowid is not None else 0
+                finally:
+                    conn.close()
+
+            return await loop.run_in_executor(None, _append_entry)
