@@ -4,11 +4,10 @@ import argparse
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
-from typing_extensions import Any, override
+from typing_extensions import Any
 
 from httpx import AsyncClient
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel
 from pydantic_ai import (
     Agent,
     DeferredToolRequests,
@@ -22,27 +21,9 @@ from pydantic_ai import (
 from rich.console import Console
 
 import duron
-from duron.codec import Codec
+from duron.contrib.codecs import PydanticCodec
 from duron.contrib.storage import FileLogStorage
 from duron.tracing import Tracer, span
-
-if TYPE_CHECKING:
-    from duron.typing import JSONValue, TypeHint
-
-
-class PydanticCodec(Codec):
-    @override
-    def encode_json(self, result: object, annotated_type: TypeHint[Any]) -> JSONValue:
-        return cast(
-            "JSONValue",
-            TypeAdapter(
-                cast("type[object]", annotated_type) if annotated_type else type(result)
-            ).dump_python(result, mode="json", exclude_none=True),
-        )
-
-    @override
-    def decode_json(self, encoded: JSONValue, expected_type: TypeHint[Any]) -> object:
-        return cast("object", TypeAdapter(expected_type).validate_python(encoded))
 
 
 @duron.durable(codec=PydanticCodec())

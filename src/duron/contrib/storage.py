@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
-    from io import TextIOBase
+    from io import IOBase
 
     from duron.log import BaseEntry, Entry
 
@@ -17,21 +17,48 @@ if TYPE_CHECKING:
 try:
     import fcntl
 
-    def lock_file(f: TextIOBase, /) -> None:
+    def _lock_file(f: IOBase, /) -> None:
         if f.writable():
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
-    def unlock_file(f: TextIOBase, /) -> None:
+    def _unlock_file(f: IOBase, /) -> None:
         if f.writable():
             fcntl.flock(f, fcntl.LOCK_UN)
 
 except ModuleNotFoundError:
 
-    def lock_file(_f: TextIOBase, /) -> None:
+    def _lock_file(_f: IOBase, /) -> None:
         pass
 
-    def unlock_file(_f: TextIOBase, /) -> None:
+    def _unlock_file(_f: IOBase, /) -> None:
         pass
+
+
+try:
+    import orjson
+
+    def _json_dumps(obj: object) -> bytes:
+        try:
+            return orjson.dumps(obj)
+        except (TypeError, ValueError) as e:
+            msg = f"Object of type {type(obj).__name__} is not JSON serializable"
+            raise TypeError(msg) from e
+
+    def _json_loads(s: bytes) -> object:
+        try:
+            return orjson.loads(s)
+        except orjson.JSONDecodeError as e:
+            raise json.JSONDecodeError(e.msg, e.doc, e.pos) from None
+
+except ModuleNotFoundError:
+
+    def _json_dumps(obj: object) -> bytes:
+        return json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
+
+    def _json_loads(s: bytes) -> object:
+        return json.loads(s)
 
 
 class FileLogStorage:
@@ -42,7 +69,7 @@ class FileLogStorage:
     def __init__(self, log_file: str | Path) -> None:
         self._log_file = Path(log_file)
         self._log_file.parent.mkdir(parents=True, exist_ok=True)
-        self._lease: TextIOBase | None = None
+        self._lease: IOBase | None = None
         self._lock = asyncio.Lock()
 
     async def stream(self) -> AsyncGenerator[tuple[int, BaseEntry], None]:
@@ -56,7 +83,7 @@ class FileLogStorage:
                 line = f.readline()
                 if line:
                     try:
-                        entry = json.loads(line.decode().strip())
+                        entry = _json_loads(line)
                         if isinstance(entry, dict):
                             yield (
                                 line_start_offset,
@@ -70,14 +97,14 @@ class FileLogStorage:
 
     async def acquire_lease(self) -> bytes:
         async with self._lock:
-            self._lease = Path(self._log_file).open("a", encoding="utf-8")  # noqa: ASYNC230, SIM115
-            lock_file(self._lease)
+            self._lease = Path(self._log_file).open("ab")  # noqa: ASYNC230, SIM115
+            _lock_file(self._lease)
             return self._lease.fileno().to_bytes(8, "big")
 
     async def release_lease(self, token: bytes) -> None:
         async with self._lock:
             if self._lease and token == self._lease.fileno().to_bytes(8, "big"):
-                unlock_file(self._lease)
+                _unlock_file(self._lease)
                 self._lease.close()
                 self._lease = None
 
@@ -89,8 +116,8 @@ class FileLogStorage:
 
             f = self._lease
             offset = f.tell()
-            json.dump(entry, f, separators=(",", ":"))
-            _ = f.write("\n")
+            _ = f.write(_json_dumps(entry))
+            _ = f.write(b"\n")
             f.flush()
             return offset
 
@@ -257,7 +284,7 @@ class SQLiteLog:
                     try:
                         # Parse entry from JSONB data
                         if data_json:
-                            entry = json.loads(data_json)
+                            entry = _json_loads(data_json)
                             if isinstance(entry, dict):
                                 results.append((
                                     rowid,
@@ -372,9 +399,7 @@ class SQLiteLog:
                     entry_without_metadata = {
                         k: v for k, v in entry.items() if k != "metadata"
                     }
-                    data_json = json.dumps(
-                        entry_without_metadata, separators=(",", ":")
-                    )
+                    data_json = _json_dumps(entry_without_metadata)
 
                     # Validate lease and insert into log_entries
                     cursor = conn.execute(
@@ -396,7 +421,7 @@ class SQLiteLog:
 
                     # Insert into log_metadata only if metadata exists
                     if metadata is not None:
-                        metadata_json = json.dumps(metadata, separators=(",", ":"))
+                        metadata_json = _json_dumps(metadata)
                         conn.execute(
                             "INSERT INTO log_metadata (entry_rowid, metadata) "
                             "VALUES (?, jsonb(?))",

@@ -49,6 +49,7 @@ typing = [
     "basedpyright",
     "pydantic",
     "pytest",
+    "orjson",
 ]
 lint = [
     "ruff",
