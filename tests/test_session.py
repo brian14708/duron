@@ -9,13 +9,14 @@ from dataclasses import dataclass
 
 import pytest
 
-from duron import Context, Provided, Session, Stream, StreamWriter, durable
+from duron import Context, Provided, Session, Stream, StreamWriter, durable, effect
 from duron.contrib.codecs import PickleCodec
 from duron.contrib.storage import MemoryLogStorage
 
 
 @pytest.mark.asyncio
 async def test_invoke() -> None:
+    @effect
     async def u() -> str:
         for _ in range(random.randint(1, 10)):
             await asyncio.sleep(0.001)
