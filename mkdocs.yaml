@@ -60,11 +60,6 @@ plugins:
           - getting-started.md
         API Reference: *references
 markdown_extensions:
-  - pymdownx.superfences:
-      custom_fences:
-        - name: mermaid
-          class: mermaid
-          format: !!python/name:mermaid2.fence_mermaid
   - pymdownx.snippets:
-      base_path: [!relative $config_dir]
+      base_path: ["."]
       check_paths: true

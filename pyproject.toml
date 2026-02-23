@@ -55,11 +55,8 @@ lint = [
     "ruff",
 ]
 docs = [
-    "mkdocs",
-    "mkdocs-llmstxt",
-    "mkdocs-material",
-    "mkdocs-mermaid2-plugin",
     "mkdocstrings[python]",
+    "zensical",
 ]
 examples = [
     "pydantic",

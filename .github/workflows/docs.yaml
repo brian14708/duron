@@ -32,7 +32,7 @@ jobs:
       - name: Sync dependencies
         run: uv sync --group docs
       - name: Build static files
-        run: uv run mkdocs build
+        run: uv run zensical build
 
       # Build trace-ui
       - name: Install pnpm
