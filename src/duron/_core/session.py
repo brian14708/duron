@@ -148,10 +148,6 @@ class Session:
     ) -> Task[_T]:
         """Start a new durable function within the session.
 
-        Raises:
-            RuntimeError: If a durable function is already running or the session is \
-                    not started.
-
         Args:
             fn: The durable function to run.
             *args: Positional arguments to pass to the durable function.
@@ -159,6 +155,10 @@ class Session:
 
         Returns:
             A `Task` representing the running durable function.
+
+        Raises:
+            RuntimeError: If a durable function is already running or the session is \
+                    not started.
 
         """
         if self._current_task is not None:
@@ -203,15 +203,15 @@ class Session:
     async def resume(self, fn: DurableFn[_P, _T]) -> Task[_T]:
         """Resume a durable function within the session.
 
-        Raises:
-            RuntimeError: If a durable function is already running or the session is \
-                    not started.
-
         Args:
             fn: The durable function to run.
 
         Returns:
             A `Task` representing the running durable function.
+
+        Raises:
+            RuntimeError: If a durable function is already running or the session is \
+                    not started.
 
         """
         if self._current_task is not None:
@@ -236,12 +236,12 @@ class Session:
     async def verify(self, fn: DurableFn[_P, _T]) -> None:
         """Verify if the durable function has completed within the session.
 
+        Args:
+            fn: The durable function to verify.
+
         Raises:
             RuntimeError: If a durable function is already running or the session is \
                     not started.
-
-        Args:
-            fn: The durable function to verify.
 
         """
         if self._current_task is not None:
@@ -781,14 +781,14 @@ class Task(Generic[_T]):
     ) -> None:
         """Complete a future with the given result or exception.
 
-        Raises:
-            ValueError: If the future with the given ID does not exist.
-
         Args:
             future_id: The ID created by [`create_future`][duron.Context.create_future].
             result: The result to complete the future with.
             result_type: The type of the result.
             exception: The exception to complete the future with.
+
+        Raises:
+            ValueError: If the future with the given ID does not exist.
 
         """
         if not self._task_manager.has_future(future_id):

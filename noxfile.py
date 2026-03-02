@@ -53,4 +53,4 @@ def lint(s: nox.Session) -> None:
 @nox.session
 def docs(s: nox.Session) -> None:
     install_deps(s, ["docs"])
-    _ = s.run("mkdocs", "build")
+    _ = s.run("zensical", "build")
