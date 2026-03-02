@@ -75,11 +75,11 @@ class StreamWriter(Generic[_T]):
     async def send(self, value: _T, /) -> None:
         """Send a value to the stream.
 
-        Raises:
-            RuntimeError: If the stream is already closed.
-
         Args:
             value: The value to send to stream consumers.
+
+        Raises:
+            RuntimeError: If the stream is already closed.
 
         """
         if self._closed:
@@ -92,11 +92,11 @@ class StreamWriter(Generic[_T]):
     async def close(self, exception: Exception | None = None, /) -> None:
         """Close the stream, optionally with an error.
 
-        Raises:
-            RuntimeError: If the stream is already closed.
-
         Args:
             exception: Optional exception to signal an error condition to consumers.
+
+        Raises:
+            RuntimeError: If the stream is already closed.
 
         """
         if self._closed:
