@@ -17,7 +17,7 @@ _P = ParamSpec("_P")
 class Reducer(NamedTuple):
     """Annotation to mark a parameter as a reducer."""
 
-    reducer: Callable[[object, object], object]
+    reducer: Callable[[Any, Any], Any]
 
 
 def _check_loop() -> None:
