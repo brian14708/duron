@@ -70,7 +70,7 @@ ignore = [
     "COM812", "S101", "CPY",
     "D10", "D203", "D205", "D213",
     "FIX", "TD002", "TD003",
-    "PLR09", "PLR2004", "C901",
+    "PLR09", "PLR2004", "PLW0717", "C901",
 ]
 extend-safe-fixes = ["TC", "F401"]
 preview = true
