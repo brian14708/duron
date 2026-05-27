@@ -32,7 +32,7 @@ Duron introduces two fundamental building blocks for creating replayable workflo
 
 Durable functions are the orchestrators of your workflow. They define the control flow and coordinate multiple operations. Key characteristics:
 
-- **Always take [`Context`][duron.Context] as the first parameter** - This is your handle to run effects and create streams/signals
+- **Always take [`Context`](reference/duron.md#duron.Context) as the first parameter** - This is your handle to run effects and create streams/signals
 - **Deterministic** - The same inputs always produce the same execution path
 - **Replayable** - When resumed, Duron replays logged results to restore state without re-executing completed steps
 - **No side effects** - All I/O must go through effects
