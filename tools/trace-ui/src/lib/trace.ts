@@ -173,7 +173,7 @@ export function parseTraceLog(filename: string, content: string): TraceFile {
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Unknown error parsing line";
-      throw new Error(`Invalid JSONL format: ${message}`);
+      throw new Error(`Invalid JSONL format: ${message}`, { cause: error });
     }
   }
 
