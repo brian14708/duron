@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Generator
     from io import IOBase
 
     from duron.log import BaseEntry, Entry
@@ -73,10 +73,17 @@ class FileLogStorage:
         self._lock = asyncio.Lock()
 
     async def stream(self) -> AsyncGenerator[tuple[int, BaseEntry], None]:
+        # The file read + yield lives in a synchronous generator so that
+        # GeneratorExit-driven cleanup of the `with` block is deterministic
+        # (an async generator abandoned mid-iteration may skip cleanup).
+        for item in self._read_entries():
+            yield item
+
+    def _read_entries(self) -> Generator[tuple[int, BaseEntry], None, None]:
         if not self._log_file.exists():
             return
 
-        with Path(self._log_file).open("rb") as f:  # noqa: ASYNC230
+        with Path(self._log_file).open("rb") as f:
             # Read existing lines from start offset
             while True:
                 line_start_offset = f.tell()
