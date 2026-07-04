@@ -1,10 +1,5 @@
 type JSONValue =
-  | string
-  | number
-  | boolean
-  | null
-  | JSONValue[]
-  | { [key: string]: JSONValue };
+  string | number | boolean | null | JSONValue[] | { [key: string]: JSONValue };
 
 export interface InstantEvent {
   time: number; // in seconds (relative to first event)
