@@ -1,4 +1,11 @@
 @import "tailwindcss";
+
+@media (min-width: 1024px) {
+  [style*="--sidebar-width"] {
+    width: var(--sidebar-width);
+    min-width: var(--sidebar-width);
+  }
+}
 @import "tw-animate-css";
 
 @custom-variant dark (&:is(.dark *));

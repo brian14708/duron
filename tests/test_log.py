@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
 from duron.contrib.storage import FileLogStorage, MemoryLogStorage, SQLiteLogManager
+from duron.log import CorruptLogError
 
 if TYPE_CHECKING:
     from duron.log import Entry, LogStorage
@@ -14,6 +16,19 @@ if TYPE_CHECKING:
 
 def make_entry(id_: str) -> Entry:
     return {"type": "promise.create", "id": id_, "ts": -1, "source": "effect"}
+
+
+def make_metadata_entry(id_: str) -> Entry:
+    return cast(
+        "Entry",
+        {
+            "type": "promise.create",
+            "id": id_,
+            "ts": -1,
+            "source": "effect",
+            "metadata": {"trace.id": "trace-1", "nested": {"value": 3}},
+        },
+    )
 
 
 async def impl_test_log_storage(storage: LogStorage) -> None:
@@ -31,9 +46,28 @@ async def impl_test_log_storage(storage: LogStorage) -> None:
     async for _o, entry_data in storage.stream():
         entries.append(entry_data["id"])
     assert len(entries) == 4
+    await storage.release_lease(lease2)
 
 
-@pytest.mark.asyncio
+async def impl_test_lease_contract(
+    storage: LogStorage, second_storage: LogStorage
+) -> None:
+    first = await storage.acquire_lease()
+    second = await second_storage.acquire_lease()
+
+    assert first != second
+    with pytest.raises(ValueError, match="Invalid lease token"):
+        await storage.append(first, make_entry("stale"))
+
+    await storage.release_lease(first)
+    await second_storage.append(second, make_entry("current"))
+    await second_storage.release_lease(second)
+    await second_storage.release_lease(second)
+
+    with pytest.raises(ValueError, match="Invalid lease token"):
+        await second_storage.append(second, make_entry("released"))
+
+
 async def test_file_storage_basic() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         log_file = Path(tmpdir) / "test.log"
@@ -41,13 +75,22 @@ async def test_file_storage_basic() -> None:
         await impl_test_log_storage(storage)
 
 
-@pytest.mark.asyncio
+async def test_file_storage_lease_contract_across_instances() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "test.log"
+        await impl_test_lease_contract(FileLogStorage(path), FileLogStorage(path))
+
+
 async def test_memory_storage_basic() -> None:
     storage = MemoryLogStorage()
     await impl_test_log_storage(storage)
 
 
-@pytest.mark.asyncio
+async def test_memory_storage_lease_contract() -> None:
+    storage = MemoryLogStorage()
+    await impl_test_lease_contract(storage, storage)
+
+
 async def test_sqlite_storage_basic() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
@@ -56,7 +99,14 @@ async def test_sqlite_storage_basic() -> None:
         await impl_test_log_storage(storage)
 
 
-@pytest.mark.asyncio
+async def test_sqlite_storage_lease_contract_across_instances() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "test.db"
+        first = await SQLiteLogManager(path).create_log("task")
+        second = await SQLiteLogManager(path).create_log("task")
+        await impl_test_lease_contract(first, second)
+
+
 async def test_sqlite_storage_multiplex() -> None:
     """Test that multiple tasks can have separate logs in the same database."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -89,7 +139,6 @@ async def test_sqlite_storage_multiplex() -> None:
         assert entries2 == ["task2-entry1", "task2-entry2", "task2-entry3"]
 
 
-@pytest.mark.asyncio
 async def test_sqlite_storage_multiprocess_simulation() -> None:
     """Test lease behavior with multiple storage instances (simulating processes)."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -123,3 +172,85 @@ async def test_sqlite_storage_multiprocess_simulation() -> None:
         async for _o, entry_data in storage2.stream():
             entries2.append(entry_data["id"])
         assert entries2 == ["from-process-1", "from-process-2"]
+
+
+@pytest.mark.parametrize("storage_kind", ["file", "memory", "sqlite"])
+async def test_storage_round_trip_preserves_metadata(storage_kind: str) -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        storage: LogStorage
+        if storage_kind == "file":
+            storage = FileLogStorage(Path(tmpdir) / "test.log")
+        elif storage_kind == "memory":
+            storage = MemoryLogStorage()
+        else:
+            manager = SQLiteLogManager(Path(tmpdir) / "test.db")
+            storage = await manager.create_log("task")
+
+        lease = await storage.acquire_lease()
+        expected = make_metadata_entry("metadata")
+        await storage.append(lease, expected)
+        entries = [entry async for _offset, entry in storage.stream()]
+        assert entries == [expected]
+        await storage.release_lease(lease)
+
+
+async def test_file_storage_rejects_corrupt_middle_entry() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "test.log"
+        path.write_bytes(
+            b'{"type":"promise.create","id":"1","ts":-1,"source":"effect"}\n'
+            b"not-json\n"
+            b'{"type":"promise.create","id":"2","ts":-1,"source":"effect"}\n'
+        )
+        with pytest.raises(CorruptLogError) as exc_info:
+            _ = [entry async for _offset, entry in FileLogStorage(path).stream()]
+        assert exc_info.value.offset > 0
+
+
+async def test_file_storage_ignores_truncated_final_line() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "test.log"
+        path.write_bytes(
+            b'{"type":"promise.create","id":"1","ts":-1,"source":"effect"}\n'
+            b'{"type":"promise.create"'
+        )
+        entries = [entry async for _offset, entry in FileLogStorage(path).stream()]
+        assert [entry["id"] for entry in entries] == ["1"]
+
+
+async def test_sqlite_storage_rejects_invalid_schema() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "test.db"
+        manager = SQLiteLogManager(path)
+        storage = await manager.create_log("task")
+        conn = sqlite3.connect(path)
+        try:
+            conn.execute(
+                "INSERT INTO log_entries (task_id, id, data) VALUES (?, ?, jsonb(?))",
+                ("task", "broken", b'{"id":"broken"}'),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with pytest.raises(CorruptLogError, match="invalid 'ts'"):
+            _ = [entry async for _offset, entry in storage.stream()]
+
+
+@pytest.mark.parametrize(
+    ("entry", "message"),
+    [
+        ({"type": "promise.complete"}, "missing 'promise_id'"),
+        ({"type": "stream.emit", "stream_id": "s"}, "missing 'value'"),
+        ({"type": "trace", "events": {}}, "trace events must be a list"),
+    ],
+)
+async def test_memory_storage_rejects_invalid_entry_schema(
+    entry: dict[str, object], message: str
+) -> None:
+    storage = MemoryLogStorage()
+    lease = await storage.acquire_lease()
+    invalid_entry = {"id": "bad", "ts": 1, "source": "task", **entry}
+    await storage.append(lease, cast("Entry", invalid_entry))
+    with pytest.raises(CorruptLogError, match=message):
+        _ = [item async for _offset, item in storage.stream()]

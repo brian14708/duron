@@ -13,6 +13,10 @@
 - 🔌 **Zero dependencies** — Pure Python built on asyncio, fully typed
 - 🧩 **Pluggable storage** — Bring your own database or filesystem backend
 
+Duron replays completed operations from their persisted log position; it does not
+provide content-based memoization. External effects have at-least-once semantics:
+use idempotency keys or transactions for side effects that must not be duplicated.
+
 ## Install
 
 Duron requires **Python 3.10+**.
@@ -150,6 +154,11 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 ```
+
+Duron also provides `MemoryLogStorage` for tests and `SQLiteLogManager` for
+multiple named workflow logs in one SQLite database. Writable sessions hold an
+opaque fencing lease; readonly sessions may verify completed histories but cannot
+start or resume live work.
 
 ## Next steps
 

@@ -23,6 +23,7 @@ class TaskError(NamedTuple):
 class TaskManager:
     __slots__ = (
         "_cleanup_task",
+        "_closed",
         "_done_tasks",
         "_futures",
         "_on_error",
@@ -44,6 +45,7 @@ class TaskManager:
         self._done_tasks: asyncio.Queue[asyncio.Future[None] | None] = asyncio.Queue()
         self._futures: dict[str, TypeHint[Any]] = {}
         self._cleanup_task: asyncio.Task[None] = asyncio.create_task(self._cleanup())
+        self._closed = False
         self._on_error: Callable[[TaskError], Any] = on_error
 
     async def _cleanup(self) -> None:
@@ -113,6 +115,9 @@ class TaskManager:
         self._pending_task.clear()
 
     async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         self._done_tasks.put_nowait(None)
         await self._cleanup_task
         while self._tasks:

@@ -8,7 +8,8 @@ from typing_extensions import override
 
 import pytest
 
-from duron import Context, Session, durable
+from duron import Context, RemoteEffectError, Session, durable
+from duron._core.utils import decode_error, encode_error
 from duron.contrib.storage import MemoryLogStorage
 
 if TYPE_CHECKING:
@@ -32,7 +33,6 @@ class FlakyLogStorage(MemoryLogStorage):
         return await super().append(token, entry)
 
 
-@pytest.mark.asyncio
 async def test_error_storage() -> None:
     async def u() -> str:
         for _ in range(random.randint(1, 10)):
@@ -50,3 +50,30 @@ async def test_error_storage() -> None:
         async with Session(log) as t:
             with pytest.raises(RuntimeError, match="Simulated storage failure"):
                 await (await t.start(activity, "test")).result()
+
+
+def test_structured_errors_reconstruct_safe_types_and_fallback() -> None:
+    value_error = decode_error(encode_error(ValueError("bad", 3)))
+    assert isinstance(value_error, ValueError)
+    assert value_error.args == ("bad", 3)
+
+    unknown = decode_error({
+        "module": "example.remote",
+        "type": "UnknownError",
+        "message": "remote failure",
+        "args": ["remote failure"],
+        "cancelled": False,
+    })
+    assert isinstance(unknown, RemoteEffectError)
+    assert unknown.remote_type == "example.remote:UnknownError"
+
+
+def test_structured_errors_preserve_cause_and_cancellation() -> None:
+    cause = KeyError("missing")
+    error = RuntimeError("outer")
+    error.__cause__ = cause
+    decoded = decode_error(encode_error(error))
+    assert isinstance(decoded, RuntimeError)
+    assert isinstance(decoded.__cause__, KeyError)
+    decoded_cancel = decode_error(encode_error(asyncio.CancelledError()))
+    assert isinstance(decoded_cancel, asyncio.CancelledError)

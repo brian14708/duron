@@ -69,6 +69,10 @@ _P = ParamSpec("_P")
 _CURRENT_VERSION: Final = 0
 
 
+class SessionError(RuntimeError):
+    """Base error raised for invalid session operations."""
+
+
 class InitParams(TypedDict):
     version: int
     args: list[JSONValue]
@@ -78,6 +82,7 @@ class InitParams(TypedDict):
 
 class Session:
     __slots__ = (
+        "_closed",
         "_current_task",
         "_lease",
         "_log",
@@ -110,6 +115,7 @@ class Session:
             readonly: If true, the session will not acquire a lease on the log.
 
         """
+        self._closed = False
         self._log = log
         self._tracer = tracer
         self._token: contextvars.Token[Tracer] | None = None
@@ -120,9 +126,18 @@ class Session:
 
     async def __aenter__(self) -> Self:
         self._token = current_tracer.set(self._tracer) if self._tracer else None
-        self._loop = await create_loop()
-        if not self._readonly:
-            self._lease = await self._log.acquire_lease()
+        try:
+            self._loop = await create_loop()
+            if not self._readonly:
+                self._lease = await self._log.acquire_lease()
+        except BaseException:
+            if self._loop is not None and not self._loop.is_closed():
+                self._loop.close()
+            self._loop = None
+            if self._token is not None:
+                current_tracer.reset(self._token)
+                self._token = None
+            raise
         return self
 
     async def __aexit__(
@@ -131,17 +146,26 @@ class Session:
         _exc_value: BaseException | None,
         _traceback: TracebackType | None,
     ) -> None:
-        if self._lease is not None:
-            await self._log.release_lease(self._lease)
-            self._lease = None
-        if self._loop:
-            self._loop.close()
-            self._loop = None
-        if self._current_task:
-            await self._current_task.close()
-            self._current_task = None
-        if tracer_token := self._token:
-            current_tracer.reset(tracer_token)
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self._current_task:
+                await self._current_task.close()
+                self._current_task = None
+        finally:
+            try:
+                if self._lease is not None:
+                    await self._log.release_lease(self._lease)
+                    self._lease = None
+            finally:
+                if self._loop:
+                    if not self._loop.is_closed():
+                        self._loop.close()
+                    self._loop = None
+                if tracer_token := self._token:
+                    current_tracer.reset(tracer_token)
+                    self._token = None
 
     async def start(
         self, fn: DurableFn[_P, _T], *args: _P.args, **kwargs: _P.kwargs
@@ -157,48 +181,26 @@ class Session:
             A `Task` representing the running durable function.
 
         Raises:
-            RuntimeError: If a durable function is already running or the session is \
-                    not started.
+            SessionError: If the session is readonly.
 
         """
-        if self._current_task is not None:
-            msg = "A durable function is already running"
-            raise RuntimeError(msg)
-        if self._loop is None:
-            msg = "Session is not started"
-            raise RuntimeError(msg)
+        if self._readonly:
+            msg = "Cannot start live work in a readonly session; use verify()"
+            raise SessionError(msg)
 
-        codec = fn.codec
+        encoded_args, encoded_kwargs = _encode_inputs(fn, args, kwargs)
 
         def init() -> InitParams:
-            hint = inspect_function(fn.fn)
             return {
                 "version": _CURRENT_VERSION,
-                "args": [
-                    codec.encode_json(
-                        arg,
-                        hint.parameter_types[hint.parameters[i]]
-                        if i < len(hint.parameters)
-                        else UnspecifiedType,
-                    )
-                    for i, arg in enumerate(args)
-                ],
-                "kwargs": {
-                    k: codec.encode_json(
-                        v, hint.parameter_types.get(k, UnspecifiedType)
-                    )
-                    for k, v in kwargs.items()
-                },
+                "args": encoded_args,
+                "kwargs": encoded_kwargs,
                 "nonce": random_id(),
             }
 
-        self._current_task = Task(
-            self._loop, self._log, self._tracer, self._lease, init, fn
-        )
-        self._loop = None
-        self._lease = None
-        await self._current_task._start()  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
-        return self._current_task
+        task = self._spawn(fn, init)
+        await task._start()  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        return task
 
     async def resume(self, fn: DurableFn[_P, _T]) -> Task[_T]:
         """Resume a durable function within the session.
@@ -210,28 +212,20 @@ class Session:
             A `Task` representing the running durable function.
 
         Raises:
-            RuntimeError: If a durable function is already running or the session is \
-                    not started.
+            SessionError: If the session is readonly.
 
         """
-        if self._current_task is not None:
-            msg = "A durable function is already running"
-            raise RuntimeError(msg)
-        if self._loop is None:
-            msg = "Session is not started"
-            raise RuntimeError(msg)
+        if self._readonly:
+            msg = "Cannot resume live work in a readonly session; use verify()"
+            raise SessionError(msg)
 
         def init() -> InitParams:
             msg = "Not started properly"
             raise RuntimeError(msg)
 
-        self._current_task = Task(
-            self._loop, self._log, self._tracer, self._lease, init, fn
-        )
-        self._loop = None
-        self._lease = None
-        await self._current_task._start()  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
-        return self._current_task
+        task = self._spawn(fn, init)
+        await task._start()  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        return task
 
     async def verify(self, fn: DurableFn[_P, _T]) -> None:
         """Verify if the durable function has completed within the session.
@@ -244,6 +238,18 @@ class Session:
                     not started.
 
         """
+
+        def init() -> InitParams:
+            msg = "Not started properly"
+            raise RuntimeError(msg)
+
+        task = self._spawn(fn, init)
+        if await task._resume():  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+            return
+        msg = "Durable function has not completed"
+        raise RuntimeError(msg)
+
+    def _spawn(self, fn: DurableFn[_P, _T], init: Callable[[], InitParams]) -> Task[_T]:
         if self._current_task is not None:
             msg = "A durable function is already running"
             raise RuntimeError(msg)
@@ -251,26 +257,20 @@ class Session:
             msg = "Session is not started"
             raise RuntimeError(msg)
 
-        def init() -> InitParams:
-            msg = "Not started properly"
-            raise RuntimeError(msg)
-
-        self._current_task = Task(
-            self._loop, self._log, self._tracer, self._lease, init, fn
-        )
+        task = Task(self._loop, self._log, self._tracer, self._lease, init, fn)
+        self._current_task = task
         self._loop = None
         self._lease = None
-        if await self._current_task._resume():  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
-            return
-        msg = "Durable function has not completed"
-        raise RuntimeError(msg)
+        return task
 
 
 class Task(Generic[_T]):
     """A task representing a running durable function within a session."""
 
     __slots__ = (
+        "_closed",
         "_codec",
+        "_external_completion_lock",
         "_is_live",
         "_lease",
         "_log",
@@ -299,9 +299,11 @@ class Task(Generic[_T]):
         self._log = log
         self._tracer = tracer
         self._lease: bytes | None = lease
+        self._closed = False
         self._now_us: int = 0
         self._is_live: bool = False
         self._pending_msg: list[Entry] = []
+        self._external_completion_lock = asyncio.Lock()
 
         observers: dict[str, StreamObserver] = {}
         streams: dict[str, Stream[Any]] = {}
@@ -344,6 +346,7 @@ class Task(Generic[_T]):
 
             self._now_us = max(self._now_us, ts)
             ws = await self._step()
+            self._raise_history_error()
             if is_entry(entry):
                 if entry["source"] == "task":
                     if not self._handle_message(o, entry):
@@ -353,6 +356,7 @@ class Task(Generic[_T]):
                 else:
                     _ = self._handle_message(o, entry)
                 ws = await self._step()
+                self._raise_history_error()
             while self._pending_msg:
                 id_ = self._pending_msg[-1]["id"]
                 if id_ not in recvd_msgs:
@@ -373,6 +377,12 @@ class Task(Generic[_T]):
             raise RuntimeError(e)
 
         return self._main.done() and len(self._pending_msg) == 0
+
+    def _raise_history_error(self) -> None:
+        if self._main.done() and not self._main.cancelled():
+            error = self._main.exception()
+            if isinstance(error, SessionError):
+                raise error
 
     async def _start(self) -> None:
         if await self._resume():
@@ -448,23 +458,27 @@ class Task(Generic[_T]):
             await self._enqueue_log(trace_entry)
 
     async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         if self._task:
             self._task.cancel()
             with contextlib.suppress(Exception, asyncio.CancelledError):
                 await self._task
             self._task = None
 
-        if self._tracer:
-            self._tracer.close()
-        await self._send_traces(flush=True)
+        try:
+            if self._tracer:
+                self._tracer.close()
+            await self._send_traces(flush=True)
+        finally:
+            if self._lease:
+                await self._log.release_lease(self._lease)
+                self._lease = None
 
-        if self._lease:
-            await self._log.release_lease(self._lease)
-            self._lease = None
-
-        if not self._loop.is_closed():
-            _ = self._main.cancel()
-            self._loop.close()
+            if not self._loop.is_closed():
+                _ = self._main.cancel()
+                self._loop.close()
             await self._task_manager.close()
 
     async def _step(self) -> WaitSet | None:
@@ -570,20 +584,20 @@ class Task(Generic[_T]):
                 await self._enqueue_log(stream_emit_entry)
             case StreamClose(stream_id, exception):
                 stream_info = self._stream_manager.get_info(stream_id)
+                stream_close_entry: StreamCompleteEntry = {
+                    "ts": now,
+                    "id": id_,
+                    "stream_id": stream_id,
+                    "type": "stream.complete",
+                    "source": "effect" if fut.external else "task",
+                }
+                if exception:
+                    stream_close_entry["error"] = encode_error(exception)
                 if stream_info:
                     _, op_span = stream_info
-                    stream_close_entry: StreamCompleteEntry = {
-                        "ts": now,
-                        "id": id_,
-                        "stream_id": stream_id,
-                        "type": "stream.complete",
-                        "source": "effect" if fut.external else "task",
-                    }
-                    if exception:
-                        stream_close_entry["error"] = encode_error(exception)
                     if op_span:
                         op_span.end(stream_close_entry)
-                    await self._enqueue_log(stream_close_entry)
+                await self._enqueue_log(stream_close_entry)
             case Barrier():
                 assert not fut.external, "Barrier futures should not be external"
                 barrier_entry: BarrierEntry = {
@@ -632,8 +646,10 @@ class Task(Generic[_T]):
         if not self._is_live:
             self._pending_msg.append(entry)
         elif self._lease is None:
-            # closed
-            return
+            if self._closed:
+                return
+            msg = "Cannot append without an active storage lease"
+            raise RuntimeError(msg)
         else:
             offset = await self._log.append(self._lease, entry)
             self._handle_message(offset, entry)
@@ -791,23 +807,24 @@ class Task(Generic[_T]):
             ValueError: If the future with the given ID does not exist.
 
         """
-        if not self._task_manager.has_future(future_id):
-            msg = "Promise not found"
-            raise ValueError(msg)
-        entry: PromiseCompleteEntry = {
-            "ts": self._now_us,
-            "id": random_id(),
-            "type": "promise.complete",
-            "promise_id": future_id,
-            "source": "effect",
-        }
-        if exception is not None:
-            entry["error"] = encode_error(exception)
-        else:
-            entry["result"] = self._codec.encode_json(result, result_type)
-        if self._tracer:
-            self._tracer.end_op_span(future_id, entry)
-        await self._enqueue_log(entry)
+        async with self._external_completion_lock:
+            if not self._task_manager.has_future(future_id):
+                msg = "Promise not found"
+                raise ValueError(msg)
+            entry: PromiseCompleteEntry = {
+                "ts": self._now_us,
+                "id": random_id(),
+                "type": "promise.complete",
+                "promise_id": future_id,
+                "source": "effect",
+            }
+            if exception is not None:
+                entry["error"] = encode_error(exception)
+            else:
+                entry["result"] = self._codec.encode_json(result, result_type)
+            if self._tracer:
+                self._tracer.end_op_span(future_id, entry)
+            await self._enqueue_log(entry)
 
 
 async def _prelude_fn(
@@ -825,9 +842,7 @@ async def _prelude_fn(
             metadata=OpMetadata(name="duron.prelude"),
         ),
     )
-    if init_params["version"] != _CURRENT_VERSION:
-        msg = "version mismatch"
-        raise RuntimeError(msg)
+    _validate_history(init_params)
 
     codec = fn.codec
     type_info = inspect_function(fn.fn)
@@ -857,3 +872,38 @@ async def _prelude_fn(
     with span("Session"):
         _ = ready()
         return await fn.fn(ctx, *args, **kwargs)
+
+
+def _encode_inputs(
+    fn: DurableFn[_P, Any], args: tuple[object, ...], kwargs: dict[str, object]
+) -> tuple[list[JSONValue], dict[str, JSONValue]]:
+    hint = inspect_function(fn.fn)
+    codec = fn.codec
+    encoded_args = [
+        codec.encode_json(
+            arg,
+            hint.parameter_types[hint.parameters[i + 1]]
+            if i + 1 < len(hint.parameters)
+            else UnspecifiedType,
+        )
+        for i, arg in enumerate(args)
+    ]
+    encoded_kwargs = {
+        key: codec.encode_json(value, hint.parameter_types.get(key, UnspecifiedType))
+        for key, value in kwargs.items()
+    }
+    return encoded_args, encoded_kwargs
+
+
+def _validate_history(init_params: object) -> None:
+    if not isinstance(init_params, dict):
+        msg = "Persisted history header is not an object"
+        raise SessionError(msg)
+    header = cast("dict[str, object]", init_params)
+    if header.get("version") != _CURRENT_VERSION:
+        found = header.get("version", "missing")
+        msg = (
+            f"Unsupported persisted history format {found!r}; expected "
+            f"{_CURRENT_VERSION}. Create a new history or migrate it explicitly."
+        )
+        raise SessionError(msg)

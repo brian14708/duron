@@ -44,11 +44,10 @@ class Context:
         self._loop: EventLoop = loop
         self._seed: str = seed
 
-    def _check(self) -> bool:
+    def _check(self) -> None:
         if asyncio.get_running_loop() is not self._loop:
-            msg = "Context time can only be used in the context loop"
+            msg = "Context can only be used in its context loop"
             raise RuntimeError(msg)
-        return True
 
     @overload
     async def run(
@@ -78,7 +77,7 @@ class Context:
             The result of the function call.
 
         """
-        assert self._check()
+        self._check()
 
         if inspect.isasyncgenfunction(fn):
             async with self.stream(fn, *args, **kwargs) as (stream, result):
@@ -119,7 +118,7 @@ class Context:
             An async context manager that yields a Stream of the function's results.
 
         """
-        assert self._check()
+        self._check()
 
         type_hint = inspect_function(fn)
         action_type: TypeHint[_S] = UnspecifiedType
@@ -139,14 +138,14 @@ class Context:
         """Create a new stream within the context.
 
         Args:
-            dtype: The data type of the stream.
+            dtype: The data type of values emitted by the stream.
             name: Optional name for the stream.
 
         Returns:
-            Reader and writer for the created stream.
+            A stream reader and its writer.
 
         """
-        assert self._check()
+        self._check()
 
         return await create_stream(
             self._loop, dtype, name, metadata=OpMetadata(name=name)
@@ -158,14 +157,14 @@ class Context:
         """Create a new signal within the context.
 
         Args:
-            dtype: The data type of the stream.
-            name: Optional name for the stream.
+            dtype: The data type of values emitted by the signal.
+            name: Optional name for the signal.
 
         Returns:
-            Reader and writer for the created stream.
+            A signal reader and its writer.
 
         """
-        assert self._check()
+        self._check()
 
         return await create_signal(
             self._loop, dtype, name, metadata=OpMetadata(name=name)
@@ -177,14 +176,14 @@ class Context:
         """Create a new external future object within the context.
 
         Args:
-            dtype: The data type of the stream.
-            name: Optional name for the stream.
+            dtype: The type of the future's result.
+            name: Optional name for the future.
 
         Returns:
-            Reader and writer for the created stream.
+            The future ID and awaitable that produces its result.
 
         """
-        assert self._check()
+        self._check()
 
         fut = create_op(
             self._loop, FutureCreate(return_type=dtype, metadata=OpMetadata(name=name))
@@ -201,7 +200,7 @@ class Context:
             The current time in seconds as a float.
 
         """
-        assert self._check()
+        self._check()
         _log_offset, time_us = await create_op(self._loop, Barrier())
         return time_us * 1e-6
 
@@ -215,7 +214,7 @@ class Context:
             The current time in nanoseconds as an integer.
 
         """
-        assert self._check()
+        self._check()
         _log_offset, time_us = await create_op(self._loop, Barrier())
         return time_us * 1_000
 
@@ -230,7 +229,7 @@ class Context:
             A Random instance seeded with a deterministic operation ID.
 
         """
-        assert self._check()
+        self._check()
         return Random(self._loop.generate_op_id() + self._seed)  # noqa: S311
 
     @overload
@@ -261,7 +260,7 @@ class Context:
             exception: The exception to set on the future.
 
         """
-        assert self._check()
+        self._check()
         await create_op(
             self._loop,
             FutureComplete(

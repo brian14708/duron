@@ -140,8 +140,8 @@ class Stream(ABC, AsyncIterable[_T], Generic[_T]):
             block: If True, wait until at least one value is available.
 
         Returns:
-            A tuple of (offset, value) where offset is the operation offset and
-            value is the emitted stream value.
+            A sequence of emitted values. The sequence may contain multiple values
+            when the reader catches up with the stream.
 
         Raises:
             StreamClosed: When the stream has been closed.
@@ -183,7 +183,9 @@ class Stream(ABC, AsyncIterable[_T], Generic[_T]):
 async def create_stream(
     loop: EventLoop, dtype: TypeHint[_T], name: str | None, metadata: OpMetadata
 ) -> tuple[Stream[_T], StreamWriter[_T]]:
-    assert asyncio.get_running_loop() is loop
+    if asyncio.get_running_loop() is not loop:
+        msg = "Streams can only be created from their context loop"
+        raise RuntimeError(msg)
     s, w = create_buffer_stream()
     sid = await create_op(
         loop, StreamCreate(dtype=dtype, observer=w, name=name, metadata=metadata)
@@ -281,6 +283,9 @@ class _BufferStream(Stream[_T], Generic[_T]):
             while self._buffer:
                 _t, item = self._buffer[0]
                 if isinstance(item, StreamClosed):
+                    self._buffer.popleft()
+                    if item.reason is not None:
+                        raise item
                     return
                 self._buffer.popleft()
                 yield item
@@ -331,7 +336,9 @@ async def run_stateful(
     *args: _P.args,
     **kwargs: _P.kwargs,
 ) -> AsyncGenerator[tuple[Stream[_U], Awaitable[_T]], None]:
-    assert asyncio.get_running_loop() is loop
+    if asyncio.get_running_loop() is not loop:
+        msg = "Stateful streams can only run on their context loop"
+        raise RuntimeError(msg)
 
     name = cast("str", getattr(fn, "__name__", repr(fn)))
     stream: _StatefulStream[_U, _T] = _StatefulStream(

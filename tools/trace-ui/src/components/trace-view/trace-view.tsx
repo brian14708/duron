@@ -49,8 +49,9 @@ export function TraceView({ file }: TraceViewProps) {
 
   const resize = useCallback((e: React.MouseEvent) => {
     if (isResizing.current) {
-      const newWidth = window.innerWidth - e.clientX;
-      if (newWidth >= 256 && newWidth <= window.innerWidth - 256) {
+      const containerWidth = e.currentTarget.getBoundingClientRect().width;
+      const newWidth = containerWidth - e.clientX;
+      if (newWidth >= 256 && newWidth <= containerWidth - 256) {
         setSidebarWidth(newWidth);
       }
     }
@@ -103,10 +104,9 @@ export function TraceView({ file }: TraceViewProps) {
             ? "absolute inset-0 z-50 w-full lg:relative lg:z-auto lg:flex-shrink-0"
             : "hidden lg:flex lg:flex-shrink-0"
         }`}
-        style={{
-          width: window.innerWidth >= 1024 ? `${sidebarWidth}px` : undefined,
-          minWidth: window.innerWidth >= 1024 ? `${sidebarWidth}px` : undefined,
-        }}
+        style={
+          { "--sidebar-width": `${sidebarWidth}px` } as React.CSSProperties
+        }
       >
         <DetailPanel
           selectedSpan={selectedSpan}

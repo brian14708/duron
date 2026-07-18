@@ -14,7 +14,6 @@ export interface Span {
   endTime: number; // in seconds (relative to first event)
   lane: number;
   depth?: number;
-  verticalTrack?: number; // For stacking overlapping spans at the same depth
   parentId?: string;
   children?: Span[];
   traceId: string;
@@ -113,14 +112,25 @@ function rawEventToTraceEvent(
 }
 
 export function parseTraceLog(filename: string, content: string): TraceFile {
-  const lines = content
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+  const MAX_FILE_SIZE = 50 * 1024 * 1024;
+  const MAX_LINES = 1_000_000;
+  if (content.length > MAX_FILE_SIZE) {
+    throw new Error("Trace file is too large (maximum 50 MiB)");
+  }
+
+  const lines = content.split(/\r?\n/);
 
   const result: TraceEvent[] = [];
   let rootTraceId: string | null = null;
-  for (const line of lines) {
+  let nonEmpty = 0;
+  for (const [index, rawLine] of lines.entries()) {
+    const line = rawLine.trim();
+    if (line.length === 0) {
+      continue;
+    }
+    if (++nonEmpty > MAX_LINES) {
+      throw new Error("Trace file contains too many records");
+    }
     try {
       const parsed = JSON.parse(line) as RawLog;
       const traceId = parsed.metadata?.["trace.id"];
@@ -168,7 +178,9 @@ export function parseTraceLog(filename: string, content: string): TraceFile {
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Unknown error parsing line";
-      throw new Error(`Invalid JSONL format: ${message}`, { cause: error });
+      throw new Error(`Invalid JSONL at line ${index + 1}: ${message}`, {
+        cause: error,
+      });
     }
   }
 
@@ -305,39 +317,6 @@ export function extractSpansFromEntries(entries: TraceEvent[]): Span[] {
     }
 
     spans.push(span);
-  }
-
-  return spans;
-}
-
-export function assignLanesToSpans(spans: Span[]): Span[] {
-  // Sort spans by start time
-  const sortedSpans = [...spans].sort((a, b) => a.startTime - b.startTime);
-
-  // Track the end time of the last span in each lane
-  const lanes: number[] = [];
-
-  // Assign each span to the first available lane
-  for (const span of sortedSpans) {
-    let assignedLane = -1;
-
-    // Find the first lane where the span can fit
-    for (let i = 0; i < lanes.length; i++) {
-      if (lanes[i] <= span.startTime) {
-        assignedLane = i;
-        break;
-      }
-    }
-
-    // If no lane is available, create a new one
-    if (assignedLane === -1) {
-      assignedLane = lanes.length;
-      lanes.push(span.endTime);
-    } else {
-      lanes[assignedLane] = span.endTime;
-    }
-
-    span.lane = assignedLane;
   }
 
   return spans;

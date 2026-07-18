@@ -27,7 +27,6 @@ if TYPE_CHECKING:
     from duron import StreamWriter
 
 
-@pytest.mark.asyncio
 async def test_stream() -> None:
     @durable()
     async def activity(ctx: Context) -> None:
@@ -57,7 +56,6 @@ async def test_stream() -> None:
         await (await t.start(activity)).result()
 
 
-@pytest.mark.asyncio
 async def test_stream_host() -> None:
     @durable()
     async def activity(ctx: Context) -> None:
@@ -76,7 +74,57 @@ async def test_stream_host() -> None:
         await (await t.start(activity)).result()
 
 
-@pytest.mark.asyncio
+@pytest.mark.parametrize("consumer", ["iterate", "collect", "discard", "map"])
+async def test_stream_exceptional_close(consumer: str) -> None:
+    stream, observer = __import__(
+        "duron._core.stream", fromlist=["create_buffer_stream"]
+    ).create_buffer_stream()
+    observer.on_next(3, 1)
+    error = ValueError("producer failed")
+    observer.on_close(4, error)
+
+    async def consume() -> object:
+        if consumer == "iterate":
+            return [item async for item in stream]
+        if consumer == "collect":
+            return await stream.collect()
+        if consumer == "discard":
+            return await stream.discard()
+        return await stream.map(lambda item: item * 2).collect()  # pyright: ignore[reportUnknownLambdaType]
+
+    with pytest.raises(StreamClosed) as exc_info:
+        await consume()
+    assert exc_info.value.offset == 4
+    assert exc_info.value.reason is error
+
+
+async def test_stream_normal_close_ends_iteration() -> None:
+    stream, observer = __import__(
+        "duron._core.stream", fromlist=["create_buffer_stream"]
+    ).create_buffer_stream()
+    observer.on_next(3, 1)
+    observer.on_close(4, None)
+    assert await stream.collect() == [1]
+
+
+async def test_duplicate_external_stream_close_fails_without_hanging() -> None:
+    @durable
+    async def activity(_ctx: Context, stream: Stream[int] = Provided) -> int:
+        await stream.discard()
+        await asyncio.sleep(0.05)
+        return 1
+
+    log = MemoryLogStorage()
+    async with Session(log) as session:
+        run = await session.start(activity)
+        first = await run.open_stream("stream", "w")
+        duplicate = await run.open_stream("stream", "w")
+        await first.close()
+        with pytest.raises(ValueError, match="Stream not found"):
+            await asyncio.wait_for(duplicate.close(), 1)
+        assert await run.result() == 1
+
+
 async def test_run() -> None:
     sleep_idx = 3
     all_states: list[str] = []
@@ -111,7 +159,6 @@ async def test_run() -> None:
         assert all_states[-1].startswith(s)
 
 
-@pytest.mark.asyncio
 async def test_stream_map() -> None:
     @durable()
     async def activity(ctx: Context) -> None:
@@ -135,7 +182,6 @@ async def test_stream_map() -> None:
         await (await t.start(activity)).result()
 
 
-@pytest.mark.asyncio
 async def test_stream_peek() -> None:
     @durable()
     async def activity(ctx: Context) -> list[int]:
@@ -171,7 +217,6 @@ async def test_stream_peek() -> None:
         assert a == b
 
 
-@pytest.mark.asyncio
 async def test_stream_cross_loop() -> None:
     @durable()
     async def activity(ctx: Context) -> list[str]:
@@ -202,7 +247,6 @@ async def test_stream_cross_loop() -> None:
         assert a == b
 
 
-@pytest.mark.asyncio
 async def test_next_timing() -> None:
     @durable()
     async def activity(ctx: Context) -> list[list[list[int]]]:
@@ -263,7 +307,6 @@ async def test_next_timing() -> None:
     assert a == b
 
 
-@pytest.mark.asyncio
 async def test_external_stream_signal_timing() -> None:
     @durable()
     async def activity(

@@ -6,15 +6,26 @@ import random
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing_extensions import override
 
 import pytest
 
-from duron import Context, Provided, Session, Stream, StreamWriter, durable, effect
+from duron import (
+    Context,
+    Provided,
+    Session,
+    SessionError,
+    Stream,
+    StreamWriter,
+    durable,
+    effect,
+)
+from duron._core.utils import RemoteEffectError
 from duron.contrib.codecs import PickleCodec
 from duron.contrib.storage import MemoryLogStorage
+from duron.log._helper import is_entry
 
 
-@pytest.mark.asyncio
 async def test_invoke() -> None:
     @effect
     async def u() -> str:
@@ -45,7 +56,6 @@ async def test_invoke() -> None:
     assert a == c
 
 
-@pytest.mark.asyncio
 async def test_invoke_error() -> None:
     @durable()
     async def activity(ctx: Context) -> None:
@@ -62,13 +72,49 @@ async def test_invoke_error() -> None:
         run = await t.start(activity)
         with pytest.raises(Exception, match="test error"):
             await run.result()
-    async with Session(log) as t:
-        run = await t.start(activity)
-        with pytest.raises(Exception, match="test error"):
-            await run.result()
 
 
-@pytest.mark.asyncio
+async def test_effect_error_replay_preserves_exception_branch() -> None:
+    @durable()
+    async def activity(ctx: Context) -> str:
+        def fail() -> None:
+            msg = "expected"
+            raise ValueError(msg)
+
+        try:
+            await ctx.run(fail)
+        except ValueError:
+            return "handled"
+        return "unhandled"
+
+    log = MemoryLogStorage()
+    async with Session(log) as session:
+        assert await (await session.start(activity)).result() == "handled"
+    async with Session(log) as session:
+        assert await (await session.start(activity)).result() == "handled"
+
+
+async def test_unknown_effect_error_replays_as_safe_fallback() -> None:
+    @durable()
+    async def activity(ctx: Context) -> None:
+        class LocalError(Exception):
+            pass
+
+        def fail() -> None:
+            msg = "remote"
+            raise LocalError(msg)
+
+        await ctx.run(fail)
+
+    log = MemoryLogStorage()
+    async with Session(log) as session:
+        with pytest.raises(RemoteEffectError):
+            await (await session.start(activity)).result()
+    async with Session(log) as session:
+        with pytest.raises(RemoteEffectError):
+            await (await session.start(activity)).result()
+
+
 async def test_resume() -> None:
     sleep = 9999
 
@@ -89,7 +135,6 @@ async def test_resume() -> None:
     assert x == "hello"
 
 
-@pytest.mark.asyncio
 async def test_cancel() -> None:
     @durable()
     async def activity(ctx: Context, s: str) -> str:
@@ -108,7 +153,6 @@ async def test_cancel() -> None:
             _ = await (await t.resume(activity)).result()
 
 
-@pytest.mark.asyncio
 async def test_timing() -> None:
     @durable()
     async def activity(ctx: Context) -> int:
@@ -142,7 +186,6 @@ class CustomPoint:
     y: int
 
 
-@pytest.mark.asyncio
 async def test_serialize() -> None:
     @durable(codec=PickleCodec())
     async def activity(ctx: Context) -> CustomPoint:
@@ -160,7 +203,6 @@ async def test_serialize() -> None:
         assert a.y == 12
 
 
-@pytest.mark.asyncio
 async def test_random() -> None:
     @durable()
     async def activity(ctx: Context) -> list[int]:
@@ -177,7 +219,61 @@ async def test_random() -> None:
     assert a == b
 
 
-@pytest.mark.asyncio
+async def test_readonly_session_only_allows_verification() -> None:
+    @durable()
+    async def activity(_ctx: Context) -> int:
+        return 42
+
+    log = MemoryLogStorage()
+    async with Session(log) as session:
+        assert await (await session.start(activity)).result() == 42
+
+    before = await log.entries()
+    async with Session(log, readonly=True) as session:
+        with pytest.raises(SessionError, match="readonly"):
+            await session.start(activity)
+    async with Session(log, readonly=True) as session:
+        with pytest.raises(SessionError, match="readonly"):
+            await session.resume(activity)
+    async with Session(log, readonly=True) as session:
+        await session.verify(activity)
+    assert await log.entries() == before
+
+
+async def test_task_close_is_idempotent() -> None:
+    @durable()
+    async def activity(_ctx: Context) -> int:
+        return 42
+
+    log = MemoryLogStorage()
+    async with Session(log) as session:
+        task = await session.start(activity)
+        assert await task.result() == 42
+        await task.close()
+        await task.close()
+
+
+async def test_session_exit_is_idempotent() -> None:
+    session = Session(MemoryLogStorage())
+    await session.__aenter__()  # noqa: PLC2801
+    await session.__aexit__(None, None, None)
+    await session.__aexit__(None, None, None)
+
+
+async def test_session_enter_failure_cleans_up_state() -> None:
+    class FailingLeaseStorage(MemoryLogStorage):
+        @override
+        async def acquire_lease(self) -> bytes:
+            msg = "lease unavailable"
+            raise RuntimeError(msg)
+
+    session = Session(FailingLeaseStorage())
+    with pytest.raises(RuntimeError, match="lease unavailable"):
+        await session.__aenter__()  # noqa: PLC2801
+    assert session._loop is None  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+    assert session._token is None  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+
+
 async def test_external_promise() -> None:
     v: dict[str, str] = {}
 
@@ -206,7 +302,40 @@ async def test_external_promise() -> None:
         await bg
 
 
-@pytest.mark.asyncio
+async def test_external_promise_concurrent_completion_is_atomic() -> None:
+    future_ids: list[str] = []
+
+    @durable
+    async def activity(ctx: Context) -> int:
+        future_id, future = await ctx.create_future(int)
+        future_ids.append(future_id)
+        return await future
+
+    log = MemoryLogStorage()
+    async with Session(log) as session:
+        run = await session.start(activity)
+
+        async def complete(value: int) -> int:
+            await run.complete_future(future_ids[0], result=value)
+            return value
+
+        completions = await asyncio.gather(
+            complete(1), complete(2), return_exceptions=True
+        )
+        assert sum(isinstance(item, ValueError) for item in completions) == 1
+        winner = next(item for item in completions if isinstance(item, int))
+        assert await run.result() == winner
+
+    completion_entries = [
+        entry
+        for entry in await log.entries()
+        if is_entry(entry)
+        and entry["type"] == "promise.complete"
+        and entry["promise_id"] == future_ids[0]
+    ]
+    assert len(completion_entries) == 1
+
+
 async def test_external_stream() -> None:
     @durable
     async def activity(_ctx: Context, test: Stream[int] = Provided) -> int:
@@ -231,7 +360,6 @@ async def test_external_stream() -> None:
         assert (await asyncio.gather(run.result(), bg))[0] == 44
 
 
-@pytest.mark.asyncio
 async def test_external_stream_write() -> None:
     @durable
     async def activity(_ctx: Context, writer: StreamWriter[int] = Provided) -> int:
@@ -256,7 +384,6 @@ async def test_external_stream_write() -> None:
         assert await b == list(range(10))
 
 
-@pytest.mark.asyncio
 async def test_invoke_wait_multiple() -> None:
     async def u() -> str:
         for _ in range(random.randint(1, 10)):
@@ -283,7 +410,6 @@ async def test_invoke_wait_multiple() -> None:
                 continue
 
 
-@pytest.mark.asyncio
 async def test_time() -> None:
     @durable()
     async def activity(ctx: Context) -> Sequence[int]:
@@ -305,7 +431,6 @@ async def test_time() -> None:
     assert a == b
 
 
-@pytest.mark.asyncio
 async def test_mismatch() -> None:
     @durable()
     async def activity(ctx: Context) -> None:
@@ -338,7 +463,6 @@ async def test_mismatch() -> None:
             await t.verify(activity3)
 
 
-@pytest.mark.asyncio
 async def test_fast_error() -> None:
     @durable()
     async def activity(_ctx: Context) -> None:
@@ -359,7 +483,6 @@ async def activity(ctx: Context) -> int:
 
 
 @pytest.mark.benchmark
-@pytest.mark.asyncio
 async def test_performance() -> None:
     log = MemoryLogStorage()
     async with Session(log) as run:

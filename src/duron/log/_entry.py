@@ -29,8 +29,12 @@ class BaseEntry(TypedDict):
 
 
 class ErrorInfo(TypedDict):
-    code: int
+    type: str
+    module: str
     message: str
+    args: list[JSONValue]
+    cancelled: bool
+    cause: NotRequired[ErrorInfo]
 
 
 class PromiseCreateEntry(BaseEntry):
@@ -82,3 +86,11 @@ Entry = (
 """
 Concrete log entry types used within Duron.
 """
+
+
+class CorruptLogError(ValueError):
+    """Raised when persisted log data cannot be decoded or validated."""
+
+    def __init__(self, offset: int, message: str) -> None:
+        super().__init__(f"Corrupt log entry at offset {offset}: {message}")
+        self.offset = offset

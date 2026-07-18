@@ -87,13 +87,13 @@ class EventLoop(asyncio.AbstractEventLoop):
     __slots__: tuple[str, ...] = (
         "_added",
         "_closed",
-        "_ctx",
         "_event",
         "_exc_handler",
         "_host",
         "_now_us",
         "_ops",
         "_ready",
+        "_root_task_seq",
         "_timers",
     )
 
@@ -186,7 +186,9 @@ class EventLoop(asyncio.AbstractEventLoop):
     def create_task(
         self, coro: _TaskCompatibleCoro[_T], **kwargs: Any
     ) -> asyncio.Task[_T]:
-        assert asyncio.get_running_loop() is self
+        if asyncio.get_running_loop() is not self:
+            msg = "EventLoop tasks must be created on the event loop"
+            raise RuntimeError(msg)
         token = _task_ctx.set(_TaskCtx(parent_id=self.generate_op_id()))
         task = asyncio.Task(coro, **kwargs, loop=self)
         _task_ctx.reset(token)
@@ -195,7 +197,9 @@ class EventLoop(asyncio.AbstractEventLoop):
     def schedule_task(
         self, coro: _TaskCompatibleCoro[_T], name: str | None = None
     ) -> asyncio.Task[_T]:
-        assert asyncio.get_running_loop() is self._host
+        if asyncio.get_running_loop() is not self._host:
+            msg = "EventLoop scheduling must be called from the host loop"
+            raise RuntimeError(msg)
         self._root_task_seq += 1
         id_ = _derive_id("", context=(self._root_task_seq - 1).to_bytes(4, "big"))
 
@@ -230,7 +234,9 @@ class EventLoop(asyncio.AbstractEventLoop):
                 h._run()  # noqa: SLF001
 
     def poll_completion(self, task: Future[_T]) -> WaitSet | None:
-        assert asyncio.get_running_loop() is self._host
+        if asyncio.get_running_loop() is not self._host:
+            msg = "EventLoop polling must be called from the host loop"
+            raise RuntimeError(msg)
         self._event.clear()
 
         # hot path - inline task context switch
@@ -297,7 +303,9 @@ class EventLoop(asyncio.AbstractEventLoop):
 
     @override
     def close(self) -> None:
-        assert asyncio.get_running_loop() is self._host
+        if asyncio.get_running_loop() is not self._host:
+            msg = "EventLoop closing must be called from the host loop"
+            raise RuntimeError(msg)
         if prev_task := tasks.current_task():
             tasks._leave_task(self._host, prev_task)  # noqa: SLF001
         events._set_running_loop(self)  # noqa: SLF001

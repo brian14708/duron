@@ -9,6 +9,7 @@ as orchestration functions. Durable functions:
 
 from __future__ import annotations
 
+import inspect
 from typing import (
     TYPE_CHECKING,
     Concatenate,
@@ -21,6 +22,7 @@ from typing import (
 from typing_extensions import Any, ParamSpec, TypeVar, final, overload
 
 from duron._core.config import config
+from duron._core.context import Context
 from duron._core.signal import Signal
 from duron._core.stream import Stream, StreamWriter
 from duron.typing import inspect_function
@@ -28,7 +30,6 @@ from duron.typing import inspect_function
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Iterable
 
-    from duron._core.context import Context
     from duron.codec import Codec
     from duron.typing import TypeHint
 
@@ -41,6 +42,10 @@ Provided: Final = cast("Any", ...)
 """
 Mark a parameter as provided when invoked.
 """
+
+
+class DurableDefinitionError(TypeError):
+    """Raised when a durable function has an unsupported definition."""
 
 
 @final
@@ -107,12 +112,50 @@ def durable(
     def decorate(
         fn: Callable[Concatenate[Context, _P], Coroutine[Any, Any, _T]],
     ) -> DurableFn[_P, _T]:
-        info = inspect_function(fn)
-        inject = (
-            (name, *ty)
-            for name, param in info.parameter_types.items()
-            if (ty := _parse_type(param))
+        if not inspect.iscoroutinefunction(fn):
+            msg = "A durable function must be defined with async def"
+            raise DurableDefinitionError(msg)
+        try:
+            signature = inspect.signature(fn, eval_str=True)
+        except NameError:
+            signature = inspect.signature(fn)
+        parameters = list(signature.parameters.values())
+        if not parameters:
+            msg = "A durable function must have Context as its first parameter"
+            raise DurableDefinitionError(msg)
+        first = parameters[0]
+        first_annotation = first.annotation
+        valid_context = first_annotation is Context or (
+            isinstance(first_annotation, str)
+            and first_annotation.rsplit(".", maxsplit=1)[-1] == "Context"
         )
+        if (
+            first.kind
+            in {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}
+            or not valid_context
+        ):
+            msg = "The first durable function parameter must be annotated as Context"
+            raise DurableDefinitionError(msg)
+        for parameter in parameters:
+            if parameter.kind in {
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            }:
+                msg = f"Variadic parameter {parameter.name!r} is not supported"
+                raise DurableDefinitionError(msg)
+
+        info = inspect_function(fn)
+        injection: list[tuple[str, type, TypeHint[Any]]] = []
+        for name, param in info.parameter_types.items():
+            parsed = _parse_type(param)
+            if parsed is None:
+                continue
+            parameter = signature.parameters[name]
+            if parameter.default is not Provided:
+                msg = f"Injected parameter {name!r} must use default value Provided"
+                raise DurableDefinitionError(msg)
+            injection.append((name, *parsed))
+        inject = injection
         return DurableFn(codec=codec or config.codec, fn=fn, inject=inject)
 
     if f is not None:

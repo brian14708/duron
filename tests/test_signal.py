@@ -6,13 +6,10 @@ import random
 import sys
 from typing import cast
 
-import pytest
-
 from duron import Context, Provided, Session, Signal, SignalInterrupt, durable
 from duron.contrib.storage import MemoryLogStorage
 
 
-@pytest.mark.asyncio
 async def test_signal() -> None:
     @durable()
     async def activity(ctx: Context) -> list[int]:
@@ -53,7 +50,6 @@ async def test_signal() -> None:
         assert await (await t.start(activity)).result() == [2, 3]
 
 
-@pytest.mark.asyncio
 async def test_signal_timing() -> None:
     @durable()
     async def activity(ctx: Context, s: Signal[int] = Provided) -> list[list[int]]:
@@ -100,7 +96,6 @@ async def test_signal_timing() -> None:
         assert await (await t.start(activity)).result() == a
 
 
-@pytest.mark.asyncio
 async def test_timeout_timing() -> None:
     @durable()
     async def activity(ctx: Context) -> list[int]:

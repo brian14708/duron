@@ -68,7 +68,9 @@ class Signal(Generic[_T]):
         task = asyncio.current_task()
         if task is None:
             return
-        assert task.get_loop() is self._loop
+        if task.get_loop() is not self._loop:
+            msg = "Signal can only be used with its context loop"
+            raise RuntimeError(msg)
 
         if task not in self._tasks:
             self._tasks[task] = _SignalState(depth=0, triggered=None)

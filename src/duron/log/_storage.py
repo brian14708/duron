@@ -12,8 +12,8 @@ if TYPE_CHECKING:
 class LogStorage(Protocol):
     """Protocol for persistent storage of operation logs.
 
-    The lease mechanism ensures exclusive access for appending entries,
-    preventing concurrent writes from multiple processes.
+    Built-in backends use opaque fencing tokens. Acquiring a new lease invalidates
+    older tokens, and append() must reject stale tokens.
     """
 
     def stream(self) -> AsyncGenerator[tuple[int, BaseEntry], None]:
@@ -29,18 +29,18 @@ class LogStorage(Protocol):
         ...
 
     async def acquire_lease(self) -> bytes:
-        """Acquire an exclusive lease for appending to the log.
+        """Acquire a fencing lease for appending to the log.
 
         Returns:
             Opaque lease token to be used in append() and release_lease() calls.
 
         Raises:
-            Exception: if lease cannot be acquired (e.g., already held by another
-                       process).
+            Exception: if the backend cannot establish its locking guarantee.
 
         Note:
-            Leases provide concurrency control to ensure only one invoke can append
-            to a log at a time, preventing interleaved writes from multiple processes.
+            Acquisition does not wait for or fail because of an existing lease.
+            Instead, the new token immediately supersedes the previous token.
+            Backends must atomically validate the current token while appending.
 
         """
         ...

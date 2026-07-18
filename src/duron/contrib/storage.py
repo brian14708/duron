@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sqlite3
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
+
+from duron.log._entry import CorruptLogError
+from duron.log._helper import validate_entry
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Generator
@@ -17,6 +21,8 @@ if TYPE_CHECKING:
 try:
     import fcntl
 
+    _file_lock_supported = True
+
     def _lock_file(f: IOBase, /) -> None:
         if f.writable():
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -26,6 +32,7 @@ try:
             fcntl.flock(f, fcntl.LOCK_UN)
 
 except ModuleNotFoundError:
+    _file_lock_supported = False
 
     def _lock_file(_f: IOBase, /) -> None:
         pass
@@ -62,14 +69,24 @@ except ModuleNotFoundError:
 
 
 class FileLogStorage:
-    """A [log storage][duron.log.LogStorage] that uses a file to store log entries."""
+    """File-backed log storage using a sidecar fencing token and OS file locks.
 
-    __slots__ = ("_lease", "_lock", "_log_file")
+    Acquiring a lease immediately supersedes the previous token, including tokens
+    issued by another `FileLogStorage` instance for the same path. This backend
+    requires `fcntl` and therefore fails during initialization on unsupported
+    platforms.
+    """
+
+    __slots__ = ("_lease_file", "_lock", "_lock_file", "_log_file")
 
     def __init__(self, log_file: str | Path) -> None:
+        if not _file_lock_supported:
+            msg = "FileLogStorage requires a platform with fcntl file locking"
+            raise RuntimeError(msg)
         self._log_file = Path(log_file)
         self._log_file.parent.mkdir(parents=True, exist_ok=True)
-        self._lease: IOBase | None = None
+        self._lock_file = self._log_file.with_suffix(self._log_file.suffix + ".lock")
+        self._lease_file = self._log_file.with_suffix(self._log_file.suffix + ".lease")
         self._lock = asyncio.Lock()
 
     async def stream(self) -> AsyncGenerator[tuple[int, BaseEntry], None]:
@@ -91,59 +108,78 @@ class FileLogStorage:
                 if line:
                     try:
                         entry = _json_loads(line)
-                        if isinstance(entry, dict):
-                            yield (
-                                line_start_offset,
-                                cast("BaseEntry", cast("object", entry)),
-                            )
-                    except (json.JSONDecodeError, UnicodeDecodeError):
-                        pass
+                        yield (
+                            line_start_offset,
+                            validate_entry(entry, line_start_offset),
+                        )
+                    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                        # A final line without a newline may be an interrupted append;
+                        # ignore it so the last complete entry remains recoverable.
+                        if not line.endswith(b"\n") and not f.read(1):
+                            break
+                        raise CorruptLogError(
+                            line_start_offset, f"invalid JSON: {exc}"
+                        ) from exc
                 else:
                     # Reached end of file
                     break
 
     async def acquire_lease(self) -> bytes:
         async with self._lock:
-            self._lease = Path(self._log_file).open("ab")  # noqa: ASYNC230, SIM115
-            _lock_file(self._lease)
-            return self._lease.fileno().to_bytes(8, "big")
+            token = uuid.uuid4().bytes
+            with self._locked_file():
+                self._lease_file.write_bytes(token)
+            return token
 
     async def release_lease(self, token: bytes) -> None:
         async with self._lock:
-            if self._lease and token == self._lease.fileno().to_bytes(8, "big"):
-                _unlock_file(self._lease)
-                self._lease.close()
-                self._lease = None
+            with self._locked_file():
+                if self._read_lease() == token:
+                    self._lease_file.unlink(missing_ok=True)
 
     async def append(self, token: bytes, entry: Entry) -> int:
         async with self._lock:
-            if not self._lease or token != self._lease.fileno().to_bytes(8, "big"):
-                msg = "Invalid lease token"
-                raise ValueError(msg)
+            with self._locked_file():
+                if token != self._read_lease():
+                    msg = "Invalid lease token"
+                    raise ValueError(msg)
 
-            f = self._lease
-            offset = f.tell()
-            _ = f.write(_json_dumps(entry))
-            _ = f.write(b"\n")
-            f.flush()
-            return offset
+                with self._log_file.open("ab") as log_file:
+                    offset = log_file.tell()
+                    _ = log_file.write(_json_dumps(entry))
+                    _ = log_file.write(b"\n")
+                    log_file.flush()
+                    return offset
+
+    @contextlib.contextmanager
+    def _locked_file(self) -> Generator[None, None, None]:
+        with self._lock_file.open("a+b") as lock_file:
+            _lock_file(lock_file)
+            try:
+                yield
+            finally:
+                _unlock_file(lock_file)
+
+    def _read_lease(self) -> bytes | None:
+        try:
+            return self._lease_file.read_bytes()
+        except FileNotFoundError:
+            return None
 
 
 class MemoryLogStorage:
-    """A [log storage][duron.log.LogStorage] that keeps log entries in memory."""
+    """In-memory log storage with last-acquirer-wins fencing leases."""
 
-    __slots__ = ("_condition", "_entries", "_leases", "_lock")
+    __slots__ = ("_entries", "_leases", "_lock")
 
     _entries: list[BaseEntry]
     _leases: bytes | None
     _lock: asyncio.Lock
-    _condition: asyncio.Condition
 
     def __init__(self, entries: list[BaseEntry] | None = None) -> None:
         self._entries = entries or []
         self._leases = None
         self._lock = asyncio.Lock()
-        self._condition = asyncio.Condition(self._lock)
 
     async def stream(self) -> AsyncGenerator[tuple[int, BaseEntry], None]:
         # Yield existing entries
@@ -151,7 +187,7 @@ class MemoryLogStorage:
             entries_snapshot = self._entries.copy()
 
         for index in range(len(entries_snapshot)):
-            yield (index, entries_snapshot[index])
+            yield (index, validate_entry(entries_snapshot[index], index))
 
     async def acquire_lease(self) -> bytes:
         lease_id = uuid.uuid4().bytes
@@ -165,14 +201,13 @@ class MemoryLogStorage:
                 self._leases = None
 
     async def append(self, token: bytes, entry: Entry) -> int:
-        async with self._condition:
+        async with self._lock:
             if token != self._leases:
                 msg = "Invalid lease token"
                 raise ValueError(msg)
 
             offset = len(self._entries)
             self._entries.append(cast("BaseEntry", cast("object", entry)))
-            self._condition.notify_all()
             return offset
 
     async def entries(self) -> list[BaseEntry]:
@@ -184,7 +219,7 @@ class SQLiteLogManager:
     """A log manager that stores multiple task logs in a single SQLite database.
 
     Uses WAL mode and database-backed leases for multiprocess support.
-    Last acquirer wins - no expiration tracking.
+    Last acquirer wins; leases do not expire automatically.
     """
 
     __slots__ = ("_db_path", "_lock", "_logs")
@@ -194,6 +229,9 @@ class SQLiteLogManager:
 
         Args:
             db_path: Path to the SQLite database file.
+
+        Raises:
+            RuntimeError: If the SQLite runtime does not support JSONB.
 
         """
         self._db_path = Path(db_path)
@@ -206,6 +244,12 @@ class SQLiteLogManager:
         try:
             # Enable WAL mode for better concurrent access
             conn.execute("PRAGMA journal_mode=WAL")
+            if sqlite3.sqlite_version_info < (3, 45, 0):
+                msg = (
+                    "SQLiteLogManager requires SQLite 3.45 or newer for JSONB "
+                    f"(found {sqlite3.sqlite_version})"
+                )
+                raise RuntimeError(msg)
 
             # Create log entries table - stores full entry data except metadata
             # Uses ROWID as offset (implicit, auto-incrementing)
@@ -262,7 +306,7 @@ class SQLiteLog:
     """A [log storage][duron.log.LogStorage] for a single task in a SQLite database.
 
     Implements multiprocess-safe lease mechanism using database-backed leases.
-    Last acquirer wins - lease is only validated on append.
+    Last acquirer wins and the lease is atomically validated on append.
     """
 
     __slots__ = ("_db_path", "_lock", "_task_id")
@@ -281,24 +325,26 @@ class SQLiteLog:
                 # Read from log_entries, convert JSONB data to JSON text
                 # Data contains full entry except metadata
                 cursor = conn.execute(
-                    "SELECT rowid, json(data) "
-                    "FROM log_entries "
-                    "WHERE task_id = ? ORDER BY rowid",
+                    "SELECT e.rowid, json(e.data), json(m.metadata) "
+                    "FROM log_entries AS e "
+                    "LEFT JOIN log_metadata AS m ON m.entry_rowid = e.rowid "
+                    "WHERE e.task_id = ? ORDER BY e.rowid",
                     (self._task_id,),
                 )
                 results: list[tuple[int, BaseEntry]] = []
-                for rowid, data_json in cursor:
+                for rowid, data_json, metadata_json in cursor:
                     try:
-                        # Parse entry from JSONB data
-                        if data_json:
-                            entry = _json_loads(data_json)
-                            if isinstance(entry, dict):
-                                results.append((
-                                    rowid,
-                                    cast("BaseEntry", cast("object", entry)),
-                                ))
-                    except json.JSONDecodeError:  # noqa: PERF203
-                        pass
+                        entry: object = _json_loads(data_json)
+                        if metadata_json is not None:
+                            metadata = _json_loads(metadata_json)
+                            if not isinstance(entry, dict):
+                                raise CorruptLogError(rowid, "entry is not an object")
+                            entry_object = cast("dict[str, object]", entry)
+                            entry_object["metadata"] = metadata
+                            entry = entry_object
+                        results.append((rowid, validate_entry(entry, rowid)))
+                    except json.JSONDecodeError as exc:  # noqa: PERF203
+                        raise CorruptLogError(rowid, f"invalid JSON: {exc}") from exc
                 return results
             finally:
                 conn.close()

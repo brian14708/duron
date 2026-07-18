@@ -1,12 +1,16 @@
 from duron._core.config import set_config as set_config
 from duron._core.context import Context as Context
 from duron._core.session import Session as Session
+from duron._core.session import SessionError as SessionError
 from duron._core.session import Task as Task
 from duron._core.signal import Signal as Signal
 from duron._core.signal import SignalInterrupt as SignalInterrupt
 from duron._core.stream import Stream as Stream
 from duron._core.stream import StreamClosed as StreamClosed
 from duron._core.stream import StreamWriter as StreamWriter
+from duron._core.utils import RemoteEffectError as RemoteEffectError
+from duron._core.utils import register_error_type as register_error_type
+from duron._decorator.durable import DurableDefinitionError as DurableDefinitionError
 from duron._decorator.durable import Provided as Provided
 from duron._decorator.durable import durable as durable
 from duron._decorator.effect import Reducer as Reducer

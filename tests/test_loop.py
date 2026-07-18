@@ -4,12 +4,9 @@ import random
 import time
 from typing_extensions import overload
 
-import pytest
-
 from duron.loop import create_loop
 
 
-@pytest.mark.asyncio
 async def test_timer() -> None:
     async def timer() -> int:
         await asyncio.sleep(0.1)
@@ -74,7 +71,6 @@ async def op_single() -> set[str]:
     return ids
 
 
-@pytest.mark.asyncio
 async def test_op() -> None:
     baseline = {
         "CUTqQC+RvaeRnRZ5",
@@ -88,7 +84,6 @@ async def test_op() -> None:
         assert await op_single() == baseline
 
 
-@pytest.mark.asyncio
 async def test_close() -> None:
     cleanup = 0
 
@@ -108,3 +103,11 @@ async def test_close() -> None:
     _ = loop.poll_completion(tsk)
     loop.close()
     assert cleanup == 2
+
+
+async def test_event_loop_slots_track_assigned_attributes() -> None:
+    loop = await create_loop()
+    assert "_root_task_seq" in loop.__slots__
+    assert "_ctx" not in loop.__slots__
+    assert getattr(loop, "__dict__", {}) == {}
+    loop.close()

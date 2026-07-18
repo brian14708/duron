@@ -55,12 +55,15 @@ Effects wrap any code that interacts with the outside world. This includes:
 - Random number generation
 - Any non-deterministic operation
 
-Duron records each effect's return value so it runs **once per unique input**, even across restarts.
+Duron records each effect result at its deterministic operation position. During
+replay, a completed operation is not executed again. This is **not** content-based
+memoization: calling the same effect at a different workflow position creates a
+different operation.
 
 ```python
 @duron.effect
 async def fetch_data(url: str) -> dict:
-    # This will only execute once per unique URL
+    # A completed invocation at this workflow position is replayed from the log.
     async with httpx.AsyncClient() as client:
         response = await client.get(url)
         return response.json()
@@ -164,7 +167,7 @@ Now you'll see the effects execute again (and potentially get a different lucky 
 
 ## Storage Backends
 
-Duron is storage-agnostic. It ships with two built-in options:
+Duron is storage-agnostic. It ships with three built-in options:
 
 ### File Storage (Recommended for Development)
 
@@ -197,23 +200,47 @@ Stores logs in memory. Use for:
 
 **Note**: Memory storage is lost when the process exits.
 
+### SQLite Storage
+
+```python
+from pathlib import Path
+from duron.contrib.storage import SQLiteLogManager
+
+manager = SQLiteLogManager(Path("logs/workflows.db"))
+storage = await manager.create_log("workflow-instance-id")
+```
+
+SQLite stores multiple named workflow logs in one database and uses database-backed
+lease tokens. A newer lease fences out an older token. Use a stable, unique task ID
+for each persisted workflow instance.
+
 ### Custom Storage
 
 Implement the `LogStorage` protocol for your own backend:
 
 ```python
-from duron.log import LogStorage
+from collections.abc import AsyncGenerator
 
-class MyStorage(LogStorage):
-    async def read_log(self, lease_id: str) -> list[Entry]:
-        # Read from your storage (database, S3, etc.)
+from duron.log import BaseEntry, Entry
+
+class MyStorage:
+    async def stream(self) -> AsyncGenerator[tuple[int, BaseEntry], None]:
+        # Yield existing entries in increasing offset order.
+        if False:
+            yield (0, {})
+
+    async def acquire_lease(self) -> bytes:
+        # Return a new opaque fencing token.
+        return b"token"
+
+    async def release_lease(self, lease: bytes) -> None:
+        # Release only if `lease` is still current.
         ...
 
-    async def append_log(self, lease_id: str, entries: list[Entry]) -> None:
-        # Append to your storage
-        ...
-
-    # ... implement other methods
+    async def append(self, lease: bytes, entry: Entry) -> int:
+        # Atomically validate the token, append the complete entry, and return
+        # its monotonically increasing offset.
+        return 0
 ```
 
 ## Advanced Features
@@ -272,7 +299,7 @@ async def interruptible_task(
 async def main():
     async with duron.Session(storage) as session:
         task = await session.start(interruptible_task)
-        signal_writer = task.open_stream("signal", "w")
+        signal_writer = await task.open_stream("signal", "w")
 
         # Later... send interrupt signal
         await signal_writer.send(None)
@@ -280,6 +307,20 @@ async def main():
         result = await task.result()
         print(result)  # "Interrupted by user"
 ```
+
+## Runtime Guarantees
+
+- Effects have **at-least-once external side-effect semantics**. A process can perform
+  an external action and crash before its result is durably appended. Effects that
+  mutate external systems should therefore use idempotency keys or transactions.
+- A writable session holds a storage lease. Built-in backends use opaque fencing
+  tokens. Lease acquisition is immediate and last-acquirer-wins; stale tokens cannot
+  append after reacquisition. File storage requires `fcntl` locking and is therefore
+  unavailable on platforms that cannot provide that guarantee.
+- A readonly session cannot start or resume live work. It may only verify a completed
+  persisted history and never appends entries.
+- File storage is intended for a local single-host workflow log. Memory storage is
+  process-local and non-durable. SQLite supports multiple named logs in one database.
 
 ### Tracing
 

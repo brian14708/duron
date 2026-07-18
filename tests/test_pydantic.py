@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pydantic
-import pytest
 
 from duron import Context, Session, durable
 from duron.contrib.codecs import PydanticCodec
@@ -13,7 +12,6 @@ class PydanticPoint(pydantic.BaseModel):
     y: int
 
 
-@pytest.mark.asyncio
 async def test_pydantic_serialize() -> None:
     @durable(codec=PydanticCodec())
     async def activity(ctx: Context) -> PydanticPoint:
