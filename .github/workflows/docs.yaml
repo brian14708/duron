@@ -1,13 +1,25 @@
 name: Docs
 
 on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - "src/duron/**"
+      - "examples/**"
+      - README.md
+      - mkdocs.yaml
   push:
     branches:
       - main
     paths:
       - "docs/**"
-      - "tools/trace-ui/**"
+      - "src/duron/**"
+      - "examples/**"
+      - README.md
       - mkdocs.yaml
+      - pyproject.toml
+      - uv.lock
+      - .github/workflows/docs.yaml
   workflow_dispatch:
 
 concurrency:
@@ -30,33 +42,9 @@ jobs:
         with:
           enable-cache: true
       - name: Sync dependencies
-        run: uv sync --group docs
+        run: uv sync --locked --group docs
       - name: Build static files
         run: uv run zensical build
-
-      # Build trace-ui
-      - name: Install pnpm
-        uses: pnpm/action-setup@v6.0.10
-        with:
-          package_json_file: "tools/trace-ui/package.json"
-      - name: Set up Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: latest
-          cache: "pnpm"
-          cache-dependency-path: "tools/trace-ui/pnpm-lock.yaml"
-      - name: Install trace-ui dependencies
-        working-directory: tools/trace-ui
-        run: pnpm install --frozen-lockfile
-      - name: Build trace-ui
-        working-directory: tools/trace-ui
-        run: pnpm run build
-
-      # Copy trace-ui build to docs site subdirectory
-      - name: Copy trace-ui to docs
-        run: |
-          mkdir -p site/trace-ui
-          cp -r tools/trace-ui/dist/* site/trace-ui/
 
       - name: Upload static files as artifact
         id: deployment
@@ -65,6 +53,7 @@ jobs:
           path: site/
 
   deploy:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

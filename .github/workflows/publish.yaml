@@ -21,6 +21,11 @@ jobs:
           python-version-file: "pyproject.toml"
       - name: Install uv
         uses: astral-sh/setup-uv@v7
+      - name: Validate
+        run: |
+          uv sync --locked
+          uv run pytest
+          uv run mypy
       - name: Build
         run: uv build
       - name: Publish

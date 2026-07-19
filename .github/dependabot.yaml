@@ -13,19 +13,6 @@ updates:
           - "patch"
           - "minor"
 
-  - package-ecosystem: "npm"
-    directory: "/tools/trace-ui"
-    schedule:
-      interval: "weekly"
-    groups:
-      minor-and-patch:
-        applies-to: version-updates
-        patterns:
-          - "*"
-        update-types:
-          - "patch"
-          - "minor"
-
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
