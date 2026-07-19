@@ -57,11 +57,7 @@ docs = [
     "mkdocstrings[python]",
     "zensical",
 ]
-examples = [
-    "pydantic",
-    "pydantic-ai-slim[openai]",
-    "rich",
-]
+examples = []
 
 [tool.ruff.lint]
 select = ["ALL"]
@@ -76,7 +72,7 @@ preview = true
 future-annotations = true
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S311", "PLC2701", "PLR2004", "RUF029"]
+"tests/**/*.py" = ["S311", "PLC2701", "PLR2004", "RUF029", "FBT003"]
 "examples/**/*.py" = ["T201", "S311"]
 
 [tool.ruff.lint.isort]
@@ -85,7 +81,7 @@ split-on-trailing-comma = false
 
 [tool.ruff.lint.flake8-type-checking]
 runtime-evaluated-base-classes = ["typing_extensions.TypedDict"]
-runtime-evaluated-decorators = ["duron.durable", "duron.effect"]
+runtime-evaluated-decorators = ["duron.workflow", "duron.effect"]
 exempt-modules = ["typing", "typing_extensions"]
 
 [tool.ruff.lint.flake8-tidy-imports]

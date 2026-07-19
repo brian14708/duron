@@ -6,7 +6,6 @@ import contextlib
 import contextvars
 import logging
 import math
-import os
 from asyncio import events, tasks
 from collections import deque
 from dataclasses import dataclass
@@ -14,6 +13,9 @@ from hashlib import blake2b
 from heapq import heappop, heappush
 from typing import TYPE_CHECKING
 from typing_extensions import Any, TypeVar, TypeVarTuple, Unpack, overload, override
+
+from duron.errors import RemoteEffectError
+from duron.log._helper import random_id
 
 if TYPE_CHECKING:
     import sys
@@ -116,6 +118,21 @@ class EventLoop(asyncio.AbstractEventLoop):
         ctx = _task_ctx.get()
         ctx.seq += 1
         return _derive_id(ctx.parent_id, context=(ctx.seq - 1).to_bytes(4, "big"))
+
+    @staticmethod
+    def peek_op_id() -> str | None:
+        """Return the id ``generate_op_id`` would produce next, without consuming it.
+
+        Returns:
+            The id for the current operation position, or None when called
+            outside a durable task context.
+
+        """
+        try:
+            ctx = _task_ctx.get()
+        except LookupError:
+            return None
+        return _derive_id(ctx.parent_id, context=ctx.seq.to_bytes(4, "big"))
 
     @staticmethod
     def generate_op_scope() -> None:
@@ -261,7 +278,7 @@ class EventLoop(asyncio.AbstractEventLoop):
         if self._closed:
             raise LoopClosedError
         if asyncio.get_running_loop() is self._host:
-            id_ = _random_id()
+            id_ = random_id()
             external = True
             self._event.set()
         else:
@@ -399,6 +416,15 @@ def _complete_op(
     if op.cancelled():
         return
     if exception is not None:
+        if isinstance(exception, StopIteration):
+            # asyncio.Future.set_exception rejects StopIteration; delivering it
+            # raw would raise inside this callback and leave the op forever
+            # pending (the awaiting workflow would hang). Wrap it instead.
+            wrapped = RemoteEffectError(
+                type(exception).__qualname__, str(exception), ()
+            )
+            wrapped.__cause__ = exception
+            exception = wrapped
         op.set_exception(exception)
     else:
         op.set_result(result)
@@ -423,10 +449,6 @@ def wrap_future(
     future.add_done_callback(done)
     dst_future.add_done_callback(dst_done)
     return dst_future
-
-
-def _random_id() -> str:
-    return binascii.b2a_base64(os.urandom(12), newline=False).decode()
 
 
 def _derive_id(base: str, *, context: bytes = b"", key: bytes = b"") -> str:

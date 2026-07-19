@@ -33,15 +33,10 @@ def set_metadata(entry: Entry, metadata: Mapping[str, JSONValue]) -> None:
 
 
 def is_entry(entry: Entry | BaseEntry) -> TypeGuard[Entry]:
-    return entry.get("type") in {
-        "promise.create",
-        "promise.complete",
-        "stream.create",
-        "stream.emit",
-        "stream.complete",
-        "barrier",
-        "trace",
-    }
+    # Derived from the required-fields registry so the set of valid entry types
+    # has exactly one definition: a type added there is visible to every host
+    # reader that gates on this predicate.
+    return entry.get("type") in _REQUIRED_FIELDS
 
 
 def validate_entry(value: object, offset: int) -> Entry:
@@ -68,8 +63,20 @@ def validate_entry(value: object, offset: int) -> Entry:
     metadata = entry.get("metadata")
     if metadata is not None and not isinstance(metadata, dict):
         raise CorruptLogError(offset, "metadata must be a JSON object")
+    has_effect_identity = "effect_name" in entry or "effect_version" in entry
+    if has_effect_identity and (
+        not isinstance(entry.get("effect_name"), str)
+        or not isinstance(entry.get("effect_version"), str)
+    ):
+        raise CorruptLogError(offset, "effect identity must contain string fields")
     return cast("Entry", entry)
 
 
 def random_id() -> str:
+    """Return a random 12-byte token id (log entries and host-side op ids).
+
+    Returns:
+        A fresh base64-encoded random token.
+
+    """
     return binascii.b2a_base64(os.urandom(12), newline=False).decode()

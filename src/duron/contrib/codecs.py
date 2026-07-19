@@ -42,13 +42,19 @@ except ModuleNotFoundError:
 class PydanticCodec:
     @staticmethod
     def encode_json(result: object, annotated_type: TypeHint[Any]) -> JSONValue:
+        # No exclude_none: dropping an explicit None would let a non-None field
+        # default silently replace it on decode, corrupting the round-trip.
         return cast(
             "JSONValue",
             _type_adapter(
                 cast("type[object]", annotated_type) if annotated_type else type(result)
-            ).dump_python(result, mode="json", exclude_none=True),
+            ).dump_python(result, mode="json"),
         )
 
     @staticmethod
     def decode_json(encoded: JSONValue, expected_type: TypeHint[Any]) -> object:
+        # Mirror encode_json's fallback: with no declared type (UnspecifiedType)
+        # there is no schema to validate against, so pass the value through.
+        if not expected_type:
+            return encoded
         return _type_adapter(expected_type).validate_python(encoded)

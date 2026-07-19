@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Literal
 from typing_extensions import NotRequired, TypedDict
 
+from duron.errors import CorruptLogError as CorruptLogError  # noqa: PLC0414
 from duron.typing import JSONValue
 
 
@@ -27,6 +28,12 @@ class BaseEntry(TypedDict):
     The operation that generated this log entry.
     """
 
+    effect_name: NotRequired[str]
+    """Stable public effect name for replay validation, when applicable."""
+
+    effect_version: NotRequired[str]
+    """Stable public effect version for replay validation, when applicable."""
+
 
 class ErrorInfo(TypedDict):
     type: str
@@ -34,6 +41,7 @@ class ErrorInfo(TypedDict):
     message: str
     args: list[JSONValue]
     cancelled: bool
+    key: NotRequired[str]
     cause: NotRequired[ErrorInfo]
 
 
@@ -86,11 +94,3 @@ Entry = (
 """
 Concrete log entry types used within Duron.
 """
-
-
-class CorruptLogError(ValueError):
-    """Raised when persisted log data cannot be decoded or validated."""
-
-    def __init__(self, offset: int, message: str) -> None:
-        super().__init__(f"Corrupt log entry at offset {offset}: {message}")
-        self.offset = offset

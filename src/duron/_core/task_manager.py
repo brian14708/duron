@@ -39,11 +39,17 @@ class TaskManager:
                 contextvars.Context,
                 TypeHint[Any],
                 asyncio.Future[object],
+                tuple[type[BaseException], ...],
             ],
         ] = {}
-        self._tasks: dict[str, tuple[asyncio.Future[None], TypeHint[Any]]] = {}
+        self._tasks: dict[
+            str,
+            tuple[asyncio.Future[None], TypeHint[Any], tuple[type[BaseException], ...]],
+        ] = {}
         self._done_tasks: asyncio.Queue[asyncio.Future[None] | None] = asyncio.Queue()
-        self._futures: dict[str, TypeHint[Any]] = {}
+        self._futures: dict[
+            str, tuple[TypeHint[Any], tuple[type[BaseException], ...]]
+        ] = {}
         self._cleanup_task: asyncio.Task[None] = asyncio.create_task(self._cleanup())
         self._closed = False
         self._on_error: Callable[[TaskError], Any] = on_error
@@ -62,8 +68,15 @@ class TaskManager:
         context: contextvars.Context,
         return_type: TypeHint[Any],
         waiter: asyncio.Future[object],
+        error_types: tuple[type[BaseException], ...] = (),
     ) -> None:
-        self._pending_task[task_id] = (task_fn, context, return_type, waiter)
+        self._pending_task[task_id] = (
+            task_fn,
+            context,
+            return_type,
+            waiter,
+            error_types,
+        )
 
     async def add_task(
         self,
@@ -72,12 +85,13 @@ class TaskManager:
         context: contextvars.Context,
         return_type: TypeHint[Any],
         waiter: asyncio.Future[object],
+        error_types: tuple[type[BaseException], ...] = (),
     ) -> None:
         t = _create_task_context(future, context=context)
         t.add_done_callback(self._done_callback)
         if sys.version_info >= (3, 14):
             asyncio.future_add_to_awaited_by(t, waiter)
-        self._tasks[task_id] = (t, return_type)
+        self._tasks[task_id] = (t, return_type, error_types)
         await asyncio.sleep(0)
 
     def _done_callback(self, t: asyncio.Task[Any]) -> None:
@@ -86,8 +100,13 @@ class TaskManager:
         elif (e := t.exception()) is not None:
             self._on_error(TaskError(e))
 
-    def add_future(self, task_id: str, return_type: TypeHint[Any]) -> None:
-        self._futures[task_id] = return_type
+    def add_future(
+        self,
+        task_id: str,
+        return_type: TypeHint[Any],
+        error_types: tuple[type[BaseException], ...] = (),
+    ) -> None:
+        self._futures[task_id] = (return_type, error_types)
 
     def has_future(self, task_id: str) -> bool:
         return task_id in self._futures
@@ -106,12 +125,13 @@ class TaskManager:
             context,
             return_type,
             waiter,
+            error_types,
         ) in self._pending_task.items():
             t = _create_task_context(task_fn(), context=context)
             t.add_done_callback(self._done_callback)
             if sys.version_info >= (3, 14):
                 asyncio.future_add_to_awaited_by(t, waiter)
-            self._tasks[task_id] = (t, return_type)
+            self._tasks[task_id] = (t, return_type, error_types)
         self._pending_task.clear()
 
     async def close(self) -> None:
@@ -121,7 +141,7 @@ class TaskManager:
         self._done_tasks.put_nowait(None)
         await self._cleanup_task
         while self._tasks:
-            cancel = [(id_, task) for id_, (task, _) in self._tasks.items()]
+            cancel = [(id_, task) for id_, (task, _, _) in self._tasks.items()]
             for tid, task in cancel:
                 _ = task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -129,16 +149,18 @@ class TaskManager:
                 if tid in self._tasks:
                     del self._tasks[tid]
 
-    def complete_task(self, task_id: str) -> tuple[TypeHint[Any],]:
+    def complete_task(
+        self, task_id: str
+    ) -> tuple[TypeHint[Any], tuple[type[BaseException], ...]]:
         if p := self._pending_task.pop(task_id, None):
-            _, _, return_type, _ = p
-            return (return_type,)
+            _, _, return_type, _, error_types = p
+            return (return_type, error_types)
         if t := self._tasks.pop(task_id, None):
-            fut, return_type = t
+            fut, return_type, error_types = t
             self._done_tasks.put_nowait(fut)
-            return (return_type,)
+            return (return_type, error_types)
         if f := self._futures.pop(task_id, None):
-            return (f,)
+            return f
 
         msg = f"Task {task_id} not found"
         raise ValueError(msg)

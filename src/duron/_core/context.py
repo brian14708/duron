@@ -3,28 +3,17 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import functools
-import inspect
-from collections.abc import AsyncGenerator
 from random import Random
-from typing import TYPE_CHECKING, Concatenate, cast, get_args, get_origin
+from typing import TYPE_CHECKING, cast
 from typing_extensions import Any, ParamSpec, TypeVar, final, overload
 
-from duron._core.ops import (
-    Barrier,
-    FnCall,
-    FutureComplete,
-    FutureCreate,
-    OpMetadata,
-    create_op,
-)
+from duron._core.ops import Barrier, FnCall, FutureCreate, OpMetadata, create_op
 from duron._core.signal import create_signal
-from duron._core.stream import create_stream, run_stateful
-from duron._decorator.effect import Reducer
+from duron._core.stream import create_sink, create_stream
 from duron.typing import UnspecifiedType, inspect_function
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine
-    from contextlib import AbstractAsyncContextManager
 
     from duron._core.signal import Signal
     from duron._core.stream import Stream, StreamWriter
@@ -32,7 +21,6 @@ if TYPE_CHECKING:
     from duron.typing import TypeHint
 
     _T = TypeVar("_T")
-    _S = TypeVar("_S")
     _P = ParamSpec("_P")
 
 
@@ -49,20 +37,26 @@ class Context:
             msg = "Context can only be used in its context loop"
             raise RuntimeError(msg)
 
+    @property
+    def seed(self) -> str:
+        """The run's seed nonce, part of its durable identity."""
+        return self._seed
+
+    @property
+    def operation_id(self) -> str:
+        """Deterministic id for the current operation position (non-consuming).
+
+        Stable across replay of the same position; falls back to the run seed
+        outside a durable task context.
+        """
+        op_id = self._loop.peek_op_id()
+        return self._seed if op_id is None else op_id
+
     @overload
     async def run(
         self,
         fn: Callable[_P, Coroutine[Any, Any, _T]],
         /,
-        *args: _P.args,
-        **kwargs: _P.kwargs,
-    ) -> _T: ...
-    @overload
-    async def run(
-        self,
-        fn: Callable[Concatenate[_T, _P], AsyncGenerator[_S, _T]],
-        /,
-        state: _S,
         *args: _P.args,
         **kwargs: _P.kwargs,
     ) -> _T: ...
@@ -77,69 +71,94 @@ class Context:
             The result of the function call.
 
         """
+        return await self._schedule(fn, args, kwargs)
+
+    @overload
+    async def run_effect(
+        self,
+        metadata: OpMetadata,
+        fn: Callable[..., Coroutine[Any, Any, _T]],
+        /,
+        *args: object,
+        return_type: TypeHint[Any] = ...,
+        **kwargs: object,
+    ) -> _T: ...
+    @overload
+    async def run_effect(
+        self,
+        metadata: OpMetadata,
+        fn: Callable[..., _T],
+        /,
+        *args: object,
+        return_type: TypeHint[Any] = ...,
+        **kwargs: object,
+    ) -> _T: ...
+    async def run_effect(
+        self,
+        metadata: OpMetadata,
+        fn: Callable[..., object],
+        /,
+        *args: object,
+        return_type: TypeHint[Any] = UnspecifiedType,
+        **kwargs: object,
+    ) -> object:
+        """Run an effect with its stable public identity attached.
+
+        ``return_type`` lets callers that wrap the effect in a synthetic
+        callable supply the original declared return type directly, instead of
+        having it re-derived (untyped) from the wrapper's signature.
+
+        Returns:
+            The effect result.
+
+        """
+        return await self._schedule(fn, args, kwargs, metadata, return_type)
+
+    async def _schedule(
+        self,
+        fn: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        metadata: OpMetadata | None = None,
+        return_type: TypeHint[Any] = UnspecifiedType,
+    ) -> object:
         self._check()
-
-        if inspect.isasyncgenfunction(fn):
-            async with self.stream(fn, *args, **kwargs) as (stream, result):
-                await stream.discard()
-                return await result
-
-        hint = inspect_function(fn)
-        callable_ = functools.partial(fn, *args, **kwargs)
-
+        if metadata is None or return_type is UnspecifiedType:
+            hint = inspect_function(fn)
+            if metadata is None:
+                metadata = OpMetadata(name=hint.name)
+            if return_type is UnspecifiedType:
+                return_type = hint.return_type
         op: asyncio.Future[object] = create_op(
             self._loop,
             FnCall(
-                callable=callable_,
-                return_type=hint.return_type,
+                callable=functools.partial(fn, *args, **kwargs),
+                return_type=return_type,
                 context=contextvars.copy_context(),
-                metadata=OpMetadata(name=hint.name),
+                metadata=metadata,
             ),
         )
         return await op
 
-    def stream(
-        self,
-        fn: Callable[Concatenate[_T, _P], AsyncGenerator[_S, _T]],
-        /,
-        initial: _T,
-        *args: _P.args,
-        **kwargs: _P.kwargs,
-    ) -> AbstractAsyncContextManager[tuple[Stream[_S], Awaitable[_T]]]:
-        """Stream stateful function partial results.
-
-        Args:
-            fn: The stateful function to stream.
-            initial: The initial state to pass to the function.
-            *args: Positional arguments to pass to the function.
-            **kwargs: Keyword arguments to pass to the function.
-
-        Returns:
-            An async context manager that yields a Stream of the function's results.
-
-        """
-        self._check()
-
-        type_hint = inspect_function(fn)
-        action_type: TypeHint[_S] = UnspecifiedType
-        if get_origin(ret := type_hint.return_type) is AsyncGenerator:
-            action_type, _ = get_args(ret)
-
-        state_name = type_hint.parameters[0]
-        annotations = type_hint.parameter_annotations.get(state_name, ())
-        reducer = _find_reducer(tuple(annotations))
-        return run_stateful(
-            self._loop, action_type, reducer, fn, initial, *args, **kwargs
-        )
-
     async def create_stream(
-        self, dtype: TypeHint[_T], /, *, name: str | None = None
+        self,
+        dtype: TypeHint[_T],
+        /,
+        *,
+        name: str | None = None,
+        metadata: OpMetadata | None = None,
+        adopt_replayed: bool = False,
     ) -> tuple[Stream[_T], StreamWriter[_T]]:
         """Create a new stream within the context.
 
         Args:
             dtype: The data type of values emitted by the stream.
             name: Optional name for the stream.
+            metadata: Optional durable operation identity and trace metadata.
+            adopt_replayed: Set when the stream is produced by an external
+                producer that re-runs from the start on resume (a streaming
+                effect call): the writer then skips re-recording the events
+                its prior execution already recorded before a crash.
 
         Returns:
             A stream reader and its writer.
@@ -148,7 +167,39 @@ class Context:
         self._check()
 
         return await create_stream(
-            self._loop, dtype, name, metadata=OpMetadata(name=name)
+            self._loop,
+            dtype,
+            name,
+            metadata=metadata or OpMetadata(name=name),
+            adopt_replayed=adopt_replayed,
+        )
+
+    async def create_sink(
+        self,
+        dtype: TypeHint[_T],
+        /,
+        *,
+        name: str | None = None,
+        metadata: OpMetadata | None = None,
+    ) -> StreamWriter[_T]:
+        """Create a write-only stream within the context.
+
+        Emitted values are durably recorded without being buffered or decoded
+        in the worker; host code reads them from storage.
+
+        Args:
+            dtype: The data type of values emitted by the stream.
+            name: Optional name for the stream.
+            metadata: Optional durable operation identity and trace metadata.
+
+        Returns:
+            A writer for the stream.
+
+        """
+        self._check()
+
+        return await create_sink(
+            self._loop, dtype, name, metadata=metadata or OpMetadata(name=name)
         )
 
     async def create_signal(
@@ -171,13 +222,20 @@ class Context:
         )
 
     async def create_future(
-        self, dtype: type[_T], /, *, name: str | None = None
+        self,
+        dtype: type[_T],
+        /,
+        *,
+        name: str | None = None,
+        error_types: tuple[type[BaseException], ...] = (),
     ) -> tuple[str, Awaitable[_T]]:
         """Create a new external future object within the context.
 
         Args:
             dtype: The type of the future's result.
             name: Optional name for the future.
+            error_types: Exception types the future may be failed with; they
+                round-trip as themselves across replay.
 
         Returns:
             The future ID and awaitable that produces its result.
@@ -186,9 +244,27 @@ class Context:
         self._check()
 
         fut = create_op(
-            self._loop, FutureCreate(return_type=dtype, metadata=OpMetadata(name=name))
+            self._loop,
+            FutureCreate(
+                return_type=dtype,
+                metadata=OpMetadata(name=name, error_types=error_types),
+            ),
         )
         return (fut.id, cast("asyncio.Future[_T]", fut))
+
+    async def time_us(self) -> int:
+        """Get the current deterministic time in microseconds.
+
+        Same clock as :meth:`time`, in the log's native unit, so a consumer that
+        needs a log timestamp need not convert back and forth through seconds.
+
+        Returns:
+            The current time as an integer number of microseconds.
+
+        """
+        self._check()
+        _log_offset, time_us = await create_op(self._loop, Barrier())
+        return time_us
 
     async def time(self) -> float:
         """Get the current deterministic time in seconds.
@@ -200,23 +276,7 @@ class Context:
             The current time in seconds as a float.
 
         """
-        self._check()
-        _log_offset, time_us = await create_op(self._loop, Barrier())
-        return time_us * 1e-6
-
-    async def time_ns(self) -> int:
-        """Get the current deterministic time in nanoseconds.
-
-        This provides a deterministic timestamp that is consistent during replay.
-        Use this instead of `time.time_ns()` to ensure deterministic behavior.
-
-        Returns:
-            The current time in nanoseconds as an integer.
-
-        """
-        self._check()
-        _log_offset, time_us = await create_op(self._loop, Barrier())
-        return time_us * 1_000
+        return (await self.time_us()) * 1e-6
 
     def random(self) -> Random:
         """Get a deterministic random number generator.
@@ -231,54 +291,3 @@ class Context:
         """
         self._check()
         return Random(self._loop.generate_op_id() + self._seed)  # noqa: S311
-
-    @overload
-    async def complete_future(
-        self, future_id: str, *, result: _T, result_type: TypeHint[_T] = ...
-    ) -> None: ...
-    @overload
-    async def complete_future(
-        self, future_id: str, *, exception: Exception
-    ) -> None: ...
-    async def complete_future(
-        self,
-        future_id: str,
-        *,
-        result: object | None = None,
-        exception: Exception | None = None,
-        result_type: TypeHint[object] = UnspecifiedType,
-    ) -> None:
-        """Complete an external future with a result or exception.
-
-        This method completes a future that was created with `create_future()`,
-        allowing external async work to integrate with duron's checkpointing.
-
-        Args:
-            future_id: The ID of the future to complete.
-            result: The result value to set on the future.
-            result_type: The type hint for the result value.
-            exception: The exception to set on the future.
-
-        """
-        self._check()
-        await create_op(
-            self._loop,
-            FutureComplete(
-                future_id=future_id,
-                value=result,
-                exception=exception,
-                dtype=result_type,
-            ),
-        )
-
-
-def _find_reducer(annotations: tuple[Any, ...]) -> Callable[[_S, _T], _S]:
-    for annotation in annotations:
-        if isinstance(annotation, Reducer):
-            return cast("Callable[[_S, _T], _S]", annotation.reducer)
-
-    return cast("Callable[[_S, _T], _S]", _default_reducer)
-
-
-def _default_reducer(_old: object, new: object) -> object:
-    return new

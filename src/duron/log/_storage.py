@@ -9,15 +9,23 @@ if TYPE_CHECKING:
     from duron.log._entry import BaseEntry, Entry
 
 
-class LogStorage(Protocol):
+class Storage(Protocol):
     """Protocol for persistent storage of operation logs.
 
     Built-in backends use opaque fencing tokens. Acquiring a new lease invalidates
     older tokens, and append() must reject stale tokens.
     """
 
-    def stream(self) -> AsyncGenerator[tuple[int, BaseEntry], None]:
+    def stream(
+        self, *, offset: int | None = None
+    ) -> AsyncGenerator[tuple[int, BaseEntry], None]:
         """Stream log entries from storage.
+
+        Args:
+            offset: If given, only entries strictly after this offset are
+                yielded. The value must be one previously returned by stream();
+                ``None`` streams from the beginning. Backends should resume
+                cheaply (seek/slice/indexed range) rather than rescanning.
 
         Yields:
             Tuple of (log_index, entry) for each log entry in order.

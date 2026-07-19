@@ -10,6 +10,7 @@ import time
 from typing import TYPE_CHECKING, Final, Generic, Literal, cast
 from typing_extensions import (
     Any,
+    NotRequired,
     ParamSpec,
     Self,
     TypedDict,
@@ -31,11 +32,16 @@ from duron._core.ops import (
     StreamEmit,
     create_op,
 )
-from duron._core.signal import Signal
-from duron._core.stream import Stream, StreamWriter, create_buffer_stream
+from duron._core.stream import StreamWriter
 from duron._core.stream_manager import StreamManager
 from duron._core.task_manager import TaskError, TaskManager
 from duron._core.utils import decode_error, encode_error
+from duron.errors import (
+    HistoryMismatchError,
+    LeaseLostError,
+    RequestAlreadyResolvedError,
+)
+from duron.log._entry import CorruptLogError
 from duron.log._helper import is_entry, random_id
 from duron.loop import EventLoop, create_loop
 from duron.tracing import NULL_SPAN, span
@@ -46,9 +52,10 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from types import TracebackType
 
-    from duron._core.ops import Op, StreamObserver
+    from duron._core.ops import Op
     from duron._decorator.durable import DurableFn
-    from duron.log import LogStorage
+    from duron.codec import Codec
+    from duron.log import Storage
     from duron.log._entry import (
         BarrierEntry,
         Entry,
@@ -66,11 +73,7 @@ if TYPE_CHECKING:
 _T = TypeVar("_T")
 _P = ParamSpec("_P")
 
-_CURRENT_VERSION: Final = 0
-
-
-class SessionError(RuntimeError):
-    """Base error raised for invalid session operations."""
+CURRENT_VERSION: Final = 0
 
 
 class InitParams(TypedDict):
@@ -78,6 +81,11 @@ class InitParams(TypedDict):
     args: list[JSONValue]
     kwargs: dict[str, JSONValue]
     nonce: str
+    # Public run identity, set by the duron._api layer. Declared here (rather
+    # than smuggled in via cast) so schema-aware codecs persist them instead of
+    # dropping undeclared keys.
+    workflow_name: NotRequired[str]
+    workflow_version: NotRequired[str]
 
 
 class Session:
@@ -87,32 +95,19 @@ class Session:
         "_lease",
         "_log",
         "_loop",
-        "_readonly",
         "_token",
         "_tracer",
     )
 
-    def __init__(
-        self,
-        log: LogStorage,
-        /,
-        *,
-        tracer: Tracer | None = None,
-        readonly: bool = False,
-    ) -> None:
+    def __init__(self, log: Storage, /, *, tracer: Tracer | None = None) -> None:
         """Session for running durable functions.
 
-        Example:
-            ```python
-            async with Session(log_storage) as session:
-                task = await session.start(my_durable_function, arg1, arg2)
-                result = await task.result()
-            ```
+        Owns the storage lease and event loop that a spawned :class:`Task`
+        takes over; the ``duron._api`` layer drives it via :meth:`spawn`.
 
         Args:
             log: The log storage to use for this session.
             tracer: An optional tracer for tracing operations within the session.
-            readonly: If true, the session will not acquire a lease on the log.
 
         """
         self._closed = False
@@ -121,15 +116,13 @@ class Session:
         self._token: contextvars.Token[Tracer] | None = None
         self._loop: EventLoop | None = None
         self._lease: bytes | None = None
-        self._readonly: bool = readonly
         self._current_task: Task[Any] | None = None
 
     async def __aenter__(self) -> Self:
         self._token = current_tracer.set(self._tracer) if self._tracer else None
         try:
             self._loop = await create_loop()
-            if not self._readonly:
-                self._lease = await self._log.acquire_lease()
+            self._lease = await self._log.acquire_lease()
         except BaseException:
             if self._loop is not None and not self._loop.is_closed():
                 self._loop.close()
@@ -167,89 +160,12 @@ class Session:
                     current_tracer.reset(tracer_token)
                     self._token = None
 
-    async def start(
-        self, fn: DurableFn[_P, _T], *args: _P.args, **kwargs: _P.kwargs
-    ) -> Task[_T]:
-        """Start a new durable function within the session.
+    @property
+    def storage(self) -> Storage:
+        """The log storage this session owns."""
+        return self._log
 
-        Args:
-            fn: The durable function to run.
-            *args: Positional arguments to pass to the durable function.
-            **kwargs: Keyword arguments to pass to the durable function.
-
-        Returns:
-            A `Task` representing the running durable function.
-
-        Raises:
-            SessionError: If the session is readonly.
-
-        """
-        if self._readonly:
-            msg = "Cannot start live work in a readonly session; use verify()"
-            raise SessionError(msg)
-
-        encoded_args, encoded_kwargs = _encode_inputs(fn, args, kwargs)
-
-        def init() -> InitParams:
-            return {
-                "version": _CURRENT_VERSION,
-                "args": encoded_args,
-                "kwargs": encoded_kwargs,
-                "nonce": random_id(),
-            }
-
-        task = self._spawn(fn, init)
-        await task._start()  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
-        return task
-
-    async def resume(self, fn: DurableFn[_P, _T]) -> Task[_T]:
-        """Resume a durable function within the session.
-
-        Args:
-            fn: The durable function to run.
-
-        Returns:
-            A `Task` representing the running durable function.
-
-        Raises:
-            SessionError: If the session is readonly.
-
-        """
-        if self._readonly:
-            msg = "Cannot resume live work in a readonly session; use verify()"
-            raise SessionError(msg)
-
-        def init() -> InitParams:
-            msg = "Not started properly"
-            raise RuntimeError(msg)
-
-        task = self._spawn(fn, init)
-        await task._start()  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
-        return task
-
-    async def verify(self, fn: DurableFn[_P, _T]) -> None:
-        """Verify if the durable function has completed within the session.
-
-        Args:
-            fn: The durable function to verify.
-
-        Raises:
-            RuntimeError: If a durable function is already running or the session is \
-                    not started.
-
-        """
-
-        def init() -> InitParams:
-            msg = "Not started properly"
-            raise RuntimeError(msg)
-
-        task = self._spawn(fn, init)
-        if await task._resume():  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
-            return
-        msg = "Durable function has not completed"
-        raise RuntimeError(msg)
-
-    def _spawn(self, fn: DurableFn[_P, _T], init: Callable[[], InitParams]) -> Task[_T]:
+    def spawn(self, fn: DurableFn[_P, _T], init: Callable[[], InitParams]) -> Task[_T]:
         if self._current_task is not None:
             msg = "A durable function is already running"
             raise RuntimeError(msg)
@@ -268,6 +184,8 @@ class Task(Generic[_T]):
     """A task representing a running durable function within a session."""
 
     __slots__ = (
+        "_append_version",
+        "_append_waiters",
         "_closed",
         "_codec",
         "_external_completion_lock",
@@ -280,7 +198,6 @@ class Task(Generic[_T]):
         "_pending_msg",
         "_ready",
         "_stream_manager",
-        "_streams",
         "_task",
         "_task_manager",
         "_tracer",
@@ -289,7 +206,7 @@ class Task(Generic[_T]):
     def __init__(
         self,
         loop: EventLoop,
-        log: LogStorage,
+        log: Storage,
         tracer: Tracer | None,
         lease: bytes | None,
         init: Callable[[], InitParams],
@@ -304,15 +221,10 @@ class Task(Generic[_T]):
         self._is_live: bool = False
         self._pending_msg: list[Entry] = []
         self._external_completion_lock = asyncio.Lock()
-
-        observers: dict[str, StreamObserver] = {}
-        streams: dict[str, Stream[Any]] = {}
-
-        for name, typ, _dtype in fn.inject:
-            if typ is StreamWriter:
-                stream, w = create_buffer_stream()
-                streams[name] = stream
-                observers[name] = w
+        # Host-reader notification: bumped on every durable append and on
+        # completion, so readers can await new entries instead of polling.
+        self._append_version: int = 0
+        self._append_waiters: set[asyncio.Future[None]] = set()
 
         self._ready = asyncio.Event()
         main = self._loop.schedule_task(
@@ -326,17 +238,23 @@ class Task(Generic[_T]):
         )
         self._main = main
         self._codec = fn.codec
-        self._stream_manager = StreamManager(
-            (name, observer) for name, observer in observers.items()
-        )
-        self._streams = streams
+        self._stream_manager = StreamManager()
         self._task_manager = TaskManager(
             functools.partial(self._loop.call_soon, main.cancel)
         )
         self._task: asyncio.Task[_T] | None = None
+        # Wake host readers when the run reaches a terminal state even if no
+        # further entry is appended, and release any host writer blocked in
+        # wait_stream for a stream the workflow never created.
+
+        def _on_main_done(_f: object) -> None:
+            self._notify_append()
+            self._stream_manager.close()
+
+        main.add_done_callback(_on_main_done)
 
     async def _resume(self) -> bool:
-        recvd_msgs: set[str] = set()
+        recvd_msgs: dict[str, tuple[object, object] | None] = {}
         ws: WaitSet | None = None
         async for o, entry in self._log.stream():
             ts = entry["ts"]
@@ -350,41 +268,46 @@ class Task(Generic[_T]):
             if is_entry(entry):
                 if entry["source"] == "task":
                     if not self._handle_message(o, entry):
-                        e = "Extra messages found in log"
-                        raise RuntimeError(e)
-                    recvd_msgs.add(entry["id"])
+                        msg = "Extra messages found in log"
+                        raise HistoryMismatchError(msg, actual=entry["id"])
+                    # Only the persisted effect identity is ever read back (by
+                    # _match_pending); retaining the whole entry would keep the
+                    # log's entire payload in memory for the whole replay.
+                    recvd_msgs[entry["id"]] = _effect_identity(entry)
                 else:
                     _ = self._handle_message(o, entry)
                 ws = await self._step()
                 self._raise_history_error()
-            while self._pending_msg:
-                id_ = self._pending_msg[-1]["id"]
-                if id_ not in recvd_msgs:
-                    break
+            # Drain the matched tail: pending ops are emitted in log order, so
+            # matches accumulate as a contiguous suffix.
+            while self._pending_msg and _match_pending(
+                self._pending_msg[-1], recvd_msgs
+            ):
                 self._pending_msg.pop()
-                recvd_msgs.remove(id_)
 
-        pending: list[Entry] = []
-        for msg in self._pending_msg:
-            if msg["id"] not in recvd_msgs:
-                pending.append(msg)
-            else:
-                recvd_msgs.remove(msg["id"])
-        self._pending_msg = pending
+        # Final pass for matches the tail drain could not reach. Replay routinely
+        # runs the workflow ahead of the log, so the pending queue can hold
+        # unmatched ops past the crash point while recorded entries for earlier
+        # ops are still unreconciled; the tail drain stops at the first non-match
+        # from the end and never sees those.
+        self._pending_msg = [
+            msg for msg in self._pending_msg if not _match_pending(msg, recvd_msgs)
+        ]
 
         if len(recvd_msgs) > 0:
-            e = "Extra messages found in log"
-            raise RuntimeError(e)
+            msg = "Extra messages found in log"
+            raise HistoryMismatchError(msg, actual=sorted(recvd_msgs))
 
         return self._main.done() and len(self._pending_msg) == 0
 
     def _raise_history_error(self) -> None:
         if self._main.done() and not self._main.cancelled():
             error = self._main.exception()
-            if isinstance(error, SessionError):
+            if isinstance(error, HistoryMismatchError):
                 raise error
 
-    async def _start(self) -> None:
+    async def start(self) -> None:
+        """Resume from history and, if the run is unfinished, start executing."""
         if await self._resume():
             return
         self._task = asyncio.create_task(self._run())
@@ -499,12 +422,8 @@ class Task(Generic[_T]):
         match op:
             case FnCall():
                 assert not fut.external, "FnCall futures should not be external"
-                promise_create_entry: PromiseCreateEntry = {
-                    "ts": now,
-                    "id": id_,
-                    "type": "promise.create",
-                    "source": "task",
-                }
+                promise_create_entry = _promise_create_entry(id_, now)
+                _record_effect_identity(promise_create_entry, op.metadata)
 
                 if tracer := self._tracer:
                     op_span = tracer.new_op_span(
@@ -521,6 +440,7 @@ class Task(Generic[_T]):
                         op.context,
                         op.return_type,
                         fut,
+                        op.metadata.error_types,
                     )
                 else:
                     self._task_manager.add_pending(
@@ -529,6 +449,7 @@ class Task(Generic[_T]):
                         op.context,
                         op.return_type,
                         fut,
+                        op.metadata.error_types,
                     )
 
                 def done(f: OpFuture) -> None:
@@ -547,6 +468,7 @@ class Task(Generic[_T]):
                     "source": "task",
                     "name": op.name,
                 }
+                _record_effect_identity(stream_create_entry, op.metadata)
 
                 self._stream_manager.create_stream(
                     id_,
@@ -558,6 +480,8 @@ class Task(Generic[_T]):
                     )
                     if self._tracer
                     else None,
+                    op.metadata.error_types,
+                    op.replay_state,
                 )
 
                 await self._enqueue_log(stream_create_entry)
@@ -609,15 +533,12 @@ class Task(Generic[_T]):
                 await self._enqueue_log(barrier_entry)
             case FutureCreate():
                 assert not fut.external, "FutureCreate futures should not be external"
-                promise_create_entry = {
-                    "ts": now,
-                    "id": id_,
-                    "type": "promise.create",
-                    "source": "task",
-                }
+                promise_create_entry = _promise_create_entry(id_, now)
                 if tracer := self._tracer:
                     _ = tracer.new_op_span(op.metadata.get_name(), promise_create_entry)
-                self._task_manager.add_future(id_, op.return_type)
+                self._task_manager.add_future(
+                    id_, op.return_type, op.metadata.error_types
+                )
                 await self._enqueue_log(promise_create_entry)
             case FutureComplete():
                 promise_complete_entry: PromiseCompleteEntry = {
@@ -651,14 +572,65 @@ class Task(Generic[_T]):
             msg = "Cannot append without an active storage lease"
             raise RuntimeError(msg)
         else:
-            offset = await self._log.append(self._lease, entry)
+            try:
+                offset = await self._log.append(self._lease, entry)
+            except ValueError as exc:
+                msg = "storage lease was lost while appending to the run"
+                raise LeaseLostError(msg) from exc
             self._handle_message(offset, entry)
+            self._notify_append()
+
+    def _notify_append(self) -> None:
+        self._append_version += 1
+        waiters = self._append_waiters
+        self._append_waiters = set()
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.set_result(None)
+
+    def is_terminal(self) -> bool:
+        """Whether the run has reached a terminal state.
+
+        Once terminal, no further entries will be appended; host-side readers
+        use this to stop after draining the log tail.
+
+        Returns:
+            True if the durable function has finished (in any way).
+
+        """
+        return self._main.done()
+
+    async def wait_for_append(self, seen_version: int) -> int:
+        """Wait until a new entry is appended or the run ends.
+
+        Args:
+            seen_version: The last ``append_version`` the caller observed.
+
+        Returns:
+            The current ``append_version`` once it advances past ``seen_version``
+            or the run reaches a terminal state.
+
+        Raises:
+            asyncio.CancelledError: If the waiting coroutine is cancelled.
+
+        """
+        while self._append_version <= seen_version and not self._main.done():
+            # Each waiter gets its own future so that one caller's cancellation
+            # (e.g. a reader's wait_for timeout) cannot poison other waiters.
+            waiter = asyncio.get_running_loop().create_future()
+            self._append_waiters.add(waiter)
+            try:
+                await waiter
+            except asyncio.CancelledError:
+                self._append_waiters.discard(waiter)
+                raise
+        return self._append_version
 
     def _handle_message(self, offset: int, e: Entry) -> bool:
         id_ = e["id"]
         if e["type"] == "promise.complete":
             id_ = e["promise_id"]
-            (return_type,) = self._task_manager.complete_task(id_)
+            return_type, error_types = self._task_manager.complete_task(id_)
             if "result" in e:
                 try:
                     result = self._codec.decode_json(e["result"], return_type)
@@ -667,11 +639,19 @@ class Task(Generic[_T]):
                     return self._loop.post_completion(id_, exception=exc)
             elif "error" in e:
                 return self._loop.post_completion(
-                    id_, exception=decode_error(e["error"])
+                    id_, exception=decode_error(e["error"], error_types)
                 )
             else:
-                msg = f"Invalid promise.complete entry: {e!r}"
-                raise ValueError(msg)
+                # validate_entry only checks that `error`, when present, is an
+                # object, so a completion carrying neither field reaches here.
+                # Raise a typed error (still a ValueError, so existing handlers
+                # keep working) rather than a bare one, per errors.py's contract
+                # that every condition is branchable by type.
+                msg = (
+                    "promise.complete entry carries neither a result nor an "
+                    f"error: {e!r}"
+                )
+                raise CorruptLogError(offset, msg)
         elif e["type"] == "stream.create":
             if self._stream_manager.get_info(e["id"]) is None:
                 return self._loop.post_completion(
@@ -680,17 +660,26 @@ class Task(Generic[_T]):
             return self._loop.post_completion(id_, result=e["id"])
         elif e["type"] == "stream.emit":
             if self._stream_manager.send_to_stream(
-                e["stream_id"], self._codec, offset, e["value"]
+                e["stream_id"],
+                self._codec,
+                offset,
+                e["value"],
+                replayed=not self._is_live and e["source"] == "effect",
             ):
                 return self._loop.post_completion(id_, result=None)
             return self._loop.post_completion(
                 id_, exception=ValueError("Stream not found")
             )
         elif e["type"] == "stream.complete":
+            error = (
+                decode_error(
+                    e["error"], self._stream_manager.error_types_of(e["stream_id"])
+                )
+                if "error" in e
+                else None
+            )
             succ = self._stream_manager.close_stream(
-                e["stream_id"],
-                offset,
-                decode_error(e["error"]) if "error" in e else None,
+                e["stream_id"], offset, error, replayed=not self._is_live
             )
             if succ:
                 return self._loop.post_completion(id_, result=None)
@@ -741,28 +730,16 @@ class Task(Generic[_T]):
             return self._main.result()
         return await asyncio.shield(self._task)
 
-    @overload
-    async def open_stream(self, name: str, mode: Literal["w"]) -> StreamWriter[Any]: ...
-    @overload
-    async def open_stream(self, name: str, mode: Literal["r"]) -> Stream[Any]: ...
-    async def open_stream(
-        self, name: str, mode: Literal["w", "r"]
-    ) -> StreamWriter[Any] | Stream[Any]:
-        """Open a stream for reading or writing.
+    async def open_stream(self, name: str) -> StreamWriter[Any]:
+        """Open a writer for a named stream created by the workflow.
 
         Args:
             name: The name of the stream.
-            mode: The mode to open the stream in. Can be "r" for reading or "w" for \
-                    writing.
 
         Returns:
-            A `Stream` for reading or a `StreamWriter` for writing, depending on the \
-                    mode.
+            A `StreamWriter` for appending values to the stream.
 
         """
-        if mode == "r":
-            return self._streams.pop(name)
-
         sid = await self._stream_manager.wait_stream(name)
         w: StreamWriter[Any] = StreamWriter(sid, self._loop)
         return w
@@ -804,13 +781,14 @@ class Task(Generic[_T]):
             exception: The exception to complete the future with.
 
         Raises:
-            ValueError: If the future with the given ID does not exist.
+            RequestAlreadyResolvedError: If the future with the given ID is
+                not pending (already resolved or never created).
 
         """
         async with self._external_completion_lock:
             if not self._task_manager.has_future(future_id):
-                msg = "Promise not found"
-                raise ValueError(msg)
+                msg = f"Promise {future_id!r} is not pending"
+                raise RequestAlreadyResolvedError(msg)
             entry: PromiseCompleteEntry = {
                 "ts": self._now_us,
                 "id": random_id(),
@@ -825,6 +803,53 @@ class Task(Generic[_T]):
             if self._tracer:
                 self._tracer.end_op_span(future_id, entry)
             await self._enqueue_log(entry)
+
+
+async def read_header(storage: Storage, codec: Codec) -> dict[str, JSONValue] | None:
+    """Read the persisted run header, or ``None`` if storage holds no run.
+
+    The header is the prelude's init result, always the first
+    ``promise.complete`` in the log. It is persisted through the workflow
+    codec, so it is decoded with that codec rather than assuming a
+    transparent JSON dict (PickleCodec stores it as an opaque string, for
+    example).
+
+    Returns:
+        The decoded header, or ``None`` when the log is empty.
+
+    Raises:
+        HistoryMismatchError: if the header carries an error, cannot be
+            decoded with this codec, or is malformed.
+
+    """
+    async for _offset, entry in storage.stream():
+        if not is_entry(entry) or entry["type"] != "promise.complete":
+            continue
+        if "result" not in entry:
+            msg = "persisted run header contains an error instead of initialization"
+            raise HistoryMismatchError(msg)
+        try:
+            result = codec.decode_json(entry["result"], InitParams)
+        except Exception as exc:
+            msg = "persisted run header cannot be decoded with this workflow codec"
+            raise HistoryMismatchError(msg) from exc
+        if _is_header(result):
+            return cast("dict[str, JSONValue]", result)
+        msg = "persisted run header is malformed or uses an incompatible codec"
+        raise HistoryMismatchError(msg)
+    return None
+
+
+def _is_header(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    header = cast("dict[object, object]", value)
+    return (
+        isinstance(header.get("version"), int)
+        and isinstance(header.get("args"), list)
+        and isinstance(header.get("kwargs"), dict)
+        and isinstance(header.get("nonce"), str)
+    )
 
 
 async def _prelude_fn(
@@ -847,12 +872,7 @@ async def _prelude_fn(
     codec = fn.codec
     type_info = inspect_function(fn.fn)
     args = (
-        codec.decode_json(
-            arg,
-            type_info.parameter_types.get(type_info.parameters[i + 1], UnspecifiedType)
-            if i + 1 < len(type_info.parameters)
-            else UnspecifiedType,
-        )
+        codec.decode_json(arg, fn.positional_type(i))
         for i, arg in enumerate(init_params["args"])
     )
     kwargs = {
@@ -861,49 +881,79 @@ async def _prelude_fn(
     }
 
     ctx = Context(loop, init_params["nonce"])
-    for name, type_, dtype in fn.inject:
-        if type_ is Stream:
-            kwargs[name], _ = await ctx.create_stream(dtype, name=name)
-        elif type_ is Signal:
-            kwargs[name], _ = await ctx.create_signal(dtype, name=name)
-        elif type_ is StreamWriter:
-            _, kwargs[name] = await ctx.create_stream(dtype, name=name)
 
     with span("Session"):
         _ = ready()
         return await fn.fn(ctx, *args, **kwargs)
 
 
-def _encode_inputs(
-    fn: DurableFn[_P, Any], args: tuple[object, ...], kwargs: dict[str, object]
-) -> tuple[list[JSONValue], dict[str, JSONValue]]:
-    hint = inspect_function(fn.fn)
-    codec = fn.codec
-    encoded_args = [
-        codec.encode_json(
-            arg,
-            hint.parameter_types[hint.parameters[i + 1]]
-            if i + 1 < len(hint.parameters)
-            else UnspecifiedType,
-        )
-        for i, arg in enumerate(args)
-    ]
-    encoded_kwargs = {
-        key: codec.encode_json(value, hint.parameter_types.get(key, UnspecifiedType))
-        for key, value in kwargs.items()
-    }
-    return encoded_args, encoded_kwargs
-
-
 def _validate_history(init_params: object) -> None:
     if not isinstance(init_params, dict):
         msg = "Persisted history header is not an object"
-        raise SessionError(msg)
+        raise HistoryMismatchError(msg, expected="object", actual=init_params)
     header = cast("dict[str, object]", init_params)
-    if header.get("version") != _CURRENT_VERSION:
+    if header.get("version") != CURRENT_VERSION:
         found = header.get("version", "missing")
         msg = (
             f"Unsupported persisted history format {found!r}; expected "
-            f"{_CURRENT_VERSION}. Create a new history or migrate it explicitly."
+            f"{CURRENT_VERSION}. Create a new history or migrate it explicitly."
         )
-        raise SessionError(msg)
+        raise HistoryMismatchError(msg, expected=CURRENT_VERSION, actual=found)
+
+
+def _promise_create_entry(id_: str, ts: int) -> PromiseCreateEntry:
+    return {"ts": ts, "id": id_, "type": "promise.create", "source": "task"}
+
+
+def _match_pending(
+    msg: Entry, recvd_msgs: dict[str, tuple[object, object] | None]
+) -> bool:
+    """Match one pending op against the recorded entries.
+
+    On a match, validates the recorded effect identity and forgets both
+    copies so they cannot be matched again.
+
+    Returns:
+        True if ``msg`` was found in ``recvd_msgs``.
+
+    """
+    if msg["id"] not in recvd_msgs:
+        return False
+    # Membership is tested explicitly: an op with no declared effect identity
+    # records a ``None`` identity, which ``dict.get`` cannot distinguish from an
+    # absent key.
+    persisted = recvd_msgs[msg["id"]]
+    _validate_effect_identity(msg, persisted)
+    del recvd_msgs[msg["id"]]
+    return True
+
+
+def _record_effect_identity(entry: Entry, metadata: OpMetadata) -> None:
+    if metadata.effect_name is None or metadata.effect_version is None:
+        return
+    entry["effect_name"] = metadata.effect_name
+    entry["effect_version"] = metadata.effect_version
+
+
+def _effect_identity(entry: Entry) -> tuple[object, object] | None:
+    name = entry.get("effect_name")
+    version = entry.get("effect_version")
+    if name is None and version is None:
+        return None
+    return (name, version)
+
+
+def _validate_effect_identity(
+    expected: Entry, persisted: tuple[object, object] | None
+) -> None:
+    if persisted is None:
+        # Format-0 histories created before effect identities were persisted
+        # remain replayable, but any newly recorded identity is enforced.
+        return
+    requested = _effect_identity(expected)
+    if persisted != requested:
+        msg = (
+            f"effect identity mismatch: persisted {persisted!r}, "
+            f"requested {requested!r}"
+        )
+        raise HistoryMismatchError(msg, expected=persisted, actual=requested)

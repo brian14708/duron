@@ -14,6 +14,9 @@ if TYPE_CHECKING:
 
 class OpMetadata(NamedTuple):
     name: str | None = None
+    effect_name: str | None = None
+    effect_version: str | None = None
+    error_types: tuple[type[BaseException], ...] = ()
 
     def get_name(self) -> str:
         return self.name or "<unnamed>"
@@ -31,11 +34,34 @@ class StreamObserver(Protocol):
     def on_close(self, log_offset: int, error: Exception | None, /) -> None: ...
 
 
+class StreamReplayState:
+    """Count of a stream's recorded producer events a re-run must skip.
+
+    When a crash interrupts an external (host-loop) stream producer, the
+    emits (and close) it already recorded are replayed to readers on resume,
+    yet the producer itself re-runs from the start because its completion was
+    never recorded. The session counts those replayed events here so the
+    re-running producer's writer skips re-recording exactly that many of its
+    own sends (and its close), keeping stream delivery exactly-once.
+
+    Opt-in: only streaming-effect calls carry this state, and their writer is
+    only ever used by the re-running producer off the durable loop. A
+    durable-loop send must never skip, since its op is matched positionally
+    by the replay engine and skipping would shift every subsequent op id.
+    """
+
+    __slots__ = ("remaining",)
+
+    def __init__(self) -> None:
+        self.remaining = 0
+
+
 class StreamCreate(NamedTuple):
     observer: StreamObserver | None
     name: str | None
     dtype: TypeHint[Any]
     metadata: OpMetadata
+    replay_state: StreamReplayState | None = None
 
 
 class StreamEmit(NamedTuple):

@@ -3,11 +3,11 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import json
-from typing import TYPE_CHECKING
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, cast
 
-from duron import Context, Session, durable
-from duron.contrib.storage import MemoryLogStorage
-from duron.log._helper import is_entry
+import duron
+from duron.contrib.storage import MemoryStorage
 from duron.tracing import Tracer, span
 from duron.tracing._tracer import TracerState
 
@@ -15,41 +15,76 @@ if TYPE_CHECKING:
     from duron.typing import JSONValue
 
 
+@duron.effect(executor="inline")
+def read_var(check: str, value: str) -> None:
+    assert value == check
+
+
 async def test_contextvars() -> None:
     test_var: contextvars.ContextVar[str] = contextvars.ContextVar(
         "test_var", default="no_value"
     )
 
-    def u(v: str) -> None:
-        assert test_var.get() == v
-
-    @durable()
-    async def activity(ctx: Context) -> None:
-        _ = await ctx.run(u, "no_value")
+    @duron.workflow
+    async def activity(ctx: duron.WorkflowContext) -> None:
+        _ = await ctx.call(read_var, "no_value", test_var.get())
         test_var.set("value1")
-        _ = await ctx.run(u, "value1")
+        _ = await ctx.call(read_var, "value1", test_var.get())
 
-    log = MemoryLogStorage()
-    async with Session(log) as t:
-        await (await t.start(activity)).result()
+    await duron.run(activity(), MemoryStorage())
 
 
 async def test_trace() -> None:
-    @durable()
-    async def activity(_ctx: Context) -> None:
+    @duron.workflow
+    async def activity(_ctx: duron.WorkflowContext) -> None:
         with span("hello_span") as s:
             s.record(foo="foobar")
             s.set_status("OK")
 
-    log = MemoryLogStorage()
-    async with Session(log, tracer=Tracer("abc")) as t:
-        await (await t.start(activity)).result()
+    storage = MemoryStorage()
+    await duron.run(activity(), storage, tracer=Tracer("abc"))
 
     events: list[dict[str, JSONValue]] = []
-    for entry in await log.entries():
-        if is_entry(entry) and entry["type"] == "trace":
-            events.extend(entry["events"])
+    for entry in await storage.entries():
+        if entry.get("type") == "trace":
+            events.extend(entry["events"])  # type: ignore[typeddict-item]
     assert '"foobar"' in json.dumps(events)
+
+
+async def test_completed_stream_trace_is_named_and_not_cancelled() -> None:
+    @duron.effect
+    async def numbers() -> AsyncIterator[int]:
+        yield 1
+
+    @duron.workflow
+    async def activity(ctx: duron.WorkflowContext) -> None:
+        async with ctx.stream(numbers) as stream:
+            assert [value async for value in stream] == [1]
+
+    storage = MemoryStorage()
+    await duron.run(activity(), storage, tracer=Tracer("trace"))
+
+    events: list[dict[str, JSONValue]] = []
+    for entry in await storage.entries():
+        metadata = entry.get("metadata", {})
+        if trace_event := metadata.get("trace.event"):
+            events.append(cast("dict[str, JSONValue]", trace_event))
+        if entry.get("type") == "trace":
+            events.extend(entry["events"])  # type: ignore[typeddict-item]
+
+    starts = {
+        event["span_id"]: cast("str", event["name"])
+        for event in events
+        if event["type"] == "span.start"
+    }
+    ends = {
+        event["span_id"]: event["status"]
+        for event in events
+        if event["type"] == "span.end"
+    }
+    number_spans = [span_id for span_id, name in starts.items() if "numbers" in name]
+    assert number_spans
+    assert all(ends.get(span_id) == "OK" for span_id in number_spans)
 
 
 def test_tracer_state_machine_and_event_ordering() -> None:

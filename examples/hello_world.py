@@ -4,14 +4,16 @@ import asyncio
 import logging
 import random
 import sys
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import duron
-from duron.contrib.storage import FileLogStorage
+from duron.contrib.storage import FileStorage
 from duron.tracing import Tracer, setup_tracing
 
 logger = logging.getLogger(__name__)
+
+progress = duron.Output[int]("progress")
 
 
 @duron.effect
@@ -31,28 +33,29 @@ async def generate_lucky_number() -> int:
 
 
 @duron.effect
-async def count_up(curr: int, target: int) -> AsyncGenerator[int, int]:
+async def count_up(target: int) -> AsyncIterator[int]:
+    curr = 0
     await asyncio.sleep(0.5)
     while curr < target:
-        curr = yield (curr + 10)
-        logger.info("⚡ Current count: %s", curr)
+        curr += 10
+        yield curr
         await asyncio.sleep(0.05)
 
 
-@duron.durable
-async def greeting_flow(ctx: duron.Context, name: str) -> str:
+@duron.workflow
+async def greeting_flow(ctx: duron.WorkflowContext, name: str) -> str:
     message, lucky_number = await asyncio.gather(
-        ctx.run(work, name), ctx.run(generate_lucky_number)
+        ctx.call(work, name), ctx.call(generate_lucky_number)
     )
-    _ = await ctx.run(count_up, 0, lucky_number)
+    async with ctx.stream(count_up, lucky_number) as counting:
+        async for value in counting:
+            await ctx.emit(progress, value)
     return f"{message} Your lucky number is {lucky_number}."
 
 
 async def run_workflow(name: str, log_file: Path) -> str:
-    log = FileLogStorage(log_file)
-    async with duron.Session(log, tracer=Tracer("1" * 32)) as session:
-        task = await session.start(greeting_flow, name)
-        return await task.result()
+    storage = FileStorage(log_file)
+    return await duron.run(greeting_flow(name), storage, tracer=Tracer("1" * 32))
 
 
 def main() -> None:

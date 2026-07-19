@@ -7,6 +7,7 @@ nav:
   - getting-started.md
   - Reference: &references
       - reference/duron.md
+      - reference/errors.md
       - reference/log.md
       - reference/codec.md
       - reference/tracing.md

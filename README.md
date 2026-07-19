@@ -34,22 +34,16 @@ uv pip install duron
 
 import asyncio
 from pathlib import Path
-from typing import Optional, TypedDict
+
 import duron
-from duron.contrib.storage import FileLogStorage
+from duron.contrib.storage import FileStorage
 
+# -----------------------
+# Typed ports (shared by workflow and host code)
+# -----------------------
 
-class Event(TypedDict):
-    """
-    Event type for communicating workflow progress and approvals.
-
-    Fields:
-        message: Log or status message for the user.
-        approval_id: Durable future ID to request approval (None for normal logs).
-    """
-
-    message: str
-    approval_id: Optional[str]
+events = duron.Output[str]("events")
+approval = duron.Request[str, bool]("approval")
 
 
 # -----------------------
@@ -66,7 +60,7 @@ async def check_fraud(amount: float, recipient: str) -> float:
 
 
 @duron.effect
-async def execute_transfer(amount: float, recipient: str) -> str:
+async def execute_transfer(amount: float, recipient: str, *, idempotency_key: str) -> str:
     """Simulate a real transfer execution."""
     print("Executing transfer...")
     await asyncio.sleep(1)
@@ -78,46 +72,26 @@ async def execute_transfer(amount: float, recipient: str) -> str:
 # -----------------------
 
 
-@duron.durable
+@duron.workflow
 async def transfer_workflow(
-    ctx: duron.Context,
-    amount: float,
-    recipient: str,
-    events: duron.StreamWriter[Event] = duron.Provided,
+    ctx: duron.WorkflowContext, amount: float, recipient: str
 ) -> str:
-    """
-    Durable workflow to execute a transfer with fraud detection
-    and optional manager approval.
-    """
-    async with events:
-        # Log start of transfer
-        await events.send({
-            "message": f"Checking transfer: ${amount} → {recipient}",
-            "approval_id": None,
-        })
+    """Execute a transfer with fraud detection and optional manager approval."""
+    await ctx.emit(events, f"Checking transfer: ${amount} → {recipient}")
 
-        # Step 1: Fraud check
-        risk = await ctx.run(check_fraud, amount, recipient)
+    risk = await ctx.call(check_fraud, amount, recipient)
 
-        # Step 2: Approval required if high risk
-        if risk > 0.8:
-            approval_id, approval = await ctx.create_future(bool)
-            await events.send({
-                "message": "⚠️  High risk - approval required",
-                "approval_id": approval_id,
-            })
+    if risk > 0.8:
+        approved = await ctx.request(approval, f"Approve ${amount} → {recipient}?")
+        if not approved:
+            await ctx.emit(events, "❌ Transfer rejected by manager")
+            return "Transfer rejected"
 
-            if not await approval:
-                await events.send({
-                    "message": "❌ Transfer rejected by manager",
-                    "approval_id": None,
-                })
-                return "Transfer rejected"
-
-        # Step 3: Execute transfer
-        result = await ctx.run(execute_transfer, amount, recipient)
-        await events.send({"message": f"✓ {result}", "approval_id": None})
-        return result
+    result = await ctx.call(
+        execute_transfer, amount, recipient, idempotency_key=ctx.idempotency_key
+    )
+    await ctx.emit(events, f"✓ {result}")
+    return result
 
 
 # -----------------------
@@ -126,39 +100,36 @@ async def transfer_workflow(
 
 
 async def main():
-    """
-    Run the workflow locally with file-based state storage.
-    """
-    async with duron.Session(FileLogStorage(Path("transfer.jsonl"))) as session:
-        task = await session.start(transfer_workflow, 10000.0, "suspicious-account")
-        stream = await task.open_stream("events", "r")
+    """Run the workflow locally with file-based state storage."""
+    storage = FileStorage(Path("transfer.jsonl"))
 
-        async def handle_events():
-            async for event in stream:
-                # Always print message
-                print(event["message"])
+    async def handle_approval(prompt: str) -> bool:
+        decision = await asyncio.to_thread(input, f"{prompt} (y/n): ")
+        return decision.lower() == "y"
 
-                # If approval_id is present, prompt for manager decision
-                # If the future is not pending, it means it was already resolved (e.g., workflow resumed)
-                if event["approval_id"] and task.is_future_pending(
-                    event["approval_id"]
-                ):
-                    decision = await asyncio.to_thread(input, "Approve? (y/n): ")
-                    await task.complete_future(
-                        event["approval_id"], result=(decision.lower() == "y")
-                    )
+    async def show_events(entries):
+        async for _offset, event in entries:
+            print(event)
 
-        await asyncio.gather(task.result(), handle_events())
+    invocation = (
+        transfer_workflow(10000.0, "suspicious-account")
+        .output(events, show_events)
+        .serve(approval, handle_approval)
+    )
+    result = await duron.run(invocation, storage)
+    print(f"Result: {result}")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-Duron also provides `MemoryLogStorage` for tests and `SQLiteLogManager` for
-multiple named workflow logs in one SQLite database. Writable sessions hold an
-opaque fencing lease; readonly sessions may verify completed histories but cannot
-start or resume live work.
+Duron also provides `duron.contrib.storage.MemoryStorage` for tests and
+`duron.contrib.storage.SQLiteStorage` for a single-run SQLite database. Tests use the
+same invocation wiring and `duron.run` entry point. Use its direct await form for
+ordinary execution, or its async context form for imperative port coordination.
+Each storage backend holds exactly one run; `duron.run` holds an opaque fencing
+lease while it owns that run's execution.
 
 ## Next steps
 

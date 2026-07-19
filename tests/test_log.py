@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import fcntl
 import sqlite3
 import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pytest
 
-from duron.contrib.storage import FileLogStorage, MemoryLogStorage, SQLiteLogManager
+from duron.contrib.storage import FileStorage, MemoryStorage, SQLiteLogManager
 from duron.log import CorruptLogError
 
 if TYPE_CHECKING:
-    from duron.log import Entry, LogStorage
+    from duron.log import Entry, Storage
 
 
 def make_entry(id_: str) -> Entry:
@@ -31,7 +34,7 @@ def make_metadata_entry(id_: str) -> Entry:
     )
 
 
-async def impl_test_log_storage(storage: LogStorage) -> None:
+async def impl_test_log_storage(storage: Storage) -> None:
     lease = await storage.acquire_lease()
 
     for i in range(3):
@@ -49,9 +52,7 @@ async def impl_test_log_storage(storage: LogStorage) -> None:
     await storage.release_lease(lease2)
 
 
-async def impl_test_lease_contract(
-    storage: LogStorage, second_storage: LogStorage
-) -> None:
+async def impl_test_lease_contract(storage: Storage, second_storage: Storage) -> None:
     first = await storage.acquire_lease()
     second = await second_storage.acquire_lease()
 
@@ -71,23 +72,56 @@ async def impl_test_lease_contract(
 async def test_file_storage_basic() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         log_file = Path(tmpdir) / "test.log"
-        storage = FileLogStorage(log_file)
+        storage = FileStorage(log_file)
         await impl_test_log_storage(storage)
+
+
+async def test_file_storage_uses_data_file_as_lock() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_file = Path(tmpdir) / "test.log"
+        storage = FileStorage(log_file)
+
+        lease = await storage.acquire_lease()
+        assert log_file.exists()
+        assert not log_file.with_suffix(log_file.suffix + ".lock").exists()
+        await storage.release_lease(lease)
+
+
+async def test_file_storage_data_file_lock_waits_for_other_writer() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_file = Path(tmpdir) / "test.log"
+        log_file.touch()
+        storage = FileStorage(log_file)
+
+        with log_file.open("a+b") as held_lock:
+            fcntl.flock(held_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            def release_soon() -> None:
+                time.sleep(0.05)
+                fcntl.flock(held_lock, fcntl.LOCK_UN)
+
+            releaser = threading.Thread(target=release_soon)
+            releaser.start()
+            # A contending writer waits for the OS lock (last-acquirer-wins)
+            # instead of failing a valid operation with BlockingIOError.
+            token = await storage.acquire_lease()
+            releaser.join()
+        assert token
 
 
 async def test_file_storage_lease_contract_across_instances() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "test.log"
-        await impl_test_lease_contract(FileLogStorage(path), FileLogStorage(path))
+        await impl_test_lease_contract(FileStorage(path), FileStorage(path))
 
 
 async def test_memory_storage_basic() -> None:
-    storage = MemoryLogStorage()
+    storage = MemoryStorage()
     await impl_test_log_storage(storage)
 
 
 async def test_memory_storage_lease_contract() -> None:
-    storage = MemoryLogStorage()
+    storage = MemoryStorage()
     await impl_test_lease_contract(storage, storage)
 
 
@@ -177,11 +211,11 @@ async def test_sqlite_storage_multiprocess_simulation() -> None:
 @pytest.mark.parametrize("storage_kind", ["file", "memory", "sqlite"])
 async def test_storage_round_trip_preserves_metadata(storage_kind: str) -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
-        storage: LogStorage
+        storage: Storage
         if storage_kind == "file":
-            storage = FileLogStorage(Path(tmpdir) / "test.log")
+            storage = FileStorage(Path(tmpdir) / "test.log")
         elif storage_kind == "memory":
-            storage = MemoryLogStorage()
+            storage = MemoryStorage()
         else:
             manager = SQLiteLogManager(Path(tmpdir) / "test.db")
             storage = await manager.create_log("task")
@@ -203,7 +237,7 @@ async def test_file_storage_rejects_corrupt_middle_entry() -> None:
             b'{"type":"promise.create","id":"2","ts":-1,"source":"effect"}\n'
         )
         with pytest.raises(CorruptLogError) as exc_info:
-            _ = [entry async for _offset, entry in FileLogStorage(path).stream()]
+            _ = [entry async for _offset, entry in FileStorage(path).stream()]
         assert exc_info.value.offset > 0
 
 
@@ -214,7 +248,7 @@ async def test_file_storage_ignores_truncated_final_line() -> None:
             b'{"type":"promise.create","id":"1","ts":-1,"source":"effect"}\n'
             b'{"type":"promise.create"'
         )
-        entries = [entry async for _offset, entry in FileLogStorage(path).stream()]
+        entries = [entry async for _offset, entry in FileStorage(path).stream()]
         assert [entry["id"] for entry in entries] == ["1"]
 
 
@@ -248,9 +282,29 @@ async def test_sqlite_storage_rejects_invalid_schema() -> None:
 async def test_memory_storage_rejects_invalid_entry_schema(
     entry: dict[str, object], message: str
 ) -> None:
-    storage = MemoryLogStorage()
+    storage = MemoryStorage()
     lease = await storage.acquire_lease()
     invalid_entry = {"id": "bad", "ts": 1, "source": "task", **entry}
     await storage.append(lease, cast("Entry", invalid_entry))
     with pytest.raises(CorruptLogError, match=message):
         _ = [item async for _offset, item in storage.stream()]
+
+
+async def test_file_storage_append_truncates_torn_tail() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_file = Path(tmpdir) / "test.log"
+        storage = FileStorage(log_file)
+        token = await storage.acquire_lease()
+        _ = await storage.append(token, make_entry("a"))
+
+        # Simulate an interrupted append: a partial line with no newline.
+        with log_file.open("ab") as f:
+            _ = f.write(b'{"type": "promise.cre')
+
+        # The torn remnant is tolerated on read...
+        assert [e["id"] async for _, e in storage.stream()] == ["a"]
+
+        # ...and dropped by the next append instead of fusing with the new
+        # entry into one corrupt interior line that would block later resumes.
+        _ = await storage.append(token, make_entry("b"))
+        assert [e["id"] async for _, e in storage.stream()] == ["a", "b"]
