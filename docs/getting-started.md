@@ -1,343 +1,122 @@
----
-hide:
-  - toc
-  - navigation
----
+# Getting started
 
-# Getting Started
-
-Duron is a Python library that makes async workflows replayable. You can pause, resume, or rerun async functions without redoing completed steps. This guide will walk you through the core concepts and get you building your first durable workflow.
-
-## Installation
-
-Duron requires **Python 3.10 or higher**.
-
-Install via pip:
+Install Duron with `uv pip install duron` in Python 3.11 or later. Run the
+complete [README example](index.md), or from this repository:
 
 ```bash
-pip install duron
+uv run python examples/hello_world.py hello.db
 ```
 
-Or if you're using [uv](https://docs.astral.sh/uv/):
+The first invocation prints its effect's greeting. Reusing the database and run
+ID returns the committed result without performing the effect again.
 
-```bash
-uv add duron
-```
+## Define workflows and effects
 
-## Core Concepts
-
-Duron introduces two fundamental building blocks for creating replayable workflows:
-
-### 1. Durable Functions (`@duron.durable`)
-
-Durable functions are the orchestrators of your workflow. They define the control flow and coordinate multiple operations. Key characteristics:
-
-- **Always take [`Context`](reference/duron.md#duron.Context) as the first parameter** - This is your handle to run effects and create streams/signals
-- **Deterministic** - The same inputs always produce the same execution path
-- **Replayable** - When resumed, Duron replays logged results to restore state without re-executing completed steps
-- **No side effects** - All I/O must go through effects
+A workflow coordinates durable operations through `WorkflowContext`. Effects
+perform external I/O through ordinary async Python. Annotate their first
+parameter as `WorkflowContext` or `EffectContext`, and annotate arguments and
+results. Call effects with `await ctx.call(effect, ...)`.
 
 ```python
-@duron.durable
-async def my_workflow(ctx: duron.Context, arg: str) -> str:
-    # Orchestration logic here
-    result = await ctx.run(some_effect, arg)
-    return result
-```
-
-### 2. Effect Functions (`@duron.effect`)
-
-Effects wrap any code that interacts with the outside world. This includes:
-
-- API calls
-- Database queries
-- File I/O
-- Random number generation
-- Any non-deterministic operation
-
-Duron records each effect result at its deterministic operation position. During
-replay, a completed operation is not executed again. This is **not** content-based
-memoization: calling the same effect at a different workflow position creates a
-different operation.
-
-```python
-@duron.effect
-async def fetch_data(url: str) -> dict:
-    # A completed invocation at this workflow position is replayed from the log.
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url)
-        return response.json()
-```
-
-## Your First Workflow
-
-Let's build a simple greeting workflow that demonstrates the core concepts:
-
-```python
-import asyncio
-import random
-from pathlib import Path
-
 import duron
-from duron.contrib.storage import FileLogStorage
 
 
 @duron.effect
-async def work(name: str) -> str:
-    print("⚡ Preparing to greet...")
-    await asyncio.sleep(2)  # Simulate I/O
-    print("⚡ Greeting...")
+async def greet(_ctx: duron.EffectContext, name: str) -> str:
     return f"Hello, {name}!"
 
 
-@duron.effect
-async def generate_lucky_number() -> int:
-    print("⚡ Generating lucky number...")
-    await asyncio.sleep(1)  # Simulate I/O
-    return random.randint(1, 100)
+@duron.workflow(name="greetings.hello", version="0")
+async def hello(ctx: duron.WorkflowContext, name: str) -> str:
+    return await ctx.call(greet, name)
 
 
-@duron.durable
-async def greeting_flow(ctx: duron.Context, name: str) -> str:
-    # Run both effects in parallel
-    message, lucky_number = await asyncio.gather(
-        ctx.run(work, name),
-        ctx.run(generate_lucky_number)
-    )
-    return f"{message} Your lucky number is {lucky_number}."
-
-
-async def main():
-    # Create a file-based log storage
-    storage = FileLogStorage(Path("log.jsonl"))
-
-    async with duron.Session(storage) as session:
-        task = await session.start(greeting_flow, "Alice")
-        result = await task.result()
-
-    print(result)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+async def example() -> str:
+    async with duron.SQLiteScheduler("app.db", workflows=[hello]) as scheduler:
+        run = await scheduler.submit(hello, "hello-alice", "Alice")
+        return await run.result()
 ```
 
-Save this as `hello.py` and run it:
+The scheduler creates its schema, persists invocation envelopes, and starts
+execution automatically. Use `":memory:"` for transient tests. Eligible runs
+execute concurrently as asyncio tasks, without a scheduler concurrency limit.
+Idle runs waiting for inputs, durable sleeps, or input
+selections unload and release their history claims. Deliveries and deadlines
+resume them through replay. Runs with active effects remain loaded.
+The default idle grace period is 60 seconds; configure `idle_timeout` on the
+scheduler when a shorter or longer period is appropriate.
 
-```bash
-python hello.py
-```
+## Observe and cancel
 
-You'll see output like:
+`submit(workflow_or_ref, run_id, ...)` snapshots and durably accepts normalized
+arguments. Retrying the same invocation returns the same run. Reusing its ID
+with different arguments or a different reference raises
+`SubmissionConflictError`. Use a new ID for a new business operation.
 
-```
-⚡ Preparing to greet...
-⚡ Generating lucky number...
-⚡ Greeting...
-Hello, Alice! Your lucky number is 42.
-```
+`await scheduler.open(hello, "hello-alice")` observes an existing invocation
+and checks the contract. It does not start a new invocation or transfer
+ownership. Unknown IDs raise `RunNotFoundError`.
 
-## Understanding Replay
+Run handles provide `result()`, `status()`, `cancel()`, and typed `port(...)`.
+Dropping a handle or cancelling a result waiter leaves execution running.
+`cancel()` accepts an idempotent cancellation request; completion can still win
+the race. A cancelled workflow's result raises `RunCancelledError`.
 
-The magic of Duron is in its replay behavior. Run the same script again:
+Closing the scheduler stops its local execution attempts and cleans up effects.
+It does not cancel durable jobs. A later scheduler on the same database
+recovers incomplete work when started with `workflows=[hello]`. Register
+implementations through `workflows` for recovery on startup. Local submission of
+a workflow also registers its implementation; submitting a reference and opening
+a handle do not register code. Multiple schedulers cannot
+steal an unexpired
+history claim. Run IDs belong to the configured `namespace`.
 
-```bash
-python hello.py
-```
+## Interactive workflows
 
-**Notice**: No "⚡" output! Duron replayed the results from `log.jsonl` without re-executing the effects. The workflow completes instantly, but produces the **exact same result**.
-
-This is powerful for:
-
-- **Crash recovery** - If your process crashes mid-workflow, resume from the last checkpoint
-- **Development** - Test workflow logic without hitting external services repeatedly
-- **Debugging** - Reproduce exact execution paths
-- **Cost savings** - Don't re-run expensive API calls
-
-### Forcing a Fresh Run
-
-To start fresh, delete the log file:
-
-```bash
-rm log.jsonl
-python hello.py
-```
-
-Now you'll see the effects execute again (and potentially get a different lucky number).
-
-## Storage Backends
-
-Duron is storage-agnostic. It ships with three built-in options:
-
-### File Storage (Recommended for Development)
+Declare optional ports on a `PortSet`:
 
 ```python
-from pathlib import Path
-from duron.contrib.storage import FileLogStorage
+class Ports(duron.PortSet):
+    items = duron.Input[str]()
+    events = duron.Output[str]()
 
-storage = FileLogStorage(Path("logs/workflow.jsonl"))
+
+@duron.workflow(ports=Ports)
+async def process(ctx: duron.WorkflowContext) -> str:
+    item = await ctx.port(Ports.items).receive()
+    await ctx.port(Ports.events).emit(item)
+    return item
 ```
 
-Stores logs as JSON Lines in a file. Great for:
+Applications send through `run.port(Ports.items)` and read
+`run.port(Ports.events)`. Sends succeed after the current execution owner
+commits acceptance to history. Output cursors resume after reconnection.
 
-- Local development
-- Single-machine workflows
-- Debugging (logs are human-readable)
+Effects have optional ports too. Use `async with ctx.start(effect) as job`,
+interact through `job.port(...)`, and `await job`. `ctx.select(...)` chooses among
+named inputs and awaitables while preserving losing input messages.
 
-### Memory Storage (Testing Only)
+## Contracts and recovery
 
-```python
-from duron.contrib.storage import MemoryLogStorage
+`Workflow[P, T, Ports]` contains executable code; `workflow.ref` is an
+executable-free `WorkflowRef[P, T, Ports]`. Producers can declare shared
+references with `@duron.workflow_ref(name=..., version=..., ports=...)` on an
+annotated contract stub. The stub body is discarded. Workers explicitly
+register implementations; references never trigger automatic Python imports.
 
-storage = MemoryLogStorage()
-```
+Names, versions, argument and result schema identities, port directions and
+schemas, and codec identity form the contract. Unknown implementations remain
+blocked until a compatible worker is registered. Mismatches are explicit errors.
+Use `codec_id` for a configured codec's wire contract and new workflow versions
+for incompatible changes.
 
-Stores logs in memory. Use for:
+Keep workflow control flow deterministic. Use `ctx.now()`, `ctx.random()`, and
+`ctx.sleep()` for replay-safe time, randomness, and deadlines. Committed effect
+results replay; uncommitted external work can run again. Use stable application
+operation IDs to deduplicate external mutations.
 
-- Unit tests
-- Temporary workflows
-- Benchmarking
+Unsupported database schemas and declared history versions are rejected without
+migration or replacement. The current history format is version 0.
 
-**Note**: Memory storage is lost when the process exits.
-
-### SQLite Storage
-
-```python
-from pathlib import Path
-from duron.contrib.storage import SQLiteLogManager
-
-manager = SQLiteLogManager(Path("logs/workflows.db"))
-storage = await manager.create_log("workflow-instance-id")
-```
-
-SQLite stores multiple named workflow logs in one database and uses database-backed
-lease tokens. A newer lease fences out an older token. Use a stable, unique task ID
-for each persisted workflow instance.
-
-### Custom Storage
-
-Implement the `LogStorage` protocol for your own backend:
-
-```python
-from collections.abc import AsyncGenerator
-
-from duron.log import BaseEntry, Entry
-
-class MyStorage:
-    async def stream(self) -> AsyncGenerator[tuple[int, BaseEntry], None]:
-        # Yield existing entries in increasing offset order.
-        if False:
-            yield (0, {})
-
-    async def acquire_lease(self) -> bytes:
-        # Return a new opaque fencing token.
-        return b"token"
-
-    async def release_lease(self, lease: bytes) -> None:
-        # Release only if `lease` is still current.
-        ...
-
-    async def append(self, lease: bytes, entry: Entry) -> int:
-        # Atomically validate the token, append the complete entry, and return
-        # its monotonically increasing offset.
-        return 0
-```
-
-## Advanced Features
-
-### Streams
-
-Streams allow workflows to produce and consume values over time. Perfect for:
-
-- Multi-step agent interactions
-- Progress reporting
-- Event-driven workflows
-
-```python
-from duron import Provided, Stream, StreamWriter
-
-@duron.durable
-async def producer(
-    ctx: duron.Context,
-    output: StreamWriter[str] = Provided
-) -> None:
-    async with output as o:
-        for i in range(5):
-            await o.send(f"Message {i}")
-            await asyncio.sleep(1)
-
-async def main():
-    async with duron.Session(storage) as session:
-        task = await session.start(producer)
-        stream: Stream[str] = await task.open_stream("output", "r")
-
-        async for message in stream:
-            print(f"Received: {message}")
-
-        await task.result()
-```
-
-### Signals
-
-Signals enable external interruption of long-running operations:
-
-```python
-from duron import Signal, SignalInterrupt, Provided
-
-@duron.durable
-async def interruptible_task(
-    ctx: duron.Context,
-    signal: Signal[None] = Provided
-) -> str:
-    try:
-        async with signal:
-            await ctx.run(long_running_effect)
-            return "Completed"
-    except SignalInterrupt:
-        return "Interrupted by user"
-
-async def main():
-    async with duron.Session(storage) as session:
-        task = await session.start(interruptible_task)
-        signal_writer = await task.open_stream("signal", "w")
-
-        # Later... send interrupt signal
-        await signal_writer.send(None)
-
-        result = await task.result()
-        print(result)  # "Interrupted by user"
-```
-
-## Runtime Guarantees
-
-- Effects have **at-least-once external side-effect semantics**. A process can perform
-  an external action and crash before its result is durably appended. Effects that
-  mutate external systems should therefore use idempotency keys or transactions.
-- A writable session holds a storage lease. Built-in backends use opaque fencing
-  tokens. Lease acquisition is immediate and last-acquirer-wins; stale tokens cannot
-  append after reacquisition. File storage requires `fcntl` locking and is therefore
-  unavailable on platforms that cannot provide that guarantee.
-- A readonly session cannot start or resume live work. It may only verify a completed
-  persisted history and never appends entries.
-- File storage is intended for a local single-host workflow log. Memory storage is
-  process-local and non-durable. SQLite supports multiple named logs in one database.
-
-### Tracing
-
-Enable tracing to understand workflow execution:
-
-```python
-from duron.tracing import Tracer, setup_tracing
-
-async def main():
-    setup_tracing()  # Configure logging
-
-    async with duron.Session(
-        storage,
-        tracer=Tracer("session-123")
-    ) as session:
-        task = await session.start(greeting_flow, "Alice")
-        result = await task.result()
-```
-
-Traces are logged to your storage backend for analysis. Upload the jsonl to [Trace UI](https://brian14708.github.io/duron/trace-ui/) for visualization.
+See [workflow ports](guides/host-ports.md), [effect runs](guides/effect-runs.md),
+[recovery](guides/recovery.md), and [storage](reference/storage.md).

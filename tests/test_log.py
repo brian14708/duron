@@ -1,256 +1,171 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
-import tempfile
-from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from contextlib import closing
+from typing import TYPE_CHECKING
 
 import pytest
 
-from duron.contrib.storage import FileLogStorage, MemoryLogStorage, SQLiteLogManager
-from duron.log import CorruptLogError
+from duron.errors import ClaimBusyError, LeaseLostError, PostConflictError, StorageError
+from duron.storage import Event, LeaseToken, SQLiteStore
 
 if TYPE_CHECKING:
-    from duron.log import Entry, LogStorage
+    from collections.abc import AsyncIterator
+    from pathlib import Path
+
+    from duron.storage import EventStore
 
 
-def make_entry(id_: str) -> Entry:
-    return {"type": "promise.create", "id": id_, "ts": -1, "source": "effect"}
+@pytest.fixture
+async def stores(tmp_path: Path) -> AsyncIterator[tuple[EventStore, EventStore]]:
+    path = tmp_path / "history.db"
+    async with SQLiteStore(path) as first, SQLiteStore(path) as second:
+        yield first, second
 
 
-def make_metadata_entry(id_: str) -> Entry:
-    return cast(
-        "Entry",
-        {
-            "type": "promise.create",
-            "id": id_,
-            "ts": -1,
-            "source": "effect",
-            "metadata": {"trace.id": "trace-1", "nested": {"value": 3}},
-        },
+async def test_claim_retries_expiry_and_fencing(
+    stores: tuple[EventStore, EventStore],
+) -> None:
+    first, second = stores
+    old = await first.claim("a", "old", ttl=0.03)
+    assert await second.claim("a", "old") == old
+    with pytest.raises(ClaimBusyError):
+        await second.claim("a", "new")
+    await first.append("a", old, [Event("before", b"before")], batch_id="before")
+    await asyncio.sleep(0.04)
+    with pytest.raises(LeaseLostError):
+        await first.renew("a", old)
+    current = await second.claim("a", "new")
+    with pytest.raises(LeaseLostError):
+        await first.claim("a", "old")
+    other = await first.claim("b", "other")
+    for invalid in (old, other, LeaseToken(b"wrong")):
+        with pytest.raises(LeaseLostError):
+            await first.append("a", invalid, [], batch_id="invalid")
+        await first.release("a", invalid)
+    await second.renew("a", current)
+    await second.append("a", current, [Event("after", b"after")], batch_id="after")
+    await first.append("b", other, [Event("before", b"independent")], batch_id="before")
+    assert [record.payload for _, record in await first.read("a")] == [
+        b"before",
+        b"after",
+    ]
+    assert [record.payload for _, record in await second.read("b")] == [b"independent"]
+    await second.release("a", current)
+    await second.release("a", current)
+    with pytest.raises(LeaseLostError):
+        await second.claim("a", "new")
+    with pytest.raises(LeaseLostError):
+        await second.append("a", current, [], batch_id="after-release")
+
+
+async def test_uncertain_append_retries_and_offset_resume(
+    stores: tuple[EventStore, EventStore],
+) -> None:
+    store, reader = stores
+    lease = await store.claim("run", "owner")
+    records = [
+        Event("binary", b"\x00\xffnot JSON", "events"),
+        Event("empty", b""),
+        Event("json", b'{"opaque": true}', "events"),
+    ]
+    offsets = list(await store.append("run", lease, records[:1], batch_id="first"))
+    assert (
+        list(await reader.append("run", lease, records[:1], batch_id="first"))
+        == offsets
+    )
+    with pytest.raises(PostConflictError):
+        await store.append("run", lease, records[1:], batch_id="first")
+    gap = await store.claim("other", "owner")
+    await store.append("other", gap, [Event("gap", b"gap")], batch_id="gap")
+    offsets.extend(await store.append("run", lease, records[1:], batch_id="second"))
+    assert list(await reader.read("run")) == list(zip(offsets, records, strict=True))
+    assert list(await reader.read("run", after=offsets[0], limit=1)) == [
+        (offsets[1], records[1])
+    ]
+    assert list(await reader.read("run", after=offsets[0], stream_id="events")) == [
+        (offsets[2], records[2])
+    ]
+    assert list(await reader.read("missing")) == []
+    await store.release("run", lease)
+    next_owner = await reader.claim("run", "next-owner")
+    assert (
+        list(await reader.append("run", next_owner, records[:1], batch_id="first"))
+        == offsets[:1]
     )
 
 
-async def impl_test_log_storage(storage: LogStorage) -> None:
-    lease = await storage.acquire_lease()
-
-    for i in range(3):
-        _ = await storage.append(lease, make_entry(str(i)))
-
-    lease2 = await storage.acquire_lease()
-    _ = await storage.append(lease2, make_entry("4"))
-    with pytest.raises(Exception, match="Invalid lease token"):
-        _ = await storage.append(lease, make_entry("5"))
-
-    entries: list[str] = []
-    async for _o, entry_data in storage.stream():
-        entries.append(entry_data["id"])
-    assert len(entries) == 4
-    await storage.release_lease(lease2)
-
-
-async def impl_test_lease_contract(
-    storage: LogStorage, second_storage: LogStorage
+async def test_duplicate_ids_reject_the_entire_batch(
+    stores: tuple[EventStore, EventStore],
 ) -> None:
-    first = await storage.acquire_lease()
-    second = await second_storage.acquire_lease()
-
-    assert first != second
-    with pytest.raises(ValueError, match="Invalid lease token"):
-        await storage.append(first, make_entry("stale"))
-
-    await storage.release_lease(first)
-    await second_storage.append(second, make_entry("current"))
-    await second_storage.release_lease(second)
-    await second_storage.release_lease(second)
-
-    with pytest.raises(ValueError, match="Invalid lease token"):
-        await second_storage.append(second, make_entry("released"))
+    store, reader = stores
+    lease = await store.claim("run", "owner")
+    existing = Event("existing", b"original")
+    await store.append("run", lease, [existing], batch_id="original")
+    for index, batch in enumerate((
+        [Event("new", b"new"), Event("existing", b"replacement")],
+        [Event("duplicate", b"first"), Event("duplicate", b"second")],
+    )):
+        with pytest.raises(StorageError):
+            await store.append("run", lease, batch, batch_id=f"rejected-{index}")
+        assert [record for _, record in await reader.read("run")] == [existing]
+    await store.append("run", lease, [Event("new", b"accepted")], batch_id="accepted")
 
 
-async def test_file_storage_basic() -> None:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        log_file = Path(tmpdir) / "test.log"
-        storage = FileLogStorage(log_file)
-        await impl_test_log_storage(storage)
-
-
-async def test_file_storage_lease_contract_across_instances() -> None:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        path = Path(tmpdir) / "test.log"
-        await impl_test_lease_contract(FileLogStorage(path), FileLogStorage(path))
-
-
-async def test_memory_storage_basic() -> None:
-    storage = MemoryLogStorage()
-    await impl_test_log_storage(storage)
-
-
-async def test_memory_storage_lease_contract() -> None:
-    storage = MemoryLogStorage()
-    await impl_test_lease_contract(storage, storage)
-
-
-async def test_sqlite_storage_basic() -> None:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / "test.db"
-        manager = SQLiteLogManager(db_path)
-        storage = await manager.create_log("task-1")
-        await impl_test_log_storage(storage)
-
-
-async def test_sqlite_storage_lease_contract_across_instances() -> None:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        path = Path(tmpdir) / "test.db"
-        first = await SQLiteLogManager(path).create_log("task")
-        second = await SQLiteLogManager(path).create_log("task")
-        await impl_test_lease_contract(first, second)
-
-
-async def test_sqlite_storage_multiplex() -> None:
-    """Test that multiple tasks can have separate logs in the same database."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / "test.db"
-        manager = SQLiteLogManager(db_path)
-
-        # Create logs for two different tasks
-        storage1 = await manager.create_log("task-1")
-        storage2 = await manager.create_log("task-2")
-
-        # Write entries to each log
-        lease1 = await storage1.acquire_lease()
-        lease2 = await storage2.acquire_lease()
-
-        await storage1.append(lease1, make_entry("task1-entry1"))
-        await storage1.append(lease1, make_entry("task1-entry2"))
-        await storage2.append(lease2, make_entry("task2-entry1"))
-        await storage2.append(lease2, make_entry("task2-entry2"))
-        await storage2.append(lease2, make_entry("task2-entry3"))
-
-        # Verify each task has its own entries
-        entries1: list[str] = []
-        async for _o, entry_data in storage1.stream():
-            entries1.append(entry_data["id"])
-        assert entries1 == ["task1-entry1", "task1-entry2"]
-
-        entries2: list[str] = []
-        async for _o, entry_data in storage2.stream():
-            entries2.append(entry_data["id"])
-        assert entries2 == ["task2-entry1", "task2-entry2", "task2-entry3"]
-
-
-async def test_sqlite_storage_multiprocess_simulation() -> None:
-    """Test lease behavior with multiple storage instances (simulating processes)."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / "test.db"
-
-        # Create first manager and storage (simulating process 1)
-        manager1 = SQLiteLogManager(db_path)
-        storage1 = await manager1.create_log("shared-task")
-        lease1 = await storage1.acquire_lease()
-        await storage1.append(lease1, make_entry("from-process-1"))
-
-        # Create second manager and storage (simulating process 2)
-        manager2 = SQLiteLogManager(db_path)
-        storage2 = await manager2.create_log("shared-task")
-
-        # Process 2 force-acquires the lease
-        lease2 = await storage2.acquire_lease()
-        await storage2.append(lease2, make_entry("from-process-2"))
-
-        # Process 1's lease is now invalid
-        with pytest.raises(ValueError, match="Invalid lease token"):
-            await storage1.append(lease1, make_entry("should-fail"))
-
-        # Both processes can read all entries
-        entries1: list[str] = []
-        async for _o, entry_data in storage1.stream():
-            entries1.append(entry_data["id"])
-        assert entries1 == ["from-process-1", "from-process-2"]
-
-        entries2: list[str] = []
-        async for _o, entry_data in storage2.stream():
-            entries2.append(entry_data["id"])
-        assert entries2 == ["from-process-1", "from-process-2"]
-
-
-@pytest.mark.parametrize("storage_kind", ["file", "memory", "sqlite"])
-async def test_storage_round_trip_preserves_metadata(storage_kind: str) -> None:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        storage: LogStorage
-        if storage_kind == "file":
-            storage = FileLogStorage(Path(tmpdir) / "test.log")
-        elif storage_kind == "memory":
-            storage = MemoryLogStorage()
-        else:
-            manager = SQLiteLogManager(Path(tmpdir) / "test.db")
-            storage = await manager.create_log("task")
-
-        lease = await storage.acquire_lease()
-        expected = make_metadata_entry("metadata")
-        await storage.append(lease, expected)
-        entries = [entry async for _offset, entry in storage.stream()]
-        assert entries == [expected]
-        await storage.release_lease(lease)
-
-
-async def test_file_storage_rejects_corrupt_middle_entry() -> None:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        path = Path(tmpdir) / "test.log"
-        path.write_bytes(
-            b'{"type":"promise.create","id":"1","ts":-1,"source":"effect"}\n'
-            b"not-json\n"
-            b'{"type":"promise.create","id":"2","ts":-1,"source":"effect"}\n'
-        )
-        with pytest.raises(CorruptLogError) as exc_info:
-            _ = [entry async for _offset, entry in FileLogStorage(path).stream()]
-        assert exc_info.value.offset > 0
-
-
-async def test_file_storage_ignores_truncated_final_line() -> None:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        path = Path(tmpdir) / "test.log"
-        path.write_bytes(
-            b'{"type":"promise.create","id":"1","ts":-1,"source":"effect"}\n'
-            b'{"type":"promise.create"'
-        )
-        entries = [entry async for _offset, entry in FileLogStorage(path).stream()]
-        assert [entry["id"] for entry in entries] == ["1"]
-
-
-async def test_sqlite_storage_rejects_invalid_schema() -> None:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        path = Path(tmpdir) / "test.db"
-        manager = SQLiteLogManager(path)
-        storage = await manager.create_log("task")
-        conn = sqlite3.connect(path)
-        try:
-            conn.execute(
-                "INSERT INTO log_entries (task_id, id, data) VALUES (?, ?, jsonb(?))",
-                ("task", "broken", b'{"id":"broken"}'),
+async def test_concurrent_batches_remain_contiguous(
+    stores: tuple[EventStore, EventStore],
+) -> None:
+    store, reader = stores
+    lease = await store.claim("run", "owner")
+    batches = await asyncio.gather(
+        *(
+            store.append(
+                "run",
+                lease,
+                [Event(f"{index}-a", b"a"), Event(f"{index}-b", b"b")],
+                batch_id=f"batch-{index}",
             )
-            conn.commit()
-        finally:
-            conn.close()
+            for index in range(8)
+        )
+    )
+    rows = list(await reader.read("run"))
+    assert len(rows) == 16
+    assert [offset for offset, _ in rows] == sorted(
+        offset for batch in batches for offset in batch
+    )
+    for index in range(0, len(rows), 2):
+        assert rows[index][1].id.removesuffix("-a") == rows[index + 1][
+            1
+        ].id.removesuffix("-b")
 
-        with pytest.raises(CorruptLogError, match="invalid 'ts'"):
-            _ = [entry async for _offset, entry in storage.stream()]
 
-
-@pytest.mark.parametrize(
-    ("entry", "message"),
-    [
-        ({"type": "promise.complete"}, "missing 'promise_id'"),
-        ({"type": "stream.emit", "stream_id": "s"}, "missing 'value'"),
-        ({"type": "trace", "events": {}}, "trace events must be a list"),
-    ],
-)
-async def test_memory_storage_rejects_invalid_entry_schema(
-    entry: dict[str, object], message: str
+async def test_sqlite_reopen_preserves_claims_and_batch_receipts(
+    tmp_path: Path,
 ) -> None:
-    storage = MemoryLogStorage()
-    lease = await storage.acquire_lease()
-    invalid_entry = {"id": "bad", "ts": 1, "source": "task", **entry}
-    await storage.append(lease, cast("Entry", invalid_entry))
-    with pytest.raises(CorruptLogError, match=message):
-        _ = [item async for _offset, item in storage.stream()]
+    path = tmp_path / "history.db"
+    first = SQLiteStore(path)
+    lease = await first.claim("run", "owner")
+    record = Event("saved", b"\xffpersisted")
+    offsets = list(await first.append("run", lease, [record], batch_id="saved"))
+    await first.close()
+    async with SQLiteStore(path) as reopened:
+        assert await reopened.claim("run", "owner") == lease
+        with pytest.raises(ClaimBusyError):
+            await reopened.claim("run", "second")
+        assert (
+            list(await reopened.append("run", lease, [record], batch_id="saved"))
+            == offsets
+        )
+        assert list(await reopened.read("run")) == [(offsets[0], record)]
+        await reopened.release("run", lease)
+
+
+async def test_sqlite_rejects_unsupported_schema(tmp_path: Path) -> None:
+    path = tmp_path / "old.db"
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("CREATE TABLE leases (run_id TEXT PRIMARY KEY, token BLOB)")
+        connection.commit()
+    async with SQLiteStore(path) as store:
+        with pytest.raises(StorageError, match="unsupported SQLite schema version"):
+            await store.claim("run", "owner")

@@ -1,4 +1,4 @@
-# type: ignore  # noqa: PGH003
+# type: ignore  # ruff: ignore[blanket-type-ignore]
 # pyright: basic, reportMissingImports=false
 
 from __future__ import annotations
@@ -7,7 +7,7 @@ import nox
 
 nox.options.default_venv_backend = "uv"
 
-ALL_PYTHON = ["3.14", "3.13", "3.12", "3.11", "3.10"]
+ALL_PYTHON = ["3.14", "3.13", "3.12", "3.11"]
 
 
 def install_deps(s: nox.Session, groups: list[str]) -> None:
@@ -28,6 +28,7 @@ def check(s: nox.Session) -> None:
     _ = s.run("pytest", "--lf", "-x", "-n", "2")
     _ = s.run("mypy")
     _ = s.run("basedpyright", "--venvpath", s.virtualenv.location)
+    _ = s.run("pyrefly", "check")
 
 
 @nox.session(python=ALL_PYTHON)
@@ -38,9 +39,10 @@ def test(s: nox.Session) -> None:
 
 @nox.session()
 def type_check(s: nox.Session) -> None:
-    install_deps(s, ["typing", "examples"])
+    install_deps(s, ["typing"])
     _ = s.run("mypy", ".")
     _ = s.run("basedpyright", "--venvpath", s.virtualenv.location, ".")
+    _ = s.run("pyrefly", "check")
 
 
 @nox.session
