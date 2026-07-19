@@ -23,6 +23,7 @@ export interface Span {
   incomplete?: boolean; // True if span only has start event, no end event
   status?: "OK" | "ERROR";
   statusMessage?: string;
+  kind?: string; // Originating Duron event kind, e.g. "promise.create", "stream.create", "barrier"
 }
 
 // internal representation of a trace event from the log
@@ -38,6 +39,7 @@ interface TraceEvent {
   kind?: string;
   status?: "OK" | "ERROR";
   status_message?: string;
+  duronType?: string; // Top-level log type of the originating event, e.g. "promise.create"
 }
 
 export interface TraceFile {
@@ -92,6 +94,7 @@ function isRawTraceEvent(value: unknown): value is RawTraceEvent {
 function rawEventToTraceEvent(
   event: RawTraceEvent,
   traceId: string,
+  duronType?: string,
 ): TraceEvent {
   return {
     type: event.type,
@@ -108,6 +111,7 @@ function rawEventToTraceEvent(
     kind: event.kind,
     status: event.status,
     status_message: event.status_message,
+    duronType,
   };
 }
 
@@ -146,7 +150,7 @@ export function parseTraceLog(filename: string, content: string): TraceFile {
         const events = parsed["events"];
         for (const event of events) {
           if (isRawTraceEvent(event)) {
-            result.push(rawEventToTraceEvent(event, traceId));
+            result.push(rawEventToTraceEvent(event, traceId, parsed.type));
           }
         }
         continue;
@@ -158,7 +162,7 @@ export function parseTraceLog(filename: string, content: string): TraceFile {
         if (!isRawTraceEvent(rawEvent)) {
           continue;
         }
-        const event = rawEventToTraceEvent(rawEvent, traceId);
+        const event = rawEventToTraceEvent(rawEvent, traceId, parsed.type);
         event.attributes = event.attributes || {};
         for (const key of Object.keys(parsed)) {
           if (
@@ -210,6 +214,7 @@ export function extractSpansFromEntries(entries: TraceEvent[]): Span[] {
       }>;
       status?: "OK" | "ERROR";
       statusMessage?: string;
+      kind?: string;
     }
   >();
 
@@ -244,6 +249,7 @@ export function extractSpansFromEntries(entries: TraceEvent[]): Span[] {
       span.parentId = event.parent_span_id;
       span.attributes = event.attributes;
       span.links = event.links;
+      span.kind = event.duronType;
     } else if (event.type === "span.end") {
       span.endTime = event.ts;
       // Merge attributes from span.end event
@@ -309,6 +315,7 @@ export function extractSpansFromEntries(entries: TraceEvent[]): Span[] {
       events: convertedEvents.length > 0 ? convertedEvents : undefined,
       status: spanData.status,
       statusMessage: spanData.statusMessage,
+      kind: spanData.kind,
     };
 
     // Add incomplete flag if needed

@@ -1,23 +1,79 @@
-import { FileText } from "lucide-react";
-import { useCallback, useState } from "react";
+import { CircleAlert, FileDown, type LucideIcon, Signal } from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
 
 import { FileUpload } from "@/components/file-upload";
 import { ModeToggle } from "@/components/mode-toggle";
 import { TraceView } from "@/components/trace-view";
-import { type TraceFile, parseTraceLog } from "@/lib/trace";
+import { formatDuration } from "@/components/trace-view/span-utils";
+import {
+  type TraceFile,
+  extractSpansFromEntries,
+  parseTraceLog,
+} from "@/lib/trace";
+
+function useTraceStats(file: TraceFile | null) {
+  return useMemo(() => {
+    if (!file) return null;
+    const spans = extractSpansFromEntries(file.entries);
+    if (spans.length === 0) {
+      return { spans: 0, entries: file.entries.length, duration: 0, errors: 0 };
+    }
+    const min = Math.min(...spans.map((s) => s.startTime));
+    const max = Math.max(...spans.map((s) => s.endTime));
+    return {
+      spans: spans.length,
+      entries: file.entries.length,
+      duration: max - min,
+      errors: spans.filter((s) => s.status === "ERROR").length,
+    };
+  }, [file]);
+}
+
+function Stat({
+  label,
+  value,
+  tone = "default",
+  icon: Icon,
+}: {
+  label: string;
+  value: string;
+  tone?: "default" | "error";
+  icon?: LucideIcon;
+}) {
+  const active = tone === "error" && value !== "0";
+  return (
+    <div className="flex flex-col leading-none">
+      <span className="text-muted-foreground font-mono text-[9px] tracking-[0.18em] uppercase">
+        {label}
+      </span>
+      <span
+        className={`mt-1 flex items-center gap-1.5 font-mono text-sm font-semibold tabular-nums ${
+          active ? "text-kind-error" : "text-foreground"
+        }`}
+      >
+        {Icon && (
+          <Icon
+            className={`h-3.5 w-3.5 ${active ? "text-kind-error" : "text-muted-foreground/50"}`}
+            aria-hidden
+          />
+        )}
+        {value}
+      </span>
+    </div>
+  );
+}
 
 function App() {
   const [file, setFile] = useState<TraceFile | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const stats = useTraceStats(file);
 
   const handleFileLoaded = useCallback((loadedFile: TraceFile) => {
     setFile(loadedFile);
     setIsDragging(false);
   }, []);
 
-  const handleClearFile = useCallback(() => {
-    setFile(null);
-  }, []);
+  const handleClearFile = useCallback(() => setFile(null), []);
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -27,26 +83,21 @@ function App() {
 
       const droppedFile = e.dataTransfer.files[0];
       if (!droppedFile) return;
-
-      // Only handle JSONL files
       if (!droppedFile.name.endsWith(".jsonl")) {
         console.error("Only .jsonl files are supported");
         return;
       }
 
       const reader = new FileReader();
-      reader.onload = (e) => {
+      reader.onload = (ev) => {
         try {
-          const content = e.target?.result as string;
-          const traceFile = parseTraceLog(droppedFile.name, content);
-          handleFileLoaded(traceFile);
+          const content = ev.target?.result as string;
+          handleFileLoaded(parseTraceLog(droppedFile.name, content));
         } catch (err) {
           console.error("Failed to parse trace file:", err);
         }
       };
-      reader.onerror = () => {
-        console.error("Failed to read file");
-      };
+      reader.onerror = () => console.error("Failed to read file");
       reader.readAsText(droppedFile);
     },
     [handleFileLoaded],
@@ -61,81 +112,89 @@ function App() {
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    // Only set dragging to false if we're leaving the main container
-    if (e.currentTarget === e.target) {
-      setIsDragging(false);
-    }
+    if (e.currentTarget === e.target) setIsDragging(false);
   }, []);
 
   return (
     <div
-      className="relative flex h-screen flex-col bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900"
+      className="instrument-backdrop relative flex h-screen flex-col overflow-hidden"
       onDrop={handleDrop}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
     >
-      {/* Drag Overlay */}
+      {/* Drag overlay */}
       {isDragging && (
-        <div className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center bg-blue-500/10 backdrop-blur-sm">
-          <div className="rounded-lg border-2 border-dashed border-blue-500 bg-white/90 px-12 py-8 text-center shadow-lg dark:bg-slate-900/90">
-            <FileText className="mx-auto mb-4 h-16 w-16 text-blue-500" />
-            <p className="text-xl font-semibold text-slate-900 dark:text-slate-50">
-              Drop trace file to load
+        <div className="bg-primary/10 pointer-events-none absolute inset-0 z-50 flex items-center justify-center backdrop-blur-sm">
+          <div className="border-primary bg-card/90 rounded-xl border-2 border-dashed px-14 py-10 text-center shadow-2xl">
+            <FileDown className="text-primary mx-auto mb-4 h-14 w-14" />
+            <p className="text-foreground text-lg font-semibold">
+              Drop trace to load
             </p>
-            <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">
-              .jsonl files only
+            <p className="text-muted-foreground mt-1 font-mono text-xs">
+              .jsonl signal logs only
             </p>
           </div>
         </div>
       )}
 
-      {/* Header */}
-      <div className="flex-shrink-0 border-b border-slate-200 dark:border-slate-800">
-        <div className="px-4 py-4">
-          <div className="flex min-h-[40px] items-center justify-between gap-4">
-            <div className="flex items-center gap-4">
-              <h1
-                className={`text-xl font-semibold text-slate-900 dark:text-slate-50 ${
-                  file ? "cursor-pointer" : ""
-                }`}
-                onClick={file ? handleClearFile : undefined}
-              >
-                🌀 Duron
-              </h1>
-              {file && (
-                <>
-                  <div className="h-6 w-px bg-slate-300 dark:bg-slate-700" />
-                  <div className="flex items-center gap-2">
-                    <FileText className="h-4 w-4 text-blue-500" />
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className="font-medium text-slate-900 dark:text-slate-50">
-                        {file.name}
-                      </span>
-                      <span className="text-slate-500 dark:text-slate-400">
-                        {file.entries.length} entries
-                      </span>
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              <ModeToggle />
-            </div>
+      {/* Instrument top bar */}
+      <header className="border-border bg-surface/60 relative z-10 flex-shrink-0 border-b backdrop-blur">
+        <div className="flex min-h-[52px] items-center justify-between gap-4 px-4 py-2">
+          <div className="flex items-center gap-4">
+            <button
+              type="button"
+              onClick={file ? handleClearFile : undefined}
+              className={`flex items-center gap-2 ${file ? "cursor-pointer" : "cursor-default"}`}
+            >
+              <span className="text-lg leading-none" aria-hidden>
+                🌀
+              </span>
+              <span className="text-foreground font-mono text-sm font-bold tracking-[0.16em] uppercase">
+                Duron
+              </span>
+            </button>
+
+            {file && (
+              <>
+                <div className="bg-border h-7 w-px" />
+                <div className="flex items-center gap-2">
+                  <Signal className="text-primary h-3.5 w-3.5" aria-hidden />
+                  <span className="text-foreground font-mono text-xs">
+                    {file.name}
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="flex items-center gap-5">
+            {stats && (
+              <div className="hidden items-center gap-5 sm:flex">
+                <Stat label="Spans" value={String(stats.spans)} />
+                <Stat label="Events" value={String(stats.entries)} />
+                <Stat label="Elapsed" value={formatDuration(stats.duration)} />
+                <Stat
+                  label="Errors"
+                  value={String(stats.errors)}
+                  tone="error"
+                  icon={CircleAlert}
+                />
+              </div>
+            )}
+            <ModeToggle />
           </div>
         </div>
-      </div>
+      </header>
 
-      {/* Main Content */}
+      {/* Body */}
       {!file ? (
-        <div className="flex flex-1 items-center justify-center overflow-auto p-4">
-          <div className="w-full max-w-2xl space-y-6">
-            {/* File Upload */}
-            <FileUpload onFileLoaded={handleFileLoaded} />
-          </div>
+        <div className="relative z-10 flex flex-1 items-center justify-center overflow-auto p-4">
+          <FileUpload onFileLoaded={handleFileLoaded} />
         </div>
       ) : (
-        <TraceView file={file} />
+        <div className="relative z-10 flex flex-1 overflow-hidden">
+          <TraceView file={file} />
+        </div>
       )}
     </div>
   );

@@ -118,6 +118,28 @@ describe("trace transformation", () => {
     );
   });
 
+  it("captures the originating Duron event kind on each span", () => {
+    const file = parseTraceLog(
+      "trace.jsonl",
+      [
+        entry(
+          "trace",
+          { type: "span.start", span_id: "p", ts: 1_000_000, name: "call" },
+          { type: "promise.create" },
+        ),
+        entry(
+          "trace",
+          { type: "span.start", span_id: "s", ts: 1_000_000, name: "out" },
+          { type: "stream.create" },
+        ),
+      ].join("\n"),
+    );
+    const spans = extractSpansFromEntries(file.entries);
+
+    expect(spans.find((span) => span.id === "p")?.kind).toBe("promise.create");
+    expect(spans.find((span) => span.id === "s")?.kind).toBe("stream.create");
+  });
+
   it("merges duplicate span records and preserves cross-trace links", () => {
     const content = [
       entry("root", {

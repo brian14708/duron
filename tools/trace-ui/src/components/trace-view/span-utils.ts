@@ -1,128 +1,123 @@
+import {
+  Circle,
+  CircleCheck,
+  CircleDashed,
+  GitMerge,
+  type LucideIcon,
+  TriangleAlert,
+  Waves,
+  Workflow,
+  Wrench,
+} from "lucide-react";
+
 import type { Span } from "@/lib/trace";
 
-// Color mapping for different span types
-// Soft pastel palette for visual comfort
-export const getSpanColor = (span: Span): string => {
-  // Error status takes priority over everything else
-  if (span.status === "ERROR") {
-    const errorBaseColor = "bg-red-200 dark:bg-red-200";
-    return errorBaseColor;
-  }
+export type SpanKind =
+  | "workflow"
+  | "promise"
+  | "completion"
+  | "stream"
+  | "barrier"
+  | "tool"
+  | "error"
+  | "default";
 
-  const type = span.attributes?.type as string | undefined;
+export interface KindMeta {
+  key: SpanKind;
+  label: string;
+  icon: LucideIcon;
+  /** Base Tailwind color name mapped from the `--color-kind-*` theme tokens. */
+  color: `kind-${SpanKind}`;
+}
 
-  let baseColor: string;
-  let gradientFrom: string;
-
-  switch (type) {
-    case "workflow":
-      baseColor = "bg-violet-300 dark:bg-violet-400";
-      gradientFrom = "from-violet-300 dark:from-violet-400";
-      break;
-    case "http":
-      baseColor = "bg-blue-300 dark:bg-blue-400";
-      gradientFrom = "from-blue-300 dark:from-blue-400";
-      break;
-    case "database":
-      baseColor = "bg-emerald-300 dark:bg-emerald-400";
-      gradientFrom = "from-emerald-300 dark:from-emerald-400";
-      break;
-    case "ml":
-      baseColor = "bg-fuchsia-300 dark:bg-fuchsia-400";
-      gradientFrom = "from-fuchsia-300 dark:from-fuchsia-400";
-      break;
-    case "cache":
-      baseColor = "bg-sky-300 dark:bg-sky-400";
-      gradientFrom = "from-sky-300 dark:from-sky-400";
-      break;
-    case "notification":
-      baseColor = "bg-amber-300 dark:bg-amber-400";
-      gradientFrom = "from-amber-300 dark:from-amber-400";
-      break;
-    case "log":
-      baseColor = "bg-gray-300 dark:bg-gray-400";
-      gradientFrom = "from-gray-300 dark:from-gray-400";
-      break;
-    case "metrics":
-      baseColor = "bg-teal-300 dark:bg-teal-400";
-      gradientFrom = "from-teal-300 dark:from-teal-400";
-      break;
-    case "analytics":
-      baseColor = "bg-indigo-300 dark:bg-indigo-400";
-      gradientFrom = "from-indigo-300 dark:from-indigo-400";
-      break;
-    case "auth":
-      baseColor = "bg-rose-300 dark:bg-rose-400";
-      gradientFrom = "from-rose-300 dark:from-rose-400";
-      break;
-    case "validation":
-      baseColor = "bg-cyan-300 dark:bg-cyan-400";
-      gradientFrom = "from-cyan-300 dark:from-cyan-400";
-      break;
-    case "computation":
-      baseColor = "bg-purple-300 dark:bg-purple-400";
-      gradientFrom = "from-purple-300 dark:from-purple-400";
-      break;
-    case "event":
-      baseColor = "bg-lime-300 dark:bg-lime-400";
-      gradientFrom = "from-lime-300 dark:from-lime-400";
-      break;
-    case "wait":
-      baseColor = "bg-orange-300 dark:bg-orange-400";
-      gradientFrom = "from-orange-300 dark:from-orange-400";
-      break;
-    default:
-      baseColor = "bg-slate-300 dark:bg-slate-400";
-      gradientFrom = "from-slate-300 dark:from-slate-400";
-  }
-
-  // Add gradient for incomplete spans
-  if (span.incomplete) {
-    return `bg-gradient-to-r ${gradientFrom} to-transparent`;
-  }
-
-  return baseColor;
+const KIND_META: Record<SpanKind, KindMeta> = {
+  workflow: {
+    key: "workflow",
+    label: "Workflow",
+    icon: Workflow,
+    color: "kind-workflow",
+  },
+  promise: {
+    key: "promise",
+    label: "Promise",
+    icon: CircleDashed,
+    color: "kind-promise",
+  },
+  completion: {
+    key: "completion",
+    label: "Await",
+    icon: CircleCheck,
+    color: "kind-completion",
+  },
+  stream: { key: "stream", label: "Stream", icon: Waves, color: "kind-stream" },
+  barrier: {
+    key: "barrier",
+    label: "Barrier",
+    icon: GitMerge,
+    color: "kind-barrier",
+  },
+  tool: { key: "tool", label: "Tool", icon: Wrench, color: "kind-tool" },
+  error: {
+    key: "error",
+    label: "Error",
+    icon: TriangleAlert,
+    color: "kind-error",
+  },
+  default: {
+    key: "default",
+    label: "Span",
+    icon: Circle,
+    color: "kind-default",
+  },
 };
 
-// Icon component for span types
-export const getSpanIcon = (span: Span): string => {
-  const type = span.attributes?.type as string | undefined;
+/**
+ * Classify a span into a Duron-native kind from its originating event type and
+ * name. Real traces only carry `promise.create`, `stream.create`, `barrier`,
+ * etc. — so we lean on those plus a few well-known span names the runtime emits.
+ */
+export const getSpanKind = (span: Span): SpanKind => {
+  if (span.status === "ERROR") return "error";
 
-  switch (type) {
-    case "workflow":
-      return "⚙️";
-    case "http":
-      return "🌐";
-    case "database":
-      return "💾";
-    case "ml":
-      return "🤖";
-    case "cache":
-      return "📦";
-    case "notification":
-      return "📧";
-    case "log":
-      return "📝";
-    case "analytics":
-      return "📊";
-    case "auth":
-      return "🔒";
-    case "validation":
-      return "✓";
-    case "computation":
-      return "🔢";
-    case "event":
-      return "⚡";
-    case "wait":
-      return "⏳";
-    default:
-      return "◆";
+  const kind = span.kind ?? "";
+  const name = span.name ?? "";
+
+  if (kind.startsWith("stream")) return "stream";
+  if (kind.startsWith("barrier")) return "barrier";
+
+  if (kind.startsWith("promise")) {
+    if (name === "Invoke" || name === "prelude") return "workflow";
+    if (name === "call_tool" || name.startsWith("call_")) return "tool";
+    if (name === "_completion") return "completion";
+    return "promise";
   }
+
+  // Fall back to name heuristics when the kind is absent.
+  if (name === "Invoke" || name === "prelude") return "workflow";
+  if (name === "_completion") return "completion";
+  return "default";
 };
 
-// Format duration for display
+export const getSpanKindMeta = (span: Span): KindMeta =>
+  KIND_META[getSpanKind(span)];
+
+export const KIND_LEGEND: KindMeta[] = [
+  KIND_META.workflow,
+  KIND_META.promise,
+  KIND_META.completion,
+  KIND_META.tool,
+  KIND_META.stream,
+  KIND_META.barrier,
+  KIND_META.error,
+];
+
+// Format duration for display.
 export const formatDuration = (duration: number): string => {
   if (duration < 0.001) return `${(duration * 1_000_000).toFixed(0)}µs`;
   if (duration < 1) return `${(duration * 1000).toFixed(2)}ms`;
   return `${duration.toFixed(2)}s`;
 };
+
+// Strip the `stream:` prefix from stream span names for display.
+export const formatSpanName = (name: string): string =>
+  name.replace(/^stream:/, "");
