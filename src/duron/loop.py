@@ -211,7 +211,7 @@ class EventLoop(asyncio.AbstractEventLoop):
             deadline: int | None = None
             while timers:
                 ht = timers[0]
-                if ht._cancelled:  # noqa: SLF001
+                if ht._cancelled:  # ruff: ignore[SLF001]
                     _ = heappop(timers)
                 elif (t := int(ht.when())) <= now:
                     _ = heappop(timers)
@@ -225,9 +225,9 @@ class EventLoop(asyncio.AbstractEventLoop):
 
             while ready:
                 h = ready.popleft()
-                if h._cancelled:  # noqa: SLF001
+                if h._cancelled:  # ruff: ignore[SLF001]
                     continue
-                h._run()  # noqa: SLF001
+                h._run()  # ruff: ignore[SLF001]
 
     def poll_completion(self, task: Future[_T]) -> WaitSet | None:
         assert asyncio.get_running_loop() is self._host
@@ -235,8 +235,8 @@ class EventLoop(asyncio.AbstractEventLoop):
 
         # hot path - inline task context switch
         if prev_task := tasks.current_task():
-            tasks._leave_task(self._host, prev_task)  # noqa: SLF001
-        events._set_running_loop(self)  # noqa: SLF001
+            tasks._leave_task(self._host, prev_task)  # ruff: ignore[SLF001]
+        events._set_running_loop(self)  # ruff: ignore[SLF001]
         try:
             next_deadline = self._poll(self._now_us)
             if task.done():
@@ -244,9 +244,9 @@ class EventLoop(asyncio.AbstractEventLoop):
             added, self._added = self._added, []
             return WaitSet(added=added, timer=next_deadline, event=self._event)
         finally:
-            events._set_running_loop(self._host)  # noqa: SLF001
+            events._set_running_loop(self._host)  # ruff: ignore[SLF001]
             if prev_task:
-                tasks._enter_task(self._host, prev_task)  # noqa: SLF001
+                tasks._enter_task(self._host, prev_task)  # ruff: ignore[SLF001]
 
     def pending_ops(self) -> Sequence[OpFuture]:
         return tuple(self._ops.values())
@@ -299,8 +299,8 @@ class EventLoop(asyncio.AbstractEventLoop):
     def close(self) -> None:
         assert asyncio.get_running_loop() is self._host
         if prev_task := tasks.current_task():
-            tasks._leave_task(self._host, prev_task)  # noqa: SLF001
-        events._set_running_loop(self)  # noqa: SLF001
+            tasks._leave_task(self._host, prev_task)  # ruff: ignore[SLF001]
+        events._set_running_loop(self)  # ruff: ignore[SLF001]
         try:
             _ = self._poll(self._now_us)
             to_cancel = (*tasks.all_tasks(), *self._ops.values())
@@ -324,9 +324,9 @@ class EventLoop(asyncio.AbstractEventLoop):
                     })
             self._closed = True
         finally:
-            events._set_running_loop(self._host)  # noqa: SLF001
+            events._set_running_loop(self._host)  # ruff: ignore[SLF001]
             if prev_task:
-                tasks._enter_task(self._host, prev_task)  # noqa: SLF001
+                tasks._enter_task(self._host, prev_task)  # ruff: ignore[SLF001]
 
     @override
     def get_debug(self) -> bool:
@@ -368,7 +368,7 @@ class EventLoop(asyncio.AbstractEventLoop):
         pass
 
 
-async def create_loop() -> EventLoop:  # noqa: RUF029
+async def create_loop() -> EventLoop:  # ruff: ignore[RUF029]
     return EventLoop(asyncio.get_running_loop())  # type: ignore[abstract]
 
 

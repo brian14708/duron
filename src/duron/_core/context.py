@@ -231,7 +231,7 @@ class Context:
 
         """
         assert self._check()
-        return Random(self._loop.generate_op_id() + self._seed)  # noqa: S311
+        return Random(self._loop.generate_op_id() + self._seed)  # ruff: ignore[S311]
 
     @overload
     async def complete_future(

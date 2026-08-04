@@ -104,7 +104,7 @@ class FileLogStorage:
 
     async def acquire_lease(self) -> bytes:
         async with self._lock:
-            self._lease = Path(self._log_file).open("ab")  # noqa: ASYNC230, SIM115
+            self._lease = Path(self._log_file).open("ab")  # ruff: ignore[ASYNC230, SIM115]
             _lock_file(self._lease)
             return self._lease.fileno().to_bytes(8, "big")
 
@@ -297,7 +297,7 @@ class SQLiteLog:
                                     rowid,
                                     cast("BaseEntry", cast("object", entry)),
                                 ))
-                    except json.JSONDecodeError:  # noqa: PERF203
+                    except json.JSONDecodeError:  # ruff: ignore[PERF203]
                         pass
                 return results
             finally:

@@ -197,7 +197,7 @@ class Session:
         )
         self._loop = None
         self._lease = None
-        await self._current_task._start()  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        await self._current_task._start()  # pyright: ignore[reportPrivateUsage] # ruff: ignore[SLF001]
         return self._current_task
 
     async def resume(self, fn: DurableFn[_P, _T]) -> Task[_T]:
@@ -230,7 +230,7 @@ class Session:
         )
         self._loop = None
         self._lease = None
-        await self._current_task._start()  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        await self._current_task._start()  # pyright: ignore[reportPrivateUsage] # ruff: ignore[SLF001]
         return self._current_task
 
     async def verify(self, fn: DurableFn[_P, _T]) -> None:
@@ -260,7 +260,7 @@ class Session:
         )
         self._loop = None
         self._lease = None
-        if await self._current_task._resume():  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        if await self._current_task._resume():  # pyright: ignore[reportPrivateUsage] # ruff: ignore[SLF001]
             return
         msg = "Durable function has not completed"
         raise RuntimeError(msg)
@@ -647,7 +647,7 @@ class Task(Generic[_T]):
                 try:
                     result = self._codec.decode_json(e["result"], return_type)
                     return self._loop.post_completion(id_, result=result)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:  # ruff: ignore[BLE001]
                     return self._loop.post_completion(id_, exception=exc)
             elif "error" in e:
                 return self._loop.post_completion(
@@ -705,7 +705,7 @@ class Task(Generic[_T]):
                     result = op.callable()
                 entry["result"] = codec.encode_json(result, op.return_type)
                 span.set_status("OK")
-            except (Exception, asyncio.CancelledError) as e:  # noqa: BLE001
+            except (Exception, asyncio.CancelledError) as e:  # ruff: ignore[BLE001]
                 entry["error"] = encode_error(e)
                 span.set_status("ERROR", str(e))
 

@@ -26,14 +26,14 @@ def _check_loop() -> None:
     except RuntimeError:
         return
 
-    from duron.loop import EventLoop  # noqa: PLC0415
+    from duron.loop import EventLoop  # ruff: ignore[PLC0415]
 
     if isinstance(loop, EventLoop):
         msg = (
             "Effects cannot be called from within a duron EventLoop. "
             "Use 'ctx.run()' to execute effects."
         )
-        raise RuntimeError(msg)  # noqa: TRY004
+        raise RuntimeError(msg)  # ruff: ignore[TRY004]
 
 
 def _wrap_effect(fn: Callable[_P, Coroutine[Any, Any, _T] | _T]) -> Callable[_P, Any]:
@@ -59,7 +59,7 @@ def _wrap_effect(fn: Callable[_P, Coroutine[Any, Any, _T] | _T]) -> Callable[_P,
                     try:
                         sent = yield value
                         value = await gen.asend(sent)
-                    except GeneratorExit:  # noqa: PERF203
+                    except GeneratorExit:  # ruff: ignore[PERF203]
                         await gen.aclose()
                         raise
             except StopAsyncIteration:

@@ -316,7 +316,7 @@ def setup_tracing(
     for handler in target_logger.handlers:
         if isinstance(handler, _LoggingHandler):
             msg = "Logging handler for tracing is already configured."
-            raise RuntimeError(msg)  # noqa: TRY004
+            raise RuntimeError(msg)  # ruff: ignore[TRY004]
 
     handler = _LoggingHandler()
     handler.setLevel(level)

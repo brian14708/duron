@@ -36,7 +36,7 @@ _U = TypeVar("_U")
 
 
 @final
-class StreamClosed(Exception):  # noqa: N818
+class StreamClosed(Exception):  # ruff: ignore[N818]
     """Exception raised when attempting to read from a closed stream.
 
     This exception is raised when a stream consumer tries to get the next value

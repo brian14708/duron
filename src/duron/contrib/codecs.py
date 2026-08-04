@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import binascii
-import pickle  # noqa: S403
+import pickle  # ruff: ignore[S403]
 from typing import TYPE_CHECKING, cast
 from typing_extensions import Any
 
@@ -23,7 +23,7 @@ class PickleCodec:
         if not isinstance(encoded, str):
             msg = f"Expected a string, got {type(encoded).__name__}"
             raise TypeError(msg)
-        return pickle.loads(binascii.a2b_base64(encoded.encode()))  # noqa: S301
+        return pickle.loads(binascii.a2b_base64(encoded.encode()))  # ruff: ignore[S301]
 
 
 try:

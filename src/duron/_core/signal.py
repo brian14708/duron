@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 _T = TypeVar("_T")
 
 
-class SignalInterrupt(Exception):  # noqa: N818
+class SignalInterrupt(Exception):  # ruff: ignore[N818]
     """Exception raised when a signal interrupts an in-progress operation.
 
     Attributes:
