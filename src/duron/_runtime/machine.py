@@ -96,6 +96,7 @@ class RunMachine(Generic[_T]):
         "_batch_limits",
         "_claim_token",
         "_codec",
+        "_draining",
         "_execution",
         "_execution_error",
         "_executor",
@@ -165,6 +166,7 @@ class RunMachine(Generic[_T]):
         )
         self._main = main
         self._codec = fn.codec
+        self._draining = asyncio.Event()
         self._streams: dict[str, TypeHint[object]] = {}
         self._task: asyncio.Task[_T] | None = None
         self._activity = asyncio.Event()
@@ -296,6 +298,7 @@ class RunMachine(Generic[_T]):
         suspend: Callable[[float | None], Awaitable[bool]] | None = None,
         *,
         idle_timeout: float = 60.0,
+        draining: asyncio.Event | None = None,
     ) -> bool:
         """Run to completion or durable suspension.
 
@@ -308,6 +311,8 @@ class RunMachine(Generic[_T]):
             CorruptLogError: If persisted history is malformed.
 
         """
+        if draining is not None:
+            self._draining = draining
         if await read_outcome(self._backend, self._state.run_id) is not None:
             self._state.phase = Phase.FINISHED
             return True
@@ -349,24 +354,40 @@ class RunMachine(Generic[_T]):
         service = asyncio.ensure_future(serve(self))
         completion = asyncio.create_task(self.result())
         cancellation = asyncio.create_task(cancelled.wait())
+        drain_requested = asyncio.create_task(self._draining.wait())
         activity: asyncio.Task[bool] | None = None
         cancelled_run = False
         idle_since: float | None = None
         try:
             while not completion.done():
                 self._activity.clear()
+                is_draining = self._draining.is_set()
+                if is_draining and not cancelled.is_set():
+                    async with self.ingress:
+                        await self._writer.drain()
+                        if (
+                            not self._main.done()
+                            and not completion.done()
+                            and not any(
+                                op.effect is not None and op.committed is not None
+                                for op in self._state.operations.values()
+                            )
+                        ):
+                            self._parking = True
+                            return False
                 timeout = None
-                if suspend is not None:
+                if suspend is not None and not is_draining:
                     idle_since, ready = self._idle_state(idle_since, idle_timeout)
                     if ready and await self._suspend(suspend):
                         return False
                     if idle_since is not None:
                         timeout = max(0, idle_timeout - (time.monotonic() - idle_since))
                 activity = asyncio.create_task(self._activity.wait())
+                waiters = [completion, service, cancellation, activity]
+                if not is_draining:
+                    waiters.append(drain_requested)
                 done, _pending = await asyncio.wait(
-                    (completion, service, cancellation, activity),
-                    timeout=timeout,
-                    return_when=asyncio.FIRST_COMPLETED,
+                    waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
                 )
                 activity.cancel()
                 await asyncio.gather(activity, return_exceptions=True)
@@ -404,11 +425,16 @@ class RunMachine(Generic[_T]):
             service.cancel()
             completion.cancel()
             cancellation.cancel()
+            drain_requested.cancel()
             if activity is not None:
                 activity.cancel()
                 await asyncio.gather(activity, return_exceptions=True)
             await asyncio.gather(
-                service, completion, cancellation, return_exceptions=True
+                service,
+                completion,
+                cancellation,
+                drain_requested,
+                return_exceptions=True,
             )
 
     def _idle_state(
@@ -828,6 +854,16 @@ class RunMachine(Generic[_T]):
     async def _enqueue_log(self, entry: Entry) -> None:
         if self._append_error is not None:
             raise self._append_error
+        if (
+            self._state.phase is Phase.LIVE
+            and self._draining.is_set()
+            and entry["type"] == "promise.create"
+            and (operation := self._state.operations.get(entry["id"])) is not None
+            and operation.effect is not None
+        ):
+            # Never commit a call that shutdown will prevent from executing.
+            # This also covers calls generated beyond the replay frontier.
+            return
         if self._state.phase is Phase.REPLAYING:
             self._replay.pending[entry["id"]] = entry
         elif self._claim_token is None:

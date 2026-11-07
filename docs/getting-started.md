@@ -69,10 +69,21 @@ but completion can still win the race. A cancelled run's `result()` raises
 
 ## Close and reopen the scheduler
 
-Closing the scheduler stops local execution and waits for effect cleanup. It
-does not request cancellation of persisted runs. To recover unfinished work,
+Closing the scheduler rejects new submissions, stops starting new effects, and
+allows active effects up to 30 seconds to finish and record their outcomes.
+Call `await scheduler.shutdown(timeout=10)` before leaving the context to change
+this grace period; zero requests immediate shutdown. Cleanup is always awaited,
+even after the deadline.
+Waiting workflows unload without waiting for `idle_timeout`. Shutdown does not
+request cancellation of persisted runs. To recover unfinished work,
 open the same database with the workflow implementations registered. You do not
 need to submit the runs again.
+
+Call `await scheduler.shutdown(timeout=30)` to close explicitly. It returns the
+IDs of local runs forced to stop when the grace period expired. Concurrent and
+repeated calls share the first shutdown operation and its timeout. Observation,
+input delivery, and cancellation remain available during draining until storage
+closes. An interrupted effect can still block recovery after a forced stop.
 
 During recovery, completed effects return their recorded outcomes. An effect
 call without a recorded outcome blocks the run and is never invoked again.

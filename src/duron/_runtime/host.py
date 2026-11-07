@@ -69,7 +69,12 @@ class _ActiveRun:
 
 
 class SQLiteScheduler(Scheduler):
-    """A single-process scheduler with exclusive ownership of its SQLite file."""
+    """A single-process scheduler with exclusive ownership of its SQLite file.
+
+    Context exit drains active effects for up to 30 seconds, then stops remaining
+    execution and waits for cleanup. Call ``shutdown(timeout=...)`` explicitly
+    before leaving the context to use a different grace period.
+    """
 
     def __init__(
         self,
@@ -96,10 +101,14 @@ class SQLiteScheduler(Scheduler):
             self._registry[key] = workflow
         self._namespace = namespace
         self._idle_timeout = idle_timeout
+        self._shutdown_task: asyncio.Task[tuple[str, ...]] | None = None
+        self._draining = asyncio.Event()
+        self._submission_lock = asyncio.Lock()
         self._dispatcher: asyncio.Task[None] | None = None
         self._active: dict[str, _ActiveRun] = {}
         self._work_changed = asyncio.Event()
         self._running = False
+        self._accepting = False
 
     @property
     def _store(self) -> SQLiteStore:
@@ -114,13 +123,17 @@ class SQLiteScheduler(Scheduler):
             msg = "scheduler context is already active"
             raise RuntimeError(msg)
         self._registry = {flow.name: flow for flow in self._workflows}
+        self._shutdown_task = None
+        self._draining = asyncio.Event()
         self._storage = SQLiteStore(self._path, namespace=self._namespace)
         try:
             await self._job_wake()
             self._running = True
+            self._accepting = True
             self._dispatcher = self._start_dispatcher()
         except BaseException:
             self._running = False
+            self._accepting = False
             try:
                 await self._store.close()
             finally:
@@ -135,7 +148,7 @@ class SQLiteScheduler(Scheduler):
 
     def _dispatcher_done(self, task: asyncio.Task[None]) -> None:
         error = None if task.cancelled() else task.exception()
-        if self._running:
+        if self._accepting:
             logging.getLogger(__name__).error(
                 "scheduler dispatcher stopped; replacing it", exc_info=error
             )
@@ -158,25 +171,65 @@ class SQLiteScheduler(Scheduler):
         _value: BaseException | None,
         _traceback: TracebackType | None,
     ) -> None:
-        self._running = False
-        cleanup = asyncio.create_task(self._close())
+        await self.shutdown()
+
+    @override
+    async def shutdown(self, *, timeout: float = 30.0) -> tuple[str, ...]:
+        """Drain active effects and close, returning run IDs forced to stop.
+
+        ``timeout`` bounds the grace period; cleanup is always awaited afterward.
+        Zero requests immediate shutdown. Submissions are rejected while
+        draining; observation, input delivery, and cancellation remain available
+        until storage closes. Repeated callers share the first shutdown and its
+        timeout. Cancelling a caller waits for cleanup before propagating.
+
+        Returns:
+            Sorted IDs of local runs that exceeded the grace period.
+
+        Raises:
+            ValueError: If the timeout is not finite and nonnegative.
+            asyncio.CancelledError: After cleanup if the caller is cancelled.
+
+        """
+        if isinstance(timeout, bool) or not math.isfinite(timeout) or timeout < 0:
+            msg = "timeout must be finite and nonnegative"
+            raise ValueError(msg)
+        if self._shutdown_task is None:
+            self._check_running()
+            self._accepting = False
+            self._draining.set()
+            self._shutdown_task = asyncio.create_task(self._close(timeout))
         try:
-            await asyncio.shield(cleanup)
+            return await asyncio.shield(self._shutdown_task)
         except asyncio.CancelledError:
-            await finish_task(cleanup)
+            await finish_task(self._shutdown_task)
             raise
 
-    async def _close(self) -> None:
+    async def _close(self, grace_period: float) -> tuple[str, ...]:
         try:
             if self._dispatcher is not None:
                 self._dispatcher.cancel()
                 await asyncio.gather(self._dispatcher, return_exceptions=True)
                 self._dispatcher = None
-            tasks = [active.task for active in self._active.values()]
-            for task in tasks:
+            # A submission accepted before draining must finish its durable
+            # write before the database can close.
+            async with self._submission_lock:
+                pass
+            runs = {run_id: active.task for run_id, active in self._active.items()}
+            pending: set[asyncio.Task[None]] = set()
+            if runs:
+                _, pending = await asyncio.wait(runs.values(), timeout=grace_period)
+            forced = tuple(sorted(key for key, task in runs.items() if task in pending))
+            if forced:
+                logging.getLogger(__name__).warning(
+                    "scheduler shutdown grace period expired; stopping runs %s", forced
+                )
+            for task in pending:
                 task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(*runs.values(), return_exceptions=True)
+            return forced
         finally:
+            self._running = False
             try:
                 if self._storage is not None:
                     await self._storage.close()
@@ -197,20 +250,24 @@ class SQLiteScheduler(Scheduler):
         *args: _P.args,
         **kwargs: _P.kwargs,
     ) -> Run[_T, _Ports]:
-        self._check_running()
-        ref = workflow.ref if isinstance(workflow, Workflow) else workflow
-        key = ref.name
-        local = self._registry.get(key)
-        if local is not None and local.ref._identity != ref._identity:
-            msg = "submitted reference does not match registered workflow contract"
-            raise ContractMismatchError(msg)
-        if isinstance(workflow, Workflow) and local is None:
-            self._registry[key] = workflow
-            await self._job_wake()
-        seed = await self._job_submit(
-            run_id, ref._identity, ref._encode(*args, **kwargs)
-        )
-        return _Run(self, ref, run_id, seed)
+        async with self._submission_lock:
+            self._check_running()
+            if not self._accepting:
+                msg = "scheduler is shutting down"
+                raise RuntimeError(msg)
+            ref = workflow.ref if isinstance(workflow, Workflow) else workflow
+            key = ref.name
+            local = self._registry.get(key)
+            if local is not None and local.ref._identity != ref._identity:
+                msg = "submitted reference does not match registered workflow contract"
+                raise ContractMismatchError(msg)
+            if isinstance(workflow, Workflow) and local is None:
+                self._registry[key] = workflow
+                await self._job_wake()
+            seed = await self._job_submit(
+                run_id, ref._identity, ref._encode(*args, **kwargs)
+            )
+            return _Run(self, ref, run_id, seed)
 
     @override
     async def open(
@@ -441,7 +498,7 @@ class SQLiteScheduler(Scheduler):
                 pass
 
     async def _dispatch_job(self, job: ScheduledRun) -> None:
-        if job.id in self._active:
+        if not self._accepting or job.id in self._active:
             return
         workflow = None
         if not job.cancelled:
@@ -494,8 +551,16 @@ class SQLiteScheduler(Scheduler):
                     cancelled.set()
                 await self._store.job_state(self._namespace, job.id, RunState.RUNNING)
                 if not await machine.run(
-                    cancelled, self._serve, suspend, idle_timeout=self._idle_timeout
+                    cancelled,
+                    self._serve,
+                    suspend,
+                    idle_timeout=self._idle_timeout,
+                    draining=self._draining,
                 ):
+                    if self._draining.is_set():
+                        await self._store.job_state(
+                            self._namespace, job.id, RunState.QUEUED
+                        )
                     return
         except InterruptedEffectError as error:
             await self._block_job(job, error, FailureKind.INTERRUPTED_EFFECT)

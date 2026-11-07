@@ -44,7 +44,12 @@ class TaskManager:
             await asyncio.shield(worker[0])
 
     def start(self) -> None:
-        for task_id, (operation, task_fn) in self._pending.items():
+        for task_id, (operation, task_fn) in tuple(self._pending.items()):
+            # Shutdown may leave generated effect calls uncommitted so replay
+            # can safely admit them on the next owner.
+            if operation.effect is not None and operation.committed is None:
+                continue
+            del self._pending[task_id]
             if operation.waiter.cancelled() and operation.effect is None:
                 continue
             task = asyncio.create_task(task_fn(), context=operation.parameters.context)
@@ -56,7 +61,6 @@ class TaskManager:
             # Their started flag is set by the effect body to preserve that window.
             if operation.effect is None:
                 operation.started = True
-        self._pending.clear()
 
     async def close(self, *, graceful: bool = False) -> None:
         while self._tasks or self._retired:

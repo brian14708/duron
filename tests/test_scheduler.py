@@ -243,6 +243,7 @@ async def test_sqlite_scheduler_blocks_interrupted_effect_on_reopen(
                 pytest.fail("overlapping entry succeeded")
         run = await submit(scheduler)
         await asyncio.wait_for(started.wait(), 3)
+        await scheduler.shutdown(timeout=0)
     with pytest.raises(RuntimeError, match="not active"):
         await run.status()
     async with scheduler:

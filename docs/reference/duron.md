@@ -24,10 +24,18 @@ crash, a new scheduler can recover immediately.
 | `await run.status()` | Return immutable `RunStatus(state: RunState, detail: str \| None)` with the latest scheduling diagnostic. |
 | `await run.cancel()` | Accept an idempotent cancellation request. |
 | `run.port(declaration)` | Bind a typed caller endpoint without activating execution. |
+| `await scheduler.shutdown(timeout=30)` | Drain active effects and close; return run IDs forced to stop after the grace period. |
 
 Arguments are normalized and saved at submission. Closing the scheduler context
-stops local execution. Cancelling a task waiting on `run.result()` leaves the
-workflow running.
+calls `shutdown()` with its default 30-second grace period. Call
+`shutdown(timeout=...)` explicitly before leaving the context to choose another
+grace period.
+Shutdown rejects submissions and defers new effect calls before recording them.
+Active effects can finish and commit; waiting workflows unload for recovery.
+After the grace period, remaining local runs are stopped and cleanup is awaited.
+Zero requests immediate shutdown. Repeated shutdown calls share the first
+operation and its timeout. Cancelling a shutdown waiter does not abort cleanup.
+Cancelling a task waiting on `run.result()` leaves the workflow running.
 
 ### Status and suspension
 
@@ -49,7 +57,8 @@ automatically. The scheduler waits 60 seconds after a run becomes idle before
 suspending it; configure this grace period with `idle_timeout`.
 
 Application cancellation records a terminal cancelled outcome. Host shutdown
-stops local execution; effects left without an outcome block recovery.
+drains active effects before stopping local execution; effects left without an
+outcome after the grace period block recovery.
 
 ## Workflows and references
 

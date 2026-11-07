@@ -35,6 +35,21 @@ class Scheduler(ABC):
     ) -> None: ...
 
     @abstractmethod
+    async def shutdown(
+        self,
+        *,
+        timeout: float = 30.0,  # ruff: ignore[async-function-with-timeout]  # Bounds draining, not cleanup.
+    ) -> tuple[str, ...]:
+        """Drain active effects and close, returning run IDs forced to stop.
+
+        New submissions and effect calls stop being admitted. Waiting workflows
+        remain recoverable. After ``timeout`` seconds, remaining local runs are
+        stopped and their cleanup is awaited. Repeated calls share the first
+        shutdown operation and its timeout.
+        """
+        ...
+
+    @abstractmethod
     async def submit(
         self,
         workflow: Workflow[_P, _T, _Ports] | WorkflowRef[_P, _T, _Ports],
